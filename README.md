@@ -3,7 +3,7 @@
 (Caffenated) Atomic column position finding for high resolution scanning transmission electron microscope images.
 
 Work flow:
-1) Create a unit cell structural projection for the imaged zone axis. Automatically merges atoms with the same projected position into one column. Option to merge columns at a specified proximity cutt-off.
+1) Create a unit cell structural projection for a specified zone axis based on data imported from a .cif. Automatically merges atoms with the same projected position into one column. Optional function to merge columns at a specified proximity cutt-off.
  
 2) User picks reciprocal basis vectors from the FFT of the image. Function transforms these into rough image basis vectors.
 
