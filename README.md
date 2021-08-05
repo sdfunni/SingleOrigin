@@ -1,6 +1,6 @@
 # SingleOrigin
 
-(Caffenated) Atomic column position finding for high resolution scanning transmission electron microscope images.
+(Caffeinated) Atomic column position finding for high resolution scanning transmission electron microscope images.
 
 Work flow:
 1) Create a unit cell structural projection for a specified zone axis based on data imported from a .cif. Automatically merges atoms with the same projected position into one column. Optional function to merge columns at a specified proximity cutt-off.
