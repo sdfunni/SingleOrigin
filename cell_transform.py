@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import  matplotlib.patches as patches
 from CifFile import ReadCif
 import pandas as pd
-from AtomIQ.utils import *
+from SingleOrigin.utils import *
 import copy
 
 '''*** Requirements for using this script ***
