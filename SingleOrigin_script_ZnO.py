@@ -40,10 +40,9 @@ offset = [0, 0]
 '''Structure import from .cif and project'''
 '''*** User inputs ***'''
 '''BSSN'''
-# cif = 'BSSN5137.cif'
+
 cif = 'ZnO.cif'
-# cif = 'ANT55_010_pc.cif'
-# cif = 'PMN.cif'
+
 za = np.array([1,1,0])            #Zone Axis direction
 a2_p = np.array([-1,1,0])         #Apparent horizontal axis in projection
 a3_p = np.array([0,0,1])          #Most vertical axis in projection
@@ -126,7 +125,8 @@ plt.imshow(TEM_micro, cmap='gray')
     the unit cell origin: default is (0,0).
     -Use FFT peaks to find basis vectors for the image.'''
     
-acl = AtomicColumnLattice(TEM_micro, at_cols, a_2d, at_cols=None)
+acl = AtomicColumnLattice(TEM_micro, at_cols, a_2d, at_cols=None, 
+                          basis_offset_frac=at_cols.loc[2, 'u':'v'].tolist())
 acl.select_basis_vect_FFT(a1_order=1, a2_order=2, sigma=5)
 
 #%%
@@ -138,7 +138,6 @@ acl.select_basis_vect_FFT(a1_order=1, a2_order=2, sigma=5)
     vectors before finding all lattice positions.'''
 
 acl.unitcell_template_method(a1_var='u', a2_var='v',
-                             offset = at_cols.loc[2, 'u':'v'].tolist(), 
                              buffer=20, filter_type='LoG', sigma=2.5,
                              fit_filtered_data=False,
                              edge_max_thresholding = 0)
@@ -175,6 +174,7 @@ len_per_pix = np.average([np.linalg.norm(acl.a_2d[0,:])
                           np.linalg.norm(acl.a_2d[1,:])
                           /np.linalg.norm(acl.a2)])
 
+
 #%%
 '''Plot Column positions with color indexing'''
 fig,axs = plt.subplots(ncols=1,figsize=(10,10))
@@ -193,7 +193,7 @@ color_code = {k:v for v, k in
 color_list = [color_code[site] for site in filtered.loc[:,'elem']]
 
 axs.scatter(filtered.loc[:,'x_fit'], filtered.loc[:,'y_fit'],
-            c=color_list, s=4)
+            c=color_list, s=4, cmap='RdYlGn')
 
 axs.arrow(acl.x0, acl.y0, acl.a1[0], acl.a1[1],
               fc='red', ec='red', width=0.1, length_includes_head=True,
