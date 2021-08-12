@@ -25,7 +25,7 @@ import copy
 from matplotlib_scalebar.scalebar import ScaleBar
 from matplotlib_scalebar.scalebar import SI_LENGTH_RECIPROCAL
 
-from AtomIQ import *
+from SingleOrigin import *
 
 #%%
 # Data used for AdvMat Paper:
