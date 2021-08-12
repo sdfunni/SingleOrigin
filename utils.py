@@ -175,7 +175,7 @@ def fit_gaussian2D(data, p0):
     y = np.take(y, unmasked_data)
     
     bounds = [(None, None), (None, None), (1, np.inf), (1, None),
-              (-np.pi/2, np.pi/2), (0,2), (0,1)]
+              (-np.pi/2, np.pi/2), (0,2), (0,0)]
     params = minimize(gaussian2d_ss, p0, args=(x, y, z), bounds=bounds).x
     params[4] *= -1
     p0[4] *= -1
@@ -246,14 +246,14 @@ def filter_thresh_CoM(image, buffer, Gauss_filter=None,  LaplacianGauss=None,
     coords = np.array(ndimage.center_of_mass(
         img_th*img_der, labels, np.arange(nlabels)+1))
     peaks = pd.DataFrame.from_dict(
-            {'x' : list(coords[:, 1]),
-             'y' : list(coords[:, 0]),
+            {'x_ref' : list(coords[:, 1]),
+             'y_ref' : list(coords[:, 0]),
              'label' : [i+1 for i in range(nlabels)]})
     
-    peaks = peaks[((peaks.x >= buffer) &
-                   (peaks.x <= w - buffer) &
-                   (peaks.y >= buffer) &
-                   (peaks.y <= h - buffer))]
+    peaks = peaks[((peaks.x_ref >= buffer) &
+                   (peaks.x_ref <= w - buffer) &
+                   (peaks.y_ref >= buffer) &
+                   (peaks.y_ref <= h - buffer))]
     peaks = peaks.reset_index(drop=True)
     
     return peaks, img_der, labels, slices
@@ -382,8 +382,9 @@ def gauss_position_refine(peaks, image, img_der=None, slices=None, labels=None,
         sig_min = np.sqrt(np.abs(eigvals[min_ind]))
         sig_r = sig_max / sig_min
         theta = -np.arcsin(np.cross(np.array([1,0]), eigvects[:, max_ind]))
-        Z0 = (np.average(img_sl[img_sl != 0])
-              - np.std(img_sl[img_sl != 0]))
+        # Z0 = (np.average(img_sl[img_sl != 0])
+        #       - np.std(img_sl[img_sl != 0]))
+        Z0 = 0
         A0 = np.max(img_sl) - Z0
         
         '''Fit 2D Guassian'''

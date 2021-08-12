@@ -25,12 +25,13 @@ class AtomicColumnLattice:
     -unitcell_2D is a DataFrame of projected atom positions in fractional
         coordinates
     -"a_2d" basis vector matrix
-    -"basis offset" is vector from unit cell origin to the atom column type
+    -"basis_offset_frac" is vector (in fractional coordinates) from unit cell 
+        origin to the atom column type
         that will be selected as the origin reference
     -"at_cols" Depricated. Functionality has been removed to "old scripts."
     '''
-    def __init__(self, image, unitcell_2D, a_2d, basis_offset=np.array([0,0]),
-                 at_cols=None):
+    def __init__(self, image, unitcell_2D, a_2d, 
+                 basis_offset_frac=[0,0], at_cols=None):
         self.image = image
         self.h, self.w = self.image.shape
         if at_cols == None:
@@ -39,7 +40,7 @@ class AtomicColumnLattice:
             self.at_cols = at_cols        
         self.unitcell_2D = unitcell_2D
         self.a_2d = a_2d
-        self.basis_offset = basis_offset
+        self.basis_offset_frac = np.array(basis_offset_frac)
         [self.x0, self.y0] = [np.nan, np.nan]
         self.all_masks = np.zeros(image.shape)
     
@@ -222,6 +223,7 @@ class AtomicColumnLattice:
         self.a1 = alpha[0,:]
         self.a2 = alpha[1,:]
         self.alpha = alpha
+        self.basis_offset_pix = self.basis_offset_frac @ self.alpha
         
         # time.sleep(5)
         # plt.close('all')
@@ -297,7 +299,7 @@ class AtomicColumnLattice:
                       fc='black', ec='black', width=0.1, length_includes_head=True,
                       head_width=2, head_length=3, zorder=8)
         
-        ref_atom = self.basis_offset + np.array([x0, y0])
+        ref_atom = self.basis_offset_pix + np.array([x0, y0])
         ax.scatter(ref_atom[0], ref_atom[1], c='white', s=70, zorder=9)
         
         cmap = plt.cm.RdYlGn
@@ -388,12 +390,13 @@ class AtomicColumnLattice:
         self.y0 = params[5]
         print('Optimized basis vectors:', self.alpha)
         
+        self.basis_offset_pix = self.basis_offset_frac @ self.alpha
+        
         self.at_cols.loc[:, 'x_ref':'y_ref'] = (self.at_cols.loc[:, 'u':'v']
                                                 .to_numpy() @ self.alpha
                                                 + np.array([self.x0, self.y0]))
         
-    def unitcell_template_method(self, a1_var='u', a2_var='v',
-                                 offset=[0,0], buffer=20,
+    def unitcell_template_method(self, a1_var='u', a2_var='v', buffer=20,
                                  filter_type = 'LoG', sigma = 2,
                                  edge_max_thresholding=0.95,
                                  fit_filtered_data=False,
@@ -431,7 +434,7 @@ class AtomicColumnLattice:
         
         if filter_type not in ['LoG', 'norm_cross_corr', 'Gauss', None]:
             raise Exception('filter type not allowed')
-        offset = np.array(offset)
+        # offset = np.array(offset)
         if 'LatticeSite' in list(self.unitcell_2D.columns):
             lab = 'LatticeSite'
         else:
@@ -456,9 +459,9 @@ class AtomicColumnLattice:
                                               img_der, Gauss_smooth=0)
 
             print('fit:', origin.at[0,'x_fit'], origin.at[0,'y_fit'])
-            self.basis_offset = offset @ self.alpha
-            self.x0 = origin.at[0,'x_fit'] - self.basis_offset[0]
-            self.y0 = origin.at[0,'y_fit'] - self.basis_offset[1]
+            
+            self.x0 = origin.at[0,'x_fit'] - self.basis_offset_pix[0]
+            self.y0 = origin.at[0,'y_fit'] - self.basis_offset_pix[1]
         
         a1 = self.a1
         a2 = self.a2

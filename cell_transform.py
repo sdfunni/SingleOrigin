@@ -6,6 +6,7 @@ import pandas as pd
 from SingleOrigin.utils import *
 import copy
 
+#%%
 class UnitCell():
     def __init__(self, cif_data, origin_shift = [0, 0, 0]):
         Crystal = cif_data.dictionary[list(cif_data.dictionary.keys()
@@ -75,12 +76,9 @@ class UnitCell():
                         *xyz_]
                     atoms = atoms.append(new_pos, ignore_index=True)
 
-        print(atoms.shape)
-
         atoms = atoms.loc[atoms.round({'u': 3, 'v': 3, 'w': 3}
                                       ).drop_duplicates().index, :]
         atoms = atoms.reset_index(drop=True)
-        print(atoms.shape)
         
         self.atoms=atoms
         self.a_3d = None
@@ -178,10 +176,14 @@ class UnitCell():
     
     def combine_prox_cols(self, prox_toler=0.1):
         '''Combine coincident (or proximate) columns in 2D projected unit cell
-            even if different atom type'''
+            even if different atom type
+            Uses units of distance given in the .cif file, usually 
+            Angstroms'''
         
         '''Loop through all pairwise combinations of rows, find pairs that 
-            are close'''
+            are closer than the prox_toler value'''
+            
+        print('Distances being combined...')
         prox_rows = []
         for i, row_i in self.at_cols.iterrows():
             for j, row_j in self.at_cols.iterrows():
@@ -195,7 +197,9 @@ class UnitCell():
                 elif dist < prox_toler:
                     print(dist)
                     prox_rows.append([j,i])
-        print(prox_rows)
+
+        if len(prox_rows) == 0: print('None to combine')
+                    
         '''Combine close-pairs into minimum unique sets. 
             i.e. close pairs [1,2], [2,3], and [3,1], are actually a close 
             triplet, [1,2,3]'''
@@ -211,11 +215,14 @@ class UnitCell():
             test = (np.unique([y for x in combined for y in x]).shape 
                     == np.array([y for x in combined for y in x]).shape)
             prox_rows = copy.deepcopy(combined)
-        print(prox_rows)
+            
         '''Use close-sets to combine dataframe rows and retain all site info'''
         s = '|'
         new = []
+        
         for i, rows in enumerate(prox_rows):
+            if len(rows) == 0: continue
+        
             new.append(self.at_cols.loc[rows[0], :])
             new[i].at['u'] = np.average([self.at_cols.at[ind, 'u'] 
                                          for ind in rows])
@@ -225,7 +232,7 @@ class UnitCell():
                                          for ind in rows])
             new[i].at['y'] = np.average([self.at_cols.at[ind, 'y'] 
                                          for ind in rows])
-            elem = [self.at_cols.at[ind, 'elem'] for ind in rows]
+            elem = np.unique([self.at_cols.at[ind, 'elem'] for ind in rows])
             new[i].at['elem'] = s.join(elem)
             site_frac = [self.at_cols.at[ind, 'site_frac'] for ind in rows]
             new[i].at['site_frac'] = s.join(site_frac)
