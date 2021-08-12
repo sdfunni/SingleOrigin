@@ -14,7 +14,7 @@ from scipy.ndimage.filters import (gaussian_filter, gaussian_laplace,
                                    maximum_filter)
 from scipy.optimize import minimize
 
-from AtomIQ.utils import *
+from SingleOrigin.utils import *
         
 #%%
 class AtomicColumnLattice:
