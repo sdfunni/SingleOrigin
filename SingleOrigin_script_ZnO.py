@@ -16,7 +16,7 @@ from SingleOrigin import *
 #%%
 """Location of image data"""
 
-path = '/Users/funni/Downloads/dDPC.tif'
+path = 'ZnO_dDPC.tif'
 
 #%%
 """Structure import from .cif and project"""
