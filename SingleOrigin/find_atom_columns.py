@@ -8,16 +8,18 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from matplotlib.patches import Circle as Circle
 from matplotlib.legend_handler import HandlerPatch
+from matplotlib import colors as colors
+from matplotlib.patches import Wedge
+from matplotlib_scalebar.scalebar import ScaleBar
+from matplotlib.colors import Normalize
 
 from scipy.optimize import minimize
 from scipy import ndimage, fftpack
 from scipy.ndimage.filters import (gaussian_filter, gaussian_laplace, 
                                    maximum_filter)
-from scipy.optimize import minimize
 
 import psutil
 from joblib import Parallel, delayed
-import time
 from tqdm import tqdm
 
 from SingleOrigin.utils import *
@@ -44,11 +46,12 @@ class AtomicColumnLattice:
     resolution : float
         The resolution of the microscope and imaging mode in Angstroms.
         Default 0.8.
-    basis_offset_frac : array_like with shape (2,)
-        The position in fractional coordinates of a prominent atomc column.
-        This type of atom column is later picked by the user to register the
-        reference lattice.
-        Default [0, 0].
+    origin_atom_column : int
+        The DataFrame row index (in 'unitcell.at_cols') of the atom column 
+        that is later picked by the user to register the reference lattice. 
+        If None, the closest atom column to the unit cell origin is 
+        automatically chosen.
+        Default: None.
     
     Attributes
     ----------
@@ -68,7 +71,7 @@ class AtomicColumnLattice:
         units of Angstroms.
     x0, y0 : The image coordinates of the origin of the reference lattice 
         (in pixels).
-    all_masks : The last set of masks used for fitting  atom columns. Has
+    fitting_masks : The last set of masks used for fitting  atom columns. Has
         the same shape as image.
     a1_star, a2_star : The reciprocal basis vectors in FFT pixel coordinates.
     a1, a2 : The real space basis vectors in image pixel coordinates.
@@ -99,22 +102,50 @@ class AtomicColumnLattice:
     """
     
     def __init__(self, image, unitcell, resolution = 0.8, 
-                 basis_offset_frac=[0,0]):
+                 origin_atom_column=None, xlim=None, ylim=None):
+        
+        h, w = image.shape
+        m = min(h,w)
+        U = min(1000, int(m/2))
+        crop_dim = 2*U
+        image_square = image[int(h/2)-U : int(h/2)+U,
+                          int(w/2)-U : int(w/2)+U]
+        
+        hann = np.outer(np.hanning(crop_dim),np.hanning(crop_dim))
+        fft = fftpack.fft2(image_square*hann)
+        fft = (abs(fftpack.fftshift(fft)))
+        fft = image_norm(fft)
+        self.fft = fft
+        
+        if xlim != None:
+            image = image[:, xlim[0]:xlim[1]]
+        if ylim != None:
+            image = image[ylim[0]:ylim[1], :]
         self.image = image
+        
         self.resolution = resolution
-        self.basis_offset_frac = np.array(basis_offset_frac)
         self.h, self.w = self.image.shape
         self.unitcell_2D = unitcell.at_cols
         self.a_2d = unitcell.a_2d
-        self.basis_offset_pix = None
         self.at_cols = pd.DataFrame()
         self.at_cols_uncropped = pd.DataFrame()
         self.x0, self.y0 = np.nan, np.nan
-        self.all_masks = np.zeros(image.shape)
+        self.fitting_masks = np.zeros(image.shape)
         self.a1, self.a2 = None, None
         self.a1_star, self.a2_star = None, None
         self.trans_mat = None
         self.pixel_size = None
+        self.residuals = None
+        
+        if origin_atom_column == None:
+            origin_atom_column = np.argmin(np.linalg.norm(
+                self.unitcell_2D.loc[:, 'x':'y'], axis=1))
+        
+        self.basis_offset_frac = self.unitcell_2D.loc[
+            origin_atom_column, 'u':'v'].to_numpy()
+        self.basis_offset_pix = self.unitcell_2D.loc[
+            origin_atom_column, 'x':'y'].to_numpy()
+        
     
     def fft_get_basis_vect(self, a1_order=1, a2_order=1, sigma=5):
         """Measure crystal basis vectors from the image FFT.
@@ -142,21 +173,13 @@ class AtomicColumnLattice:
         """
         
         '''Find rough reciprocal lattice'''
-        h, w = self.image.shape
+        
+        h, w = self.fft.shape
         m = min(h,w)
         U = min(1000, int(m/2))
         crop_dim = 2*U
         
-        image_square = self.image[int(h/2)-U : int(h/2)+U,
-                          int(w/2)-U : int(w/2)+U]
-        
-        hann = np.outer(np.hanning(crop_dim),np.hanning(crop_dim))
-        fft = fftpack.fft2(image_square*hann)
-        fft = (abs(fftpack.fftshift(fft)))
-        fft = image_norm(fft)
-        self.fft = fft
-        
-        fft_der = image_norm(-gaussian_laplace(fft, sigma))
+        fft_der = image_norm(-gaussian_laplace(self.fft, sigma))
         masks, num_masks, slices, spots = watershed_segment(fft_der)
         spots.loc[:, 'stdev'] = ndimage.standard_deviation(fft_der, masks, 
                                             index=np.arange(1, num_masks+1))
@@ -182,7 +205,7 @@ class AtomicColumnLattice:
         inds = np.argmin(np.linalg.norm(vects, axis=2), axis=1)
         basis_picks_xy = xy[inds, :]
         
-        print('done selecting')
+        print('done selecting', '\n')
         
         '''Generate reference lattice and find corresponding peak regions'''
         a1_star = (basis_picks_xy[0, :] - origin) / a1_order
@@ -342,7 +365,8 @@ class AtomicColumnLattice:
                       length_includes_head=True,
                       head_width=2, head_length=3, zorder=8)
         ax.arrow(x0, y0, self.a2[0], self.a2[1],
-                      fc='black', ec='black', width=0.1, length_includes_head=True,
+                      fc='black', ec='black', width=0.1, 
+                      length_includes_head=True,
                       head_width=2, head_length=3, zorder=8)
         
         ref_atom = self.basis_offset_pix + np.array([x0, y0])
@@ -397,7 +421,7 @@ class AtomicColumnLattice:
         """
         
         if 'LatticeSite' in list(self.unitcell_2D.columns):
-            lab = 'LatticeSite'
+            lab = 'filter_by'
         else:
             lab = 'elem'
         
@@ -411,23 +435,22 @@ class AtomicColumnLattice:
                | (type(self.resolution) == int))):
             LoG_sigma = self.resolution / self.pixel_size * 0.5 
         
-        if (np.isnan(self.x0) and np.isnan(self.y0)):
-            (x0, y0) = self.select_origin()
+        (x0, y0) = self.select_origin()
 
-            print('pick coordinates:', [x0, y0])
-            
-            filt = image_norm(-gaussian_laplace(self.image, LoG_sigma))
-            neighborhood = np.ones((7,7))
-            local_max = np.fliplr(np.argwhere(maximum_filter(filt,
-                                        footprint=neighborhood)==filt))
+        print('pick coordinates:', np.around([x0, y0], decimals=2), '\n')
+        
+        filt = image_norm(-gaussian_laplace(self.image, LoG_sigma))
+        neighborhood = np.ones((7,7))
+        local_max = np.fliplr(np.argwhere(maximum_filter(filt,
+                                    footprint=neighborhood)==filt))
 
-            [x0, y0] = local_max[np.argmin(np.linalg.norm(local_max 
-                                                        - [x0, y0], axis=1))]
-            
-            print('detected peak coordinates:', [x0, y0])
-            
-            self.x0 = x0 - self.basis_offset_pix[0]
-            self.y0 = y0 - self.basis_offset_pix[1]
+        [x0, y0] = local_max[np.argmin(np.linalg.norm(local_max 
+                                                    - [x0, y0], axis=1))]
+        
+        print('detected peak coordinates:', [x0, y0], '\n')
+        
+        self.x0 = x0 - self.basis_offset_pix[0]
+        self.y0 = y0 - self.basis_offset_pix[1]
             
         a1 = self.a1
         a2 = self.a2
@@ -479,8 +502,9 @@ class AtomicColumnLattice:
         
         at_cols.reset_index(drop=True, inplace=True)
         empty = pd.DataFrame(index=np.arange(0,at_cols.shape[0]),
-                              columns = ['x_fit', 'y_fit', 'sig_maj', 
-                                         'sig_min', 'sig_rat', 'theta', 
+                              columns = ['x_fit', 'y_fit', 'sig_1', 
+                                         'sig_2', #'sig_rat', 
+                                         'theta', 
                                          'peak_int', 'bkgd_int'])
         at_cols = pd.concat([at_cols, empty], axis=1)
         
@@ -497,7 +521,10 @@ class AtomicColumnLattice:
                                                             buffer=0)
         
         coords = peaks.loc[:, 'x':'y'].to_numpy()
-        print('prior basis', self.trans_mat)
+        print('prior basis vectors:', 
+              f'[[{self.trans_mat[0,0]:.{4}f} {self.trans_mat[0,1]:.{4}f}]',
+              f' [{self.trans_mat[1,0]:.{4}f} {self.trans_mat[1,1]:.{4}f}]]'
+              +'\n', sep='\n')
         
         init_inc = int(np.min(np.max(np.abs(at_cols.loc[:, 'u' :'v']),
                                             axis=0))/10)
@@ -544,9 +571,14 @@ class AtomicColumnLattice:
                 )
             
         self.at_cols_uncropped = copy.deepcopy(at_cols)
-        print('refined basis', self.trans_mat)
+        
+        print('refined basis vectors:', 
+              f'[[{self.trans_mat[0,0]:.{4}f} {self.trans_mat[0,1]:.{4}f}]',
+              f' [{self.trans_mat[1,0]:.{4}f} {self.trans_mat[1,1]:.{4}f}]]'
+              +'\n', sep='\n')
                 
-    def fit_atom_columns(self, LoG_sigma=None, Gauss_sigma=None, 
+        
+    def fit_atom_columns(self, LoG_sigma='auto', Gauss_sigma='auto', 
                          edge_max_threshold = 0.95, buffer=20,
                          filter_by='elem', sites_to_fit='all'):
         """Algorithm for fitting 2D Gaussians to HR STEM image.
@@ -563,21 +595,23 @@ class AtomicColumnLattice:
         Parameters
         ----------
         LoG_sigma : int or float
-            The Laplacian of Gaussian sigma value to use for peak sharpening.
-            Should be approximately pixel_size / resolution * 0.5. If not 
-            given, calculated using self.pixel_size and self.resolution.
-            Default None. 
+            The Laplacian of Gaussian sigma value to use for peak sharpening
+            for defining peak regions via the Watershed segmentation method.
+            Should be approximately pixel_size / resolution / 3. If 'auto',  
+            calculated using self.pixel_size and self.resolution.
+            Default 'auto'. 
         Gauss_sigma : int or float
-            The Gaussian sigma value to use for peak grouping by blurring. 
-            Should be approximately pixel_size / resolution * 0.5. If not 
-            given, calculated using self.pixel_size and self.resolution. If
+            The Gaussian sigma value to use for peak grouping by blurring, 
+            then creating image segment regions with watershed method. 
+            Should be approximately pixel_size / resolution * 0.5. If 'auto', 
+            calculated using self.pixel_size and self.resolution. If
             simultaneous fitting of close atom columns is not desired, set
-            equal to 0.
-            Default None.
+            to None.
+            Default: 'auto'.
         edge_max_threshold : float
             Removes background from each segmented region by thresholding. 
-            Threshold value determined by finding the maximum value of edge pixels
-            in the segmented region and multipling this value by the 
+            Threshold value determined by finding the maximum value of edge 
+            pixels in the segmented region and multipling this value by the 
             edge_max_threshold value. The filtered image is used for this 
             calculation. Default 0.95.
         buffer : int
@@ -598,6 +632,8 @@ class AtomicColumnLattice:
             
         """
         
+        self.residuals = None
+        
         if self.at_cols.shape[0] == 0:
             at_cols = self.at_cols_uncropped.copy()
         else:
@@ -607,39 +643,64 @@ class AtomicColumnLattice:
                  if i not in at_cols.index.tolist()], 
                 :]])
         
-        if ((Gauss_sigma == None) 
-            & ((type(self.resolution) == float) 
-               | (type(self.resolution) == int))):
-        
-            Gauss_sigma = self.resolution / self.pixel_size * 0.5
+        if LoG_sigma == 'auto':
+            if ((type(self.resolution) == float) 
+                | (type(self.resolution) == int)):
+                
+                LoG_sigma = self.resolution / self.pixel_size * 0.333
             
-        if ((LoG_sigma == None) 
-            & ((type(self.resolution) == float) 
-               | (type(self.resolution) == int))):
-            LoG_sigma = self.resolution / self.pixel_size * 0.5 
+            else:
+                raise Exception('"resolution" must be defined for the class '
+                                + 'instance to enable "LoG_sigma" '
+                                + 'auto calculation.')
+        elif type(LoG_sigma) != float or type(LoG_sigma) != int:
+            raise Exception('"LoG_sigma" must be "auto" or a float or int '
+                            + 'value.')
+            
+        if Gauss_sigma == 'auto': 
+            if ((type(self.resolution) == float) 
+                | (type(self.resolution) == int)):
         
+                Gauss_sigma = self.resolution / self.pixel_size * 0.5
+            
+            else:
+                raise Exception('"resolution" must be defined for the class '
+                                + 'instance to enable "LoG_sigma" '
+                                + 'auto calculation.')
+            
+        img_LoG = image_norm(-gaussian_laplace(self.image, LoG_sigma, 
+                                               truncate=2))
+        
+        if Gauss_sigma == None or Gauss_sigma == 0: 
+            img_gauss = img_LoG
+            
+        else: img_gauss = image_norm(gaussian_filter(self.image, Gauss_sigma,
+                                                     truncate=2))
         
         if sites_to_fit != 'all':
             at_cols = at_cols[at_cols.loc[:, filter_by].isin(sites_to_fit)]
         
-        img_LoG = image_norm(-gaussian_laplace(self.image, LoG_sigma))
-        
-        if Gauss_sigma == None or Gauss_sigma == 0: img_gauss = img_LoG
-        else: img_gauss = image_norm(gaussian_filter(self.image, Gauss_sigma))
-        
         """Apply Watershed segmentation to generate masks"""
-        masks_LoG, _, _, _ = watershed_segment(img_LoG, 
+        masks_LoG, _, _, xy_peak = watershed_segment(img_LoG, 
             edge_max_threshold = edge_max_threshold, watershed_line=True)
         
         """Gaussian blur to group columns for simultaneous fitting"""
         masks_Gauss, num_masks_Gauss, slices_Gauss, _ = watershed_segment(
             img_gauss, edge_max_threshold = 0, watershed_line=True)
         
+        """Find local peaks in img_LoG and match to reference lattice.
+        These points will be initial position guesses for fitting"""
+        xy_peak = xy_peak.loc[:, 'x':'y'].to_numpy()
+        xy_ref = at_cols.loc[:, 'x_ref':'y_ref'].to_numpy()
+        
+        vects = np.array([xy_peak - xy for xy in xy_ref])
+        
+        inds = np.argmin(np.linalg.norm(vects, axis=2), axis=1)
+        xy_peak = np.array([xy_peak[ind] for ind in inds])
+        
         """Find corresponding mask (from both LoG and Gauss filtering) for each 
             peak"""
-        
-        xy_peak = at_cols.loc[:, 'x_ref':'y_ref'].to_numpy()
-        
+                
         LoG_masks_to_peaks = ndimage.map_coordinates(masks_LoG, 
                                                      np.flipud(xy_peak.T), 
                                                      order=0).astype(int)
@@ -653,16 +714,31 @@ class AtomicColumnLattice:
         
         """Save all masks which correspond to at least one reference lattice
             point"""
-        all_masks = np.where(np.isin(masks_LoG, LoG_masks_used), masks_LoG, 0)
+        fitting_masks = np.where(np.isin(masks_LoG, LoG_masks_used), 
+                             masks_LoG, 0)
+        grouping_masks = np.where(np.isin(masks_Gauss, Gauss_masks_used), 
+                                  masks_Gauss, 0)
         
         """Find sets of reference columns for each Gaussian mask"""
         peak_groupings = [[mask_num, 
-                           np.argwhere(Gauss_masks_to_peaks==mask_num).flatten()]
+                           np.argwhere(Gauss_masks_to_peaks==mask_num
+                                       ).flatten()]
                           for mask_num in Gauss_masks_used if mask_num != 0]
         
-        max_inds = np.max([match[1].shape[0] for match in peak_groupings])
-        print('Maximum number of atomic columns grouped for simultaneous '
-              + 'fitting:', max_inds)
+        group_sizes, counts = np.unique([match[1].shape[0] 
+                                         for match in peak_groupings],
+                                        return_counts=True)
+        
+        
+        if np.max(group_sizes) > 1:
+            print('Atomic columns grouped for simultaneous fitting:')
+            for i, size in enumerate(group_sizes):
+                print(f'{counts[i]}x {size}-column groups')
+            print('\n', 
+                  'Fitting routine will be faster without simultaneous ',
+                  'fitting, but may be less accurate. If faster fitting is ',
+                  'needed set "Gauss_sigma=None". \n',
+                  sep='\n')
         
         sl_start = np.array([[slices_Gauss[i][1].start, 
                               slices_Gauss[i][0].start] 
@@ -687,67 +763,71 @@ class AtomicColumnLattice:
             num = xy_peak.shape[0]
             
             if num == 1:
-                eigvals, eigvects, x0, y0 = img_equ_ellip(img_sl)
-                max_ind = np.argmax(eigvals)
-                min_ind = 1 if max_ind==0 else 0
-                sig_max = np.sqrt(np.abs(eigvals[max_ind]))
-                sig_min = np.sqrt(np.abs(eigvals[min_ind]))
-                if sig_min == 0: sig_min = 1 
-                sig_r = sig_max / sig_min
-                theta = -np.arcsin(np.cross(np.array([1,0]), 
-                                            eigvects[:, max_ind]))
+                [x0, y0] = (xy_peak - xy_start).flatten()
+                _, _, _, theta, sig_1, sig_2 = img_ellip_param(img_sl)
+                sig_r = sig_1 / sig_2
                 I0 = (np.average(img_sl[img_sl != 0])
                       - np.std(img_sl[img_sl != 0]))
                 A0 = np.max(img_sl) - I0
  
-                p0 = np.array([[x0, y0, sig_max, sig_r, theta, A0, I0]])
+                p0 = np.array([[x0, y0, sig_1, sig_2, np.radians(theta), 
+                                A0, I0]])
                 
                 params = fit_gaussian2D(img_sl, p0)
                 
                 params = np.array([params[:,0] + xy_start[0],
-                                    params[:,1] + xy_start[1],
-                                    params[:,2],
-                                    params[:,2]/params[:,3],
-                                    params[:,3],
-                                    np.degrees(params[:,4]),
-                                    params[:,5],
-                                    params[:,6]]).T
+                                   params[:,1] + xy_start[1],
+                                   params[:,2],
+                                   # params[:,2]/params[:,3],
+                                   params[:,3],
+                                   np.degrees(params[:,4]),
+                                   params[:,5],
+                                   params[:,6]]).T
                 
                 return params
             
             if num > 1:
-                eigvals, _, _, _ = img_equ_ellip(img_sl)
-                max_ind = np.argmax(eigvals)
-                min_ind = 1 if max_ind==0 else 0
+                x0y0 = xy_peak - xy_start
+                x0 = x0y0[:, 0]
+                y0 = x0y0[:, 1]
+                masks_labeled, _ = ndimage.label(img_sl)
+                masks_to_peaks = ndimage.map_coordinates(masks_labeled, 
+                                                         np.flipud(x0y0.T), 
+                                                         order=0).astype(int)
                 
-                x0 = xy_peak[:, 0] - xy_start[0]
-                y0 = xy_peak[:, 1] - xy_start[1]
-                sig_max = [np.sqrt(np.abs(eigvals[min_ind]))] * num
-                sig_r = [1] * num
-                theta = [0] * num
-                Z0 = [np.average(img_sl[img_sl != 0])
-                      - np.std(img_sl[img_sl != 0])] 
-                I0 = [0] * num
-                A0 = [ndimage.map_coordinates(img_sl, 
-                                              np.array([y0, x0]), order=0)[0] 
-                      - Z0[0] for i in range(num)]
+                sig_1 = []
+                sig_2 = []
+                theta = []
+                Z0 = []
+                I0 = []
+                A0 = []
                 
-                if min(A0) < 0.1:
-                    Z0 += min(A0) -0.1
-                    A0 = [ndimage.map_coordinates(img_sl, np.array([y0, x0]), 
-                                                  order=0)[0] 
-                          - Z0[0] for i in range(num)]
+                for i, mask_num in enumerate(masks_to_peaks):
+                    mask = np.where(masks_labeled == mask_num, 
+                                                  1, 0)
+                    masked_sl = img_sl * mask
+                    _, _, _, theta_, sig_1_, sig_2_ = (
+                        img_ellip_param(masked_sl))
+                    sig_1 += [sig_2_]
+                    sig_2 += [sig_2_]
+                    # sig_r += [sig_1_ / sig_2_]
+                    # sig_r += [1]
+                    # theta += [np.radians(theta_)]
+                    theta += [0]
+                    I0 += [(np.average(masked_sl[masked_sl != 0])
+                          - np.std(masked_sl[masked_sl != 0]))]
+                    A0 += [np.max(masked_sl) - I0[i]]
                 
-                p0 = np.array([x0, y0, sig_max, sig_r, theta, A0, I0]).T
+                p0 = np.array([x0, y0, sig_1, sig_2, theta, A0, I0]).T
                 p0 = np.append(p0.flatten(), Z0)
                 
-                params = fit_gaussian2D(img_sl, p0, method='trust-constr')
+                params = fit_gaussian2D(img_sl, p0)#, method='trust-constr')
                 
                 params = np.array([params[:,0] + xy_start[0],
                                     params[:,1] + xy_start[1],
                                     params[:,2],
-                                    params[:,2]/params[:,3],
                                     params[:,3],
+                                    # params[:,2]/params[:,3],
                                     np.degrees(params[:,4]),
                                     params[:,5],
                                     params[:,6]]).T
@@ -757,7 +837,7 @@ class AtomicColumnLattice:
         """Run fitting routine"""
         print('Fitting atom columns with 2D Gaussians...')
         t0 = time.time()
-        if len(args_packed) >= 1e2:
+        if len(args_packed) >= 50:
             """Large data set: use parallel processing"""
             print('Using parallel processing')
             n_jobs = psutil.cpu_count(logical=False)
@@ -775,12 +855,13 @@ class AtomicColumnLattice:
                                                       arg[3].reshape(-1, 1)), 
                                                      axis=1)
                                       for arg in tqdm(args_packed)])
-           
-        print('Done. Fitting time:', time.time() - t0)
+        t_elapse = time.time() - t0
+        print(f'Done. Fitting time: {int(t_elapse // 60)} min '
+              +f'{t_elapse % 60 :.{1}f} sec')
        
         """Process results and return"""
        
-        col_labels = ['x_fit', 'y_fit', 'sig_maj', 'sig_min', 'sig_rat',
+        col_labels = ['x_fit', 'y_fit', 'sig_1', 'sig_2', #'sig_rat',
                      'theta', 'peak_int', 'bkgd_int']
         if not col_labels[0] in at_cols.columns:
            empty = pd.DataFrame(index=at_cols.index.tolist(), 
@@ -792,17 +873,29 @@ class AtomicColumnLattice:
                               columns=col_labels).sort_index()
        
         at_cols.update(results)
+        sigmas = at_cols.loc[:, 'sig_1':'sig_2'].to_numpy()
+        theta = at_cols.loc[:, 'theta'].to_numpy()
+        sig_maj_inds = list(np.argmax(sigmas, axis=1))
+        sig_min_inds = list(np.argmin(sigmas, axis=1))
+        sig_maj = sigmas[[i for i in range(sigmas.shape[0])], sig_maj_inds]
+        sig_min = sigmas[[i for i in range(sigmas.shape[0])], sig_min_inds]
+        theta += np.where(sig_maj_inds == 1, 90, 0)
+        theta = ((theta + 90) % 180) -90
+        at_cols.loc[:, 'sig_1'] = sig_maj
+        at_cols.loc[:, 'sig_2'] = sig_min
+        at_cols.loc[:, 'theta'] = theta
 
         '''Convert values from dtype objects to ints, floats, etc:'''
         at_cols = at_cols.infer_objects()
+        self.at_cols_uncropped = at_cols
         
         self.at_cols = at_cols[((at_cols.x_ref >= buffer) &
                                 (at_cols.x_ref <= self.w - buffer) &
                                 (at_cols.y_ref >= buffer) &
                                 (at_cols.y_ref <= self.h - buffer))]
 
-        self.all_masks = np.where(all_masks >= 1, 1, 0)
-        
+        self.fitting_masks = np.where(fitting_masks >= 1, 1, 0)
+        self.grouping_masks = np.where(grouping_masks >= 1, 1, 0)
         
     def refine_reference_lattice(self, filter_by='elem', 
                                  sites_to_use='all', outliers=None):
@@ -821,16 +914,16 @@ class AtomicColumnLattice:
             by the user such as to label the lattice site naming convention,
             e.g. A, B, O sites in perovskites.
             Default 'elem'. 
-        sites_to_use : str or list of strings
+        sites_to_use : str or array_like of strings
             The sites to use for refinement. 'all' or a list of the site 
             labels.
             Default 'all'.
-        outliers : None or float
+        outliers : None or float or int
             Criteria for removing outlier atomic column fits from the 
-            refinement. The maximum difference between the fitted position
-            and the corresponding reference lattice point. All positions
-            with greater errors than this value will be removed. If None, 
-            half of the smallest lattice parameter will be used.
+            reference lattice refinement (in pm). The maximum difference 
+            between the fitted position and the corresponding reference 
+            lattice point. All positions  with greater errors than this value 
+            will be removed. If None, 100 pm will be used.
             Default None.
              
         Returns
@@ -839,29 +932,35 @@ class AtomicColumnLattice:
             
         """
                     
-        if sites_to_use == 'all' or ['all']:
+        if sites_to_use == ('all' or ['all']):
             filtered = self.at_cols.copy()
-        
         else:
-            if ((type(filter_by) == list) |
-                (type(filter_by) == np.array)):
-                filtered = pd.DataFrame(columns=list(self.at_cols.columns))
-                for site in filter_by:
-                    filtered = filtered.append(self.at_cols[
-                        self.at_cols[df_col_label]  == site])
-                    
-            if type(filter_criteria) == str:
-                filtered = self.at_cols[self.at_cols[filter_by]
-                                        == filter_criteria]
+            if type(sites_to_use) == list:
+                filtered = self.at_cols[self.at_cols.loc[:, filter_by]
+                                        .isin(sites_to_use)].copy()
+            
+            elif type(sites_to_use) == str:
+                filtered = self.at_cols[self.at_cols.loc[:, filter_by]
+                                        == sites_to_use].copy()
+            else:
+                raise Exception('"sites_to_use" must be a string or a list')
+                
+        if filtered.shape[0] == 0:
+            raise Exception('No atom columns found to use for '
+                            + 'refinement with arguments given')
+            
         '''***Should do this from pixel size... in Angstroms'''
         if outliers == None:
-            outliers = np.min(np.linalg.norm(self.trans_mat, axis=1)) * 0.5
+            outliers = 1 / pixel_size
+            
+        else:
+            outliers /= self.pixel_size * 100
             
         filtered = filtered[np.linalg.norm(
             filtered.loc[:, 'x_fit':'y_fit'].to_numpy()
             - filtered.loc[:, 'x_ref':'y_ref'].to_numpy(),
             axis=1)
-            < outliers]
+            < outliers].copy()
 
         def disp_vect_sum_squares(p0, M, xy):
             
@@ -925,7 +1024,80 @@ class AtomicColumnLattice:
         print(f'Shear componenent: {shear_distortion_res :.{5}f} (radians)')
         print(f'Estimated Pixel Size: {pix_size * 100 :.{3}f} (pm)')
             
-                        
+        
+    def plot_fitting_residuals(self):
+        """Plots image residuals from the atomic column fitting.
+        
+        Plots image residuals. Subtracts gaussian fits from each corresponding 
+        masked region.
+        
+        Parameters
+        ----------
+        None.
+             
+        Returns
+        -------
+        None.
+            
+        """
+        
+        model = np.zeros(self.image.shape)
+        y, x = np.indices(self.image.shape)
+        
+        xy_peak = self.at_cols_uncropped.loc[:, 'x_fit':'y_fit'].to_numpy()
+        
+        fitting_masks, n = ndimage.label(self.fitting_masks)
+        fitting_masks_to_peaks = ndimage.map_coordinates(
+            fitting_masks, np.flipud(xy_peak.T),  order=0).astype(int)
+        
+        grouping_masks, m = ndimage.label(self.grouping_masks)
+        grouping_masks_to_peaks = ndimage.map_coordinates(
+            grouping_masks, np.flipud(xy_peak.T),  order=0).astype(int)
+        
+        fitting_masks_used = np.unique(fitting_masks_to_peaks)
+        grouping_masks_used = np.unique(grouping_masks_to_peaks)
+        
+        peak_groupings = [[mask_num, 
+                           np.argwhere(grouping_masks_to_peaks==mask_num
+                                       ).flatten()]
+                          for mask_num in grouping_masks_used 
+                          if mask_num != 0]
+        
+        print('Calculating residuals:')
+        for [mask_num, inds] in tqdm(peak_groupings):
+            masks_labeled = np.where(np.isin(fitting_masks, 
+                             fitting_masks_to_peaks[inds]), 
+                             fitting_masks, 0)
+            
+            peak = np.zeros(self.image.shape)
+            bkgd = np.zeros(self.image.shape)
+            for ind in inds:
+                ind_ = self.at_cols_uncropped.index.tolist()[ind]
+                row = self.at_cols_uncropped.loc[ind_, :]
+                peak += gaussian_2d(x, y, row.x_fit, row.y_fit,
+                                   row.sig_1, row.sig_2, 
+                                   -row.theta, row.peak_int, 0)
+                if fitting_masks_to_peaks[ind] != 0:
+                    bkgd += (np.where(masks_labeled == 
+                                      fitting_masks_to_peaks[ind], 1, 0) 
+                             * row.bkgd_int)
+            peak *= np.where(masks_labeled > 0, 1, 0)
+            model += peak + bkgd
+        print('Done', '\n')
+        self.residuals = self.image * self.fitting_masks - model
+
+        cmap_lim = np.max(np.abs(self.residuals))
+        
+        fig,axs = plt.subplots(ncols=1,figsize=(10,10), tight_layout=True)
+        axs.set_xticks([])
+        axs.set_yticks([])
+        axs.imshow(self.residuals, cmap='bwr', 
+                   norm=Normalize(vmin=-cmap_lim, vmax=cmap_lim))
+        axs.scatter(self.at_cols.loc[:,'x_fit'], self.at_cols.loc[:,'y_fit'],
+                    color='red', s=4)        
+        R = self.residuals.ravel()
+        print(f'Sum of the squared residuals: {R @ R.T :.{3}f}')
+
     def rotate_image_and_data(self, align_dir='horizontal',
                               align_basis='a1'):
         """Rotates the image and data to align a basis vector to image edge.
@@ -949,6 +1121,7 @@ class AtomicColumnLattice:
         rot_: AtomicColumnLattice object with rotated image and data.
             
         """
+        
         rot_ = copy.deepcopy(self)
         if align_dir == 'horizontal' or align_dir == 'vertical':
             pass
@@ -973,7 +1146,8 @@ class AtomicColumnLattice:
         print('Rotation angle:', np.degrees(angle))
         
         rot_.image = ndimage.rotate(rot_.image, np.degrees(angle))
-        rot_.all_masks = ndimage.rotate(rot_.all_masks, np.degrees(angle))
+        rot_.fitting_masks = ndimage.rotate(rot_.fitting_masks, 
+                                            np.degrees(angle))
         
         '''Translation of image center due to increased image array size
             resulting from the rotation'''
@@ -1067,7 +1241,7 @@ class AtomicColumnLattice:
         fig,axs = plt.subplots(ncols=1,figsize=(10,10), tight_layout=True)
         
         if plot_masked_image == True:
-            axs.imshow(self.image * self.all_masks, cmap='gray')
+            axs.imshow(self.image * self.fitting_masks, cmap='gray')
         else:
             axs.imshow(self.image, cmap='gray')
         axs.set_xticks([])
@@ -1110,6 +1284,159 @@ class AtomicColumnLattice:
                       length_includes_head=True,
                       head_width=2, head_length=3, label=r'[110]')
         
+    def plot_disp_vects(self, filter_by='elem', sites_to_plot='all', 
+                        titles=None, x_crop=None, y_crop=None,
+                        scalebar=True, scalebar_len_nm=2,
+                        max_colorwheel_range_pm=None,
+                        plot_fit_points=False, plot_ref_points=False):
         
+        if sites_to_plot == 'all':
+            sites_to_plot = self.at_cols.loc[:, filter_by].unique().tolist()
+        elif type(sites_to_plot) != list:
+            raise Exception('"sites_to_plot" must be either "all" or a list')
+       
+        if max_colorwheel_range_pm == None:
+            filtered = self.at_cols[self.at_cols.loc[:, filter_by]
+                                    .isin(sites_to_plot)]
+            dxy = (filtered.loc[:,'x_fit':'y_fit'].to_numpy()
+                   - filtered.loc[:,'x_ref':'y_ref'].to_numpy())
+            mags = np.linalg.norm(dxy, axis=1) * self.pixel_size * 100
+            avg = np.mean(mags)
+            std = np.std(mags)
+            max_colorwheel_range_pm = int(np.ceil((avg + 3*std)/5) * 5)
+            
+        if y_crop[0] < y_crop[1]:
+            y_crop = [y_crop[1], y_crop[0]]
         
+        n_plots = len(sites_to_plot)
+        if n_plots > 12:
+            raise Exception('The number of plots exceeds the limit of 8.')
+        
+        if n_plots <= 3:
+            nrows = 1
+            ncols = n_plots
+            width_ratios=[3] * ncols + [1]
+            
+        elif n_plots <= 8:
+            nrows = 2
+            ncols = np.ceil(n_plots/2)
+            width_ratios=[3] * ncols + [1]
+            
+        elif n_plots <= 12:
+            nrows = 3
+            ncols = np.ceil(n_plots/3)
+            width_ratios=[3] * ncols + [1]
+            
+        else:
+            raise Exception('The number of plots exceeds the limit of 12.')
+        
+        figsize=(ncols * 5 + 2, 5 * nrows)
+    
+        fig = plt.figure(figsize=figsize)#, tight_layout=True)
+        gs = fig.add_gridspec(nrows=nrows, ncols=ncols + 1, 
+                              width_ratios=width_ratios,
+                              height_ratios=[3 for _ in range(nrows)], 
+                              wspace=0.05)
+        if x_crop == None:
+            x_crop=[0, self.w] 
+        if y_crop == None:
+            y_crop=[self.h, 0],
+        
+        for ax, site in enumerate(sites_to_plot):
+            row = ax // 3
+            col = ax % 3
+            axs = fig.add_subplot(gs[row, col])
+            axs.imshow(self.image, cmap='gray')
+
+            axs.set_xlim(x_crop[0], x_crop[1])
+            axs.set_ylim(y_crop[0], y_crop[1])
+            
+            axs.set_xticks([])
+            axs.set_yticks([])
+
+            if ax == 2 and scalebar == True:
+                scalebar = ScaleBar(self.pixel_size/10,
+                                    'nm', location='lower right', pad=0.4, 
+                                    fixed_value=2, font_properties={'size':10}, 
+                                    box_color='lightgrey', width_fraction=0.02,
+                                    sep=2)
+                axs.add_artist(scalebar)
+                
+            sub_latt = self.at_cols[self.at_cols.loc[:, filter_by] == site]
+        
+            axs.text(x_crop[0]+10, y_crop[1]-20, sites_to_plot[ax], 
+                     color='black', size=12,
+                      weight='bold')
+            
+            
+            hsv = np.ones((sub_latt.shape[0], 3))
+            dxy = (sub_latt.loc[:,'x_fit':'y_fit'].to_numpy()
+                   - sub_latt.loc[:,'x_ref':'y_ref'].to_numpy())
+            
+            disp_pm = (np.linalg.norm(dxy, axis=1) * self.pixel_size * 100)
+            normed = disp_pm / max_colorwheel_range_pm
+            print(f'Displacement statistics for {site}:',
+                  f'average: {np.mean(disp_pm)  :.{2}f} (pm)',
+                  f'standard deviation: {np.std(disp_pm)  :.{2}f} (pm)',
+                  f'maximum: {np.max(disp_pm)  :.{2}f} (pm)',
+                  f'minimum: {np.min(disp_pm)  :.{2}f} (pm)',
+                  '\n',
+                  sep='\n')
+            hsv[:, 2] = np.where(normed>1, 1, normed)
+            hsv[:, 0] = (np.arctan2(dxy[:,0], dxy[:,1]) 
+                         + np.pi/2)/(2*np.pi) % 1
+            rgb = colors.hsv_to_rgb(hsv)
+            
+            if plot_fit_points:
+                axs.scatter(sub_latt.loc[:,'x_fit'], sub_latt.loc[:,'y_fit'],
+                            color='blue', s=1)
+            if plot_ref_points: 
+                axs.scatter(sub_latt.loc[:,'x_ref'], sub_latt.loc[:,'y_ref'],
+                            color='red', s=1)
+            cb = axs.quiver(sub_latt.loc[:,'x_ref'], sub_latt.loc[:,'y_ref'], 
+                            dxy[:, 0], dxy[:, 1],
+                            color=rgb,
+                            angles='xy', scale_units='xy', scale=0.05,
+                            headlength=20, headwidth=10, headaxislength=20,
+                            edgecolor='white', linewidths=0.5)
+        
+        def colour_wheel(samples=1024, clip_circle=True):
+            xx, yy = np.meshgrid(
+                np.linspace(-1, 1, samples), np.linspace(-1, 1, samples))
+        
+            v = np.sqrt(xx ** 2 + yy ** 2)
+            if clip_circle == True:
+                v[v>0.99] = 1
+            h = ((np.arctan2(xx, yy) + np.pi/2) / (np.pi * 2)) % 1
+            hsv = np.ones((samples, samples, 3))
+            hsv[:,:,0] = h
+            hsv[:,:,1][v == 1] = 0
+            hsv[:,:,2] = v
+            
+            rgb = colors.hsv_to_rgb(hsv)
+            
+            alpha = np.expand_dims(np.where(v == 0, 0, 1), 2)
+            hsv = np.concatenate((hsv, alpha), axis=2)
+            
+            return rgb
+        
+        rgb=colour_wheel()
+        legend = fig.add_subplot(gs[-1])
+        legend.imshow(rgb)
+        legend.set_xticks([])
+        legend.set_yticks([])
+        r=rgb.shape[0]/2
+        circle = Wedge((r,r), r-5, 0, 360, width=5, color='black')
+        legend.add_artist(circle)
+        legend.axis('off')
+        legend.axis('image')
+        legend.text(0.5, -.35, 
+                    f'Displacement\n(0 - {max_colorwheel_range_pm} pm)', 
+                    transform=legend.transAxes,
+                    horizontalalignment='center', 
+                    fontsize=7, fontweight='bold')
+        
+        fig.subplots_adjust(hspace=0, wspace=0, 
+                            top=0.9, bottom=0.01, 
+                            left=0.01, right=0.99)
         
