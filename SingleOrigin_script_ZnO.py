@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 import imageio
-from matplotlib import colors as colors
+from matplotlib import colors as colors 
 from matplotlib.patches import Wedge
 import matplotlib.gridspec as gridspec
 from matplotlib.patches import Circle as Circle
@@ -11,23 +11,23 @@ import copy
 
 from matplotlib_scalebar.scalebar import ScaleBar
 
+from scipy.ndimage.filters import (gaussian_filter, gaussian_laplace, 
+                                   maximum_filter)
+
 from SingleOrigin import *
 
 #%%
 """Location of image data"""
 
 path = 'STEM_Images/dDPC_ZnO.tif'
-# path = 'STEM_Images/1926 20210726 DF4 7.60 Mx ZnO_3 iDPC_SDCorr.tif'
 
 #%%
 """Structure import from .cif and project"""
 
-# cif_path = 'ZnO_mp-2133_symmetrized.cif'
-# cif_path = 'ZnO_drprobe.cif'
-cif_path = 'ZnO.cif'
+cif_path = 'ZnO_mp-2133_symmetrized.cif'
 
 za = [1,1,0]            #Zone Axis direction
-a2 = [-1,1,0]         #Apparent horizontal axis in projection
+a2 = [1,-1,0]         #Apparent horizontal axis in projection
 a3 = [0,0,1]          #Most vertical axis in projection
 #%%
 """Find 3D coordinates of unit cell, metric tensor and 3D direct 
@@ -37,7 +37,7 @@ uc = UnitCell(cif_path)
 uc.transform_basis(za, a2, a3)
 
 """Project Unit Cell to 2D and combine coincident/proximate columns"""
-uc.project_uc_2d(proj_axis = 0, ignore_elements = []) 
+uc.project_uc_2d(proj_axis = 0, ignore_elements = [], unique_proj_cell=True) 
 
 uc.combine_prox_cols(toler = 1e-2)
 
@@ -46,18 +46,19 @@ uc.plot_unit_cell()
 #%%
 """Import experimental image and normalize to 0-1"""
 image = import_image(path, display_image=True)
+# image = image_norm(-gaussian_laplace(image, 1, truncate=4))
 
 #%%
 """Initialize AtomicColumnLattice object"""
 
-acl = AtomicColumnLattice(image, uc, resolution=0.8, 
-                          xlim=None, ylim=None)
+acl = AtomicColumnLattice(image, uc, resolution=0.8)#, 
+                          # xlim=[200,-200], ylim=[200,-200])
 
 """Get real space basis vectors using the FFT
 if some FFT peaks are weak or absent (such as forbidden reflections), 
 specify the order of the first peak that is clearly visible"""
 
-acl.fft_get_basis_vect(a1_order=1, a2_order=2, sigma=1.5)
+acl.fft_get_basis_vect(a1_order=1, a2_order=2, sigma=2)
 
 #%%
 """Generate a mathematical lattice from the basis vectors and unit cell 
@@ -74,7 +75,8 @@ parameters
 "Gauss_sigma=None". Be careful to results (including residuals) to verify 
 accuracy."""
 
-acl.fit_atom_columns(edge_max_threshold=1.1, buffer=0, Gauss_sigma='auto')
+acl.fit_atom_columns(edge_max_threshold=0.8, buffer=20, Gauss_sigma='auto',
+                     LoG_sigma='auto')
 
  #%%
 """Use the fitted atomic column positions to refine the basis vectors and 
@@ -82,7 +84,7 @@ acl.fit_atom_columns(edge_max_threshold=1.1, buffer=0, Gauss_sigma='auto')
     -It is best to choose a well defined sublattice with minimal 
     displacements. """
     
-acl.refine_reference_lattice('elem', 'Zn', outliers=30)
+acl.refine_reference_lattice('elem', 'Zn', outliers=20)
 
 #%%
 """Check image residuals after fitting"""
@@ -98,7 +100,7 @@ acl.plot_fitting_residuals()
 #%%
 """Plot Column positions with color indexing"""
 acl.plot_atom_column_positions(filter_by='elem', sites_to_fit='all',
-                               fit_or_ref='fit', 
+                               fit_or_ref='fit', outliers=30,
                                plot_masked_image=True)
 
 #%%
@@ -106,7 +108,23 @@ acl.plot_atom_column_positions(filter_by='elem', sites_to_fit='all',
 acl.plot_disp_vects(filter_by='elem', sites_to_plot='all', titles=None,
                         x_crop=[0, acl.w], y_crop=[acl.h, 0],
                         scalebar=True, scalebar_len_nm=2,
-                        max_colorwheel_range_pm=None,
+                        outliers=30, max_colorwheel_range_pm=None,
+                        plot_fit_points=False, plot_ref_points=False)
+
+#%%
+"""Demo without simultaneous fitting"""
+acl_nosimult = copy.deepcopy(acl)
+acl_nosimult.fit_atom_columns(edge_max_threshold=0.8, buffer=20, 
+                              Gauss_sigma=None,  LoG_sigma='auto')
+acl_nosimult.refine_reference_lattice('elem', 'Zn', outliers=20)
+acl_nosimult.plot_fitting_residuals()
+acl_nosimult.plot_atom_column_positions(filter_by='elem', sites_to_fit='all',
+                                        fit_or_ref='fit', outliers=30,
+                                        plot_masked_image=True)
+acl_nosimult.plot_disp_vects(filter_by='elem', sites_to_plot='all', titles=None,
+                        x_crop=[0, acl.w], y_crop=[acl.h, 0],
+                        scalebar=True, scalebar_len_nm=2,
+                        outliers=30, max_colorwheel_range_pm=None,
                         plot_fit_points=False, plot_ref_points=False)
 
 #%%
@@ -116,7 +134,7 @@ acl.plot_disp_vects(filter_by='elem', sites_to_plot='all', titles=None,
 acl_rot = acl.rotate_image_and_data(align_basis='a1', align_dir='horizontal')
 
 acl_rot.plot_atom_column_positions(filter_by='elem', sites_to_fit='all',
-                                   fit_or_ref='fit', 
+                                   fit_or_ref='fit', outliers=20,
                                    plot_masked_image=False)
 
 #%%
@@ -124,5 +142,6 @@ acl_rot.plot_atom_column_positions(filter_by='elem', sites_to_fit='all',
 acl_rot.plot_disp_vects(filter_by='elem', sites_to_plot='all', titles=None,
                         x_crop=[0, acl_rot.w], y_crop=[acl_rot.h, 0],
                         scalebar=True, scalebar_len_nm=2,
-                        max_colorwheel_range_pm=10,
+                        max_colorwheel_range_pm=None,
                         plot_fit_points=False, plot_ref_points=False)
+    
