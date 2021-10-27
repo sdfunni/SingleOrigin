@@ -292,7 +292,7 @@ def img_ellip_param(image):
     x0, y0 : coordinates of the ellipse center
     eccen : eccentricity of the ellipse (standard mathmatical definition)
     theta : rotation angle of the major semi-axis relative to horizontal 
-        (positive is counterclockwise)
+        in degrees (positive is counterclockwise)
     sig_1 : magnitude of the major semi-axis
     sig_2 : magnitude of the major semi-axis
     
@@ -334,9 +334,7 @@ def gaussian_2d(x, y, x0, y0, sig_1, sig_2, ang, A=1, I_o=0):
     
     """
     
-    # sig_1 = float(sig_1)
-    # sig_2 = float(sig_1/sig_ratio)
-    ang = np.radians(-ang) #negative due to origin being at top left of image
+    ang = np.radians(-ang) #negative due to inverted y axis in python
     I = I_o + A*np.exp(-1/2*(
            ((np.cos(ang) * (x - x0) + np.sin(ang) * (y - y0)) / sig_1)**2
            +((-np.sin(ang) * (x - x0) + np.cos(ang) * (y - y0)) / sig_2)**2))
@@ -396,8 +394,6 @@ def gaussian2d_ss(p0, x, y, z, img_shape):
         R -= p0[0, -1]
     for p0_ in p0:
         [x0, y0, sig_1, sig_2, ang, A, _] = p0_
-        # sig_1 = float(sig_1)
-        # sig_2 = float(sig_1/sig_ratio)
         R -= (A*np.exp(-1/2*(((np.cos(ang) * (x - x0)
                                + np.sin(ang) * (y - y0)) / sig_1)**2
                              +((-np.sin(ang) * (x - x0) 
@@ -450,8 +446,8 @@ def fit_gaussian2D(data, p0, method='L-BFGS-B'):
     x = np.take(x, unmasked_data)
     y = np.take(y, unmasked_data)
     
-    bounds = [(-np.inf, np.inf), (-np.inf, np.inf), (0, np.inf), (0, np.inf), 
-              (-2*np.pi, 2*np.pi), (0,2), (0,1)] * num_gauss 
+    bounds = [(-np.inf, np.inf), (-np.inf, np.inf), (1, np.inf), (1, np.inf), 
+              (-4*np.pi, 4*np.pi), (0,2), (0,1)] * num_gauss 
     
     p0_ = p0_.flatten()
     
@@ -584,4 +580,4 @@ def watershed_segment(image, sigma=None, buffer=0, edge_max_threshold = 0.95,
     peaks = peaks.reset_index(drop=True)
     
     return masks, num_masks, slices, peaks
-  
+
