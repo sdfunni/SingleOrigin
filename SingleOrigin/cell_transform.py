@@ -175,8 +175,7 @@ class UnitCell():
         None.
             
         """
-        # a1_ = a1_ / (np.min(np.abs(a1_)[np.abs(a1_)>0]) * np.sum(np.abs(a1_)))
-        # a2_ = a2_ / (np.min(np.abs(a2_)[np.abs(a2_)>0]) * np.sum(np.abs(a2_)))
+        
         alpha_t=np.array([a1_, a2_, a3_])
         
         a1_mag = bond_length([0,0,0], alpha_t[0], self.g)
@@ -215,6 +214,7 @@ class UnitCell():
         atoms.reset_index(drop=True, inplace=True)
         atoms.loc[:, 'u':'w'] = (atoms.loc[:, 'u':'w'].to_numpy()
                                  + latt_cells_) @ np.linalg.inv(alpha_t)
+        atoms.loc[:, 'u':'w'] = np.around(atoms.loc[:, 'u':'w'], decimals=5)
         
         '''Reduce to new unit cell'''
         atoms = atoms[((atoms.u >= 0) & (atoms.u < 1) &
