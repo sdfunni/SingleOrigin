@@ -16,7 +16,7 @@ from SingleOrigin import *
 #%%
 """Location of image data"""
 
-path = '/Users/funni/Downloads/STO_RevSTEM_HAADF.tif'
+path = '/Users/funni/Downloads/RevSTEM_HAADF.tif'
 
 #%%
 """Structure import from .cif and project"""
@@ -39,7 +39,7 @@ uc.project_uc_2d(proj_axis = 0, ignore_elements = ['O'])
 
 uc.combine_prox_cols(toler = 1e-2)
 
-uc.plot_unit_cell()
+# uc.plot_unit_cell()
 
 #%%
 """Import experimental image and normalize to 0-1"""
@@ -49,12 +49,10 @@ image = import_image(path, display_image=True)
 """Define offset (in fractional coordinates from the unit cell origin) 
 of an easily picked atom column"""
 
-basis_offset = [0, 0]
-
 """Initialize AtomicColumnLattice object"""
 
 acl = AtomicColumnLattice(image, uc, resolution=0.8,
-                          basis_offset_frac=basis_offset)
+                          xlim=None, ylim=None)
 
 """Get real space basis vectors using the FFT
 if some FFT peaks are weak or absent (such as forbidden reflections), 
@@ -68,12 +66,17 @@ acl.fft_get_basis_vect(a1_order=1, a2_order=1, sigma=2)
 
 acl.define_reference_lattice()
 
+#%%
 """Fit atom columns at reference lattice points
 -Automatically decides what filters to use based on resolution (input above) 
 and pixel size (determined from basis vectors lengths compared to .cif lattice 
-parameters"""
+parameters
+-If fitting is extremely slow due to simultaneous fitting, set 
+"Gauss_sigma=None". Be careful to results (including residuals) to verify 
+accuracy."""
 
-acl.fit_atom_columns(edge_max_threshold=1.5, buffer=40)
+acl.fit_atom_columns(edge_max_threshold=0.95, buffer=40, Gauss_sigma='auto',
+                     LoG_sigma='auto')
 
 #%%
 """Use the fitted atomic column positions to refine the basis vectors and 
@@ -83,31 +86,33 @@ acl.fit_atom_columns(edge_max_threshold=1.5, buffer=40)
     -If no sublattice meets this criteria, specify a specific column in the 
         projected cell."""
  
-acl.refine_reference_lattice()#'elem', 'Sr')
-
+acl.refine_reference_lattice(filter_by='elem', sites_to_use='Sr', outliers=30)
 
 #%%
 """Check image residuals after fitting"""
-""" *** This is what I was talking about. I need to make a function that 
-does this, but better. """
+"""Plots image residuals after fitting according to the following:
+    1) subtracts fitted gaussians from image intensity.
+    2) then applies masks used for fitting.
+    3) background intensity values from the gaussian fits are not subtracted.
+    Should look for small and relatively flat 
+    """
 
-residuals = copy.deepcopy(acl.image)
-y, x = np.indices(acl.image.shape)
-for row in acl.at_cols.itertuples():
-    peak = gaussian_2d(x, y, row.x_fit, row.y_fit ,row.sig_maj,
-                             row.sig_rat, -row.theta, row.peak_int, 
-                             0)
-    residuals -= peak
+acl.plot_fitting_residuals()
 
-plt.figure()
-plt.imshow(residuals*acl.all_masks)
-plt.scatter(filtered.loc[:,'x_fit'], filtered.loc[:,'y_fit'],
-            c=color_list, s=4, cmap='RdYlGn')
 #%%
 """Plot Column positions with color indexing"""
 acl.plot_atom_column_positions(filter_by='elem', sites_to_fit='all',
-                               fit_or_ref='fit', 
-                               plot_masked_image=False)
+                               fit_or_ref='fit', outliers=30,
+                               plot_masked_image=True)
+
+#%%
+"""Plot displacements from reference lattice"""
+acl.plot_disp_vects(filter_by='elem', sites_to_plot='all', titles=None,
+                    x_crop=[0, acl.w], y_crop=[acl.h, 0],
+                    # x_crop=[0, 500], y_crop=[500, 0],
+                    scalebar=True, scalebar_len_nm=2,
+                    max_colorwheel_range_pm=None,
+                    plot_fit_points=False, plot_ref_points=False)
 
 #%%
 """Rotate the image and data to align a desired basis vector to horizontal
@@ -119,3 +124,10 @@ acl_rot = acl.rotate_image_and_data(align_basis='a1', align_dir='horizontal')
 acl_rot.plot_atom_column_positions(filter_by='elem', sites_to_fit='all',
                                    fit_or_ref='fit', 
                                    plot_masked_image=False)
+
+#%%
+"""Plot displacements from reference lattice"""
+acl_rot.plot_disp_vects(filter_by='elem', sites_to_plot='all', titles=None,
+                        x_crop=[0, acl_rot.w], y_crop=[acl_rot.h, 0],
+                        scalebar=True, scalebar_len_nm=2,
+                        max_colorwheel_range_pm=25)
