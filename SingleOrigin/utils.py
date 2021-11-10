@@ -569,6 +569,7 @@ def detect_peaks(image, min_dist=4, thresh=0):
                             ).reshape((size,size))
     peaks = (maximum_filter(image,footprint=neighborhood)==image
              ) * (image > thresh)
+    print(neighborhood)
     return peaks.astype(int)
 
 
@@ -598,7 +599,7 @@ def watershed_segment(image, sigma=None, buffer=0, local_thresh_factor = 0.95,
          
     Returns
     -------
-    masks_ref : 2D array with same shape as image
+    masks : 2D array with same shape as image
     num_masks : int
         The number of masks
     slices : List of image slices which contain each region
@@ -611,9 +612,7 @@ def watershed_segment(image, sigma=None, buffer=0, local_thresh_factor = 0.95,
     [h, w] = image.shape
     
     if type(sigma) in (int, float, tuple):
-        print('log...')
         img_der = image_norm(-gaussian_laplace(img_der, sigma))
-        # img_der = image_norm(-gaussian_laplace(img_der, sigma))
         
     local_max, _ = ndimage.label(detect_peaks(image, min_dist=min_dist))
     
@@ -621,18 +620,19 @@ def watershed_segment(image, sigma=None, buffer=0, local_thresh_factor = 0.95,
     slices = ndimage.find_objects(masks)
     num_masks = int(np.max(masks))
     
-    masks_ref = np.zeros(image.shape)
-    
     """Refine masks with local_thresh_factor"""
-    for i in range(num_masks):
-        mask_sl = np.where(masks[slices[i][0],slices[i][1]]== i+1, 1, 0)
-        img_der_sl = img_der[slices[i][0],slices[i][1]]
-        edge = mask_sl - ndimage.morphology.binary_erosion(mask_sl)
-        thresh = np.max(edge*img_der_sl) * local_thresh_factor
-        mask_sl = np.where(mask_sl*img_der_sl > thresh, 1, 0)
-        masks_ref[slices[i][0],slices[i][1]] += mask_sl * (i+1)
+    if local_thresh_factor > 0:
+        masks_ref = np.zeros(image.shape)
         
-    masks = masks_ref
+        for i in range(num_masks):
+            mask_sl = np.where(masks[slices[i][0],slices[i][1]]== i+1, 1, 0)
+            img_der_sl = img_der[slices[i][0],slices[i][1]]
+            edge = mask_sl - ndimage.morphology.binary_erosion(mask_sl)
+            thresh = np.max(edge*img_der_sl) * local_thresh_factor
+            mask_sl = np.where(mask_sl*img_der_sl > thresh, 1, 0)
+            masks_ref[slices[i][0],slices[i][1]] += mask_sl * (i+1)
+            
+        masks = masks_ref
     
     _, peak_xy = np.unique(local_max, return_index=True)
     peak_xy = np.fliplr(np.array(np.unravel_index(peak_xy, 
