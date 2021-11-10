@@ -645,7 +645,7 @@ class AtomicColumnLattice:
         """
         
         print('Creating atom column masks...')
-        
+        t0 = time.time()
         self.buffer = buffer
         use_Guass_for_LoG = False
         use_LoG_for_Gauss = False
@@ -712,23 +712,29 @@ class AtomicColumnLattice:
                   + 'recommended. Check results carefully.')
         else:
             if use_Guass_for_LoG:
-                img_LoG = image_norm(-gaussian_laplace(self.image, 
+                img_LoG = image_norm(gaussian_filter(self.image, 
                                                        grouping_filter, 
                                                        truncate=4))
+                print('LoG using Gauss:', grouping_filter)
+                
             else:
                 img_LoG = image_norm(-gaussian_laplace(self.image, 
                                                        diff_filter, 
                                                        truncate=4))
-                
+                print('LoG using LoG:', diff_filter)
             if use_LoG_for_Gauss:
                 img_gauss = image_norm(-gaussian_laplace(self.image, 
                                                          diff_filter, 
                                                          truncate=4))
+                print('Gauss using LoG:', diff_filter)
             else:
-                img_gauss = image_norm(-gaussian_laplace(self.image, 
+                img_gauss = image_norm(gaussian_filter(self.image, 
                                                          grouping_filter, 
                                                          truncate=4))
+                print('Gauss using Gauss:', grouping_filter)
             
+        t1 = time.time()
+        print(f'initial checks and filtering: {t1 - t0}.')
         
         if sites_to_fit != 'all':
             at_cols = at_cols[at_cols.loc[:, filter_by].isin(sites_to_fit)]
@@ -797,6 +803,9 @@ class AtomicColumnLattice:
         self.fitting_masks = np.where(fitting_masks >= 1, fitting_masks, 0)
         self.grouping_masks = np.where(grouping_masks >= 1, grouping_masks, 0)
         
+        t2 = time.time()
+        print(f'create masks: {t2 - t1}.')
+        
         """Find sets of reference columns for each grouping mask"""
         peak_groupings = [[mask_num, 
                            np.argwhere(Gauss_masks_to_peaks==mask_num
@@ -820,7 +829,8 @@ class AtomicColumnLattice:
         sl_start = np.array([[slices_Gauss[i][1].start, 
                               slices_Gauss[i][0].start] 
                              for i in range(num_grouping_masks)])
-
+        t3 = time.time()
+        print(f'match masks to peaks: {t3 - t2}.')
         """Pack image slices and metadata together for the fitting routine"""
         print('Preparing data for fitting...')
         args_packed = [[self.image[slices_Gauss[mask_num-1][0],
@@ -836,6 +846,7 @@ class AtomicColumnLattice:
         
         """Define column fitting function for image slices"""
         
+
         def fit_column(args):
             [img_sl, mask_sl, log_mask_num, xy_start, xy_peak, inds, mask_num
              ] = args
