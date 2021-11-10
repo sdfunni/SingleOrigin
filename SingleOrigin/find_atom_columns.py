@@ -1114,27 +1114,24 @@ class AtomicColumnLattice:
             < outliers].copy()
         
         xy_peak = filtered.loc[:, 'x_fit':'y_fit'].to_numpy()
+        xy_ref = filtered.loc[:, 'x_ref':'y_ref'].to_numpy()
         
         fitting_masks, n = ndimage.label(self.fitting_masks)
         fitting_masks_to_peaks = ndimage.map_coordinates(
             fitting_masks, np.flipud(xy_peak.T),  order=0).astype(int)
+        missing_masks=0
         for i, num in enumerate(fitting_masks_to_peaks):
             if num == 0:
-                print('found zero, fixing...')
-                for j in range(n):
-                    mask = np.where(fitting_masks == j+1, fitting_masks, 0)
-                    mask_dilated = ndimage.morphology.binary_dilation(
-                        mask, iterations=1) * (j+1)
-                    mask_new = ndimage.map_coordinates(
-                        mask_dilated, 
-                        np.flipud(xy_peak[i,:].reshape((-1,2)).T),  
-                        order=0).astype(int)
-                    if mask_new != 0: break
+                mask_new = ndimage.map_coordinates(
+                                fitting_masks, 
+                                np.flipud(xy_ref[i,:].reshape((-1,2)).T),  
+                                order=0).astype(int)
+                if mask_new == 0: 
+                    missing_masks += 1
                 fitting_masks_to_peaks[i] = mask_new
-                print(fitting_masks_to_peaks[i])
-                
-            if fitting_masks_to_peaks[i] == 0:
-                print('could not find matching mask')
+
+        print(f'Could not could match {missing_masks} atom columns to '
+              + 'masks. Residuals estimate may be affected.')
         
         grouping_masks, m = ndimage.label(self.grouping_masks)
         grouping_masks_to_peaks = ndimage.map_coordinates(
@@ -1205,10 +1202,15 @@ class AtomicColumnLattice:
                     norm=Normalize(vmin=-cmap_lim, vmax=cmap_lim))
         axs.scatter(self.at_cols.loc[:,'x_fit'], self.at_cols.loc[:,'y_fit'],
                     color='red', s=4)        
+       
         R = self.residuals.ravel()
+        I_meas = (self.image * self.fitting_masks).ravel()
         
-        print(f'Sum of the squared residuals: {R @ R.T :.{3}f}')
-        print(f'Absolute sum of the residuals: {np.sum(R) :.{3}e}')
+        R_factor = (R @ R) / (I_meas @ I_meas)
+        R_sum = np.sum(R)
+
+        print(f'R-factor of all atom column fits: {R_factor * 100 :.{4}f}% \n')
+        print(f'Sum of residuals: {R_sum}')
 
     def rotate_image_and_data(self, align_dir='horizontal',
                               align_basis='a1'):
