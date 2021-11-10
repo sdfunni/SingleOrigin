@@ -1,16 +1,3 @@
-import numpy as np
-import matplotlib.pyplot as plt
-import pandas as pd
-import imageio
-from matplotlib import colors as colors
-from matplotlib.patches import Wedge
-import matplotlib.gridspec as gridspec
-from matplotlib.patches import Circle as Circle
-from matplotlib.legend_handler import HandlerPatch
-import copy
-
-from matplotlib_scalebar.scalebar import ScaleBar
-
 from SingleOrigin import *
 
 #%%
@@ -39,7 +26,7 @@ uc.project_uc_2d(proj_axis = 0, ignore_elements = ['O'])
 
 uc.combine_prox_cols(toler = 1e-2)
 
-# uc.plot_unit_cell()
+uc.plot_unit_cell()
 
 #%%
 """Import experimental image and normalize to 0-1"""
@@ -72,11 +59,12 @@ acl.define_reference_lattice()
 and pixel size (determined from basis vectors lengths compared to .cif lattice 
 parameters
 -If fitting is extremely slow due to simultaneous fitting, set 
-"Gauss_sigma=None". Be careful to results (including residuals) to verify 
+"Gauss_sigma" to None or a small value. (See docstring for details of 'auto' 
+setting.) Be careful to check results (including residuals) to verify 
 accuracy."""
 
-acl.fit_atom_columns(edge_max_threshold=0.95, buffer=40, Gauss_sigma='auto',
-                     LoG_sigma='auto')
+acl.fit_atom_columns(buffer=10, local_thresh_factor=0.95, 
+                     grouping_filter='auto', diff_filter='auto')
 
 #%%
 """Use the fitted atomic column positions to refine the basis vectors and 
