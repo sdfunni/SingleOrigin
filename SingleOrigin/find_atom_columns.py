@@ -624,8 +624,8 @@ class AtomicColumnLattice:
             Removes background from each segmented region by thresholding. 
             Threshold value determined by finding the maximum value of edge 
             pixels in the segmented region and multipling this value by the 
-            local_thresh_factor value. The filtered image is used for this 
-            calculation. Default 0.95.
+            local_thresh_factor value. The LoG-filtered image (with 
+            sigma=diff_filter) is used for this calculation. Default 0.95.
         buffer : int
             Distance defining the image border used to ignore atom columns 
             whose fits my be questionable.
@@ -647,6 +647,8 @@ class AtomicColumnLattice:
         print('Creating atom column masks...')
         
         self.buffer = buffer
+        use_Guass_for_LoG = False
+        use_LoG_for_Gauss = False
         
         if self.at_cols.shape[0] == 0:
             at_cols = self.at_cols_uncropped.copy()
@@ -656,20 +658,6 @@ class AtomicColumnLattice:
                 [i for i in self.at_cols_uncropped.index.tolist()
                  if i not in at_cols.index.tolist()], 
                 :]])
-            
-        if diff_filter == 'auto':
-            if ((type(self.resolution) == float) 
-                | (type(self.resolution) == int)):
-                
-                diff_filter = self.resolution / self.pixel_size * 0.5
-            
-            else:
-                raise Exception('"resolution" must be defined for the class '
-                                + 'instance to enable "diff_filter" '
-                                + 'auto calculation.')
-        elif type(diff_filter) != float and type(diff_filter) != int:
-            raise Exception('"diff_filter" must be "auto" or a positive float '
-                            + 'or int value.')
             
         if grouping_filter == 'auto': 
             if ((type(self.resolution) == float) 
@@ -682,18 +670,68 @@ class AtomicColumnLattice:
                                 + 'instance to enable "diff_filter" '
                                 + 'auto calculation.')
                 
-        img_LoG = image_norm(-gaussian_laplace(self.image, diff_filter, 
-                                                truncate=4))
-        
-        if grouping_filter == None or grouping_filter == 0: 
-            img_gauss = img_LoG
+        elif grouping_filter == None: 
+            use_LoG_for_Gauss = True
             
-        else: img_gauss = image_norm(gaussian_filter(self.image, grouping_filter,
-                                                     truncate=4))
+        elif ((type(grouping_filter) == float or type(grouping_filter) == int) and
+              grouping_filter > 0):
+            pass
+            
+        else:
+            raise Exception('"diff_filter" must be "auto", a positive '
+                            + 'float or int value, or None.')
+            
+        if diff_filter == 'auto':
+            if ((type(self.resolution) == float) 
+                | (type(self.resolution) == int)):
+                
+                diff_filter = self.resolution / self.pixel_size * 0.5
+            
+            else:
+                raise Exception('"resolution" must be defined for the class '
+                                + 'instance to enable "diff_filter" '
+                                + 'auto calculation.')
+        
+        elif diff_filter == None:
+            use_Guass_for_LoG = True
+            
+        elif ((type(diff_filter) == float or type(diff_filter) == int) and
+              diff_filter > 0):
+            pass
+            
+        else:
+            raise Exception('"diff_filter" must be "auto", a positive '
+                            + 'float or int value, or None.')
+        
+        
+        
+        if use_Guass_for_LoG==True and use_LoG_for_Gauss==True:
+            img_gauss = self.image
+            img_LoG = self.image
+            print('Unfiltered image being used for all masking. This is not '
+                  + 'recommended. Check results carefully.')
+        else:
+            if use_Guass_for_LoG:
+                img_LoG = image_norm(-gaussian_laplace(self.image, 
+                                                       grouping_filter, 
+                                                       truncate=4))
+            else:
+                img_LoG = image_norm(-gaussian_laplace(self.image, 
+                                                       diff_filter, 
+                                                       truncate=4))
+                
+            if use_LoG_for_Gauss:
+                img_gauss = image_norm(-gaussian_laplace(self.image, 
+                                                         diff_filter, 
+                                                         truncate=4))
+            else:
+                img_gauss = image_norm(-gaussian_laplace(self.image, 
+                                                         grouping_filter, 
+                                                         truncate=4))
+            
         
         if sites_to_fit != 'all':
             at_cols = at_cols[at_cols.loc[:, filter_by].isin(sites_to_fit)]
-        
         """Find minimum distance (in pixels) between atom columns for peak
         detection neighborhood"""
         poss = self.unitcell_2D.loc[:, 'u':'v'].to_numpy()
@@ -782,7 +820,7 @@ class AtomicColumnLattice:
         sl_start = np.array([[slices_Gauss[i][1].start, 
                               slices_Gauss[i][0].start] 
                              for i in range(num_grouping_masks)])
-        
+
         """Pack image slices and metadata together for the fitting routine"""
         print('Preparing data for fitting...')
         args_packed = [[self.image[slices_Gauss[mask_num-1][0],
@@ -798,24 +836,16 @@ class AtomicColumnLattice:
         
         """Define column fitting function for image slices"""
         
-
         def fit_column(args):
             [img_sl, mask_sl, log_mask_num, xy_start, xy_peak, inds, mask_num
              ] = args
-            counts = []
             num = xy_peak.shape[0]
             masks = np.zeros(mask_sl.shape)
             for mask_num in log_mask_num: 
                 if mask_num == 0: continue
                 mask = np.where(mask_sl == mask_num, mask_num, 0)
-                # mask = np.where(ndimage.morphology.binary_dilation(
-                #     ndimage.morphology.binary_erosion(mask, iterations=2,
-                #                                       border_value=1), 
-                #     iterations=2), mask_num, 0)
-                
                 masks += mask
                 
-            # masks = np.where(np.isin(masks, log_mask_num), masks, 0)
             img_msk = img_sl * np.where(masks > 0, 1, 0) 
             
             if num == 1:
@@ -1088,8 +1118,8 @@ class AtomicColumnLattice:
         print(f'Scalar component: {scale_distortion_res * 100 :.{2}f} %')
         print(f'Shear component: {shear_distortion_res :.{5}f} (radians)')
         print(f'Estimated Pixel Size: {pix_size * 100 :.{3}f} (pm)')
-            
         
+    
     def plot_fitting_residuals(self):
         """Plots image residuals from the atomic column fitting.
         
@@ -1129,9 +1159,9 @@ class AtomicColumnLattice:
                 if mask_new == 0: 
                     missing_masks += 1
                 fitting_masks_to_peaks[i] = mask_new
-
-        print(f'Could not could match {missing_masks} atom columns to '
-              + 'masks. Residuals estimate may be affected.')
+        if missing_masks > 0:
+            print(f'Could not could match {missing_masks} atom columns to '
+                  + 'masks. Residuals estimate may be affected.')
         
         grouping_masks, m = ndimage.label(self.grouping_masks)
         grouping_masks_to_peaks = ndimage.map_coordinates(
@@ -1454,7 +1484,7 @@ class AtomicColumnLattice:
         
         n_plots = len(sites_to_plot)
         if n_plots > 12:
-            raise Exception('The number of plots exceeds the limit of 8.')
+            raise Exception('The number of plots exceeds the limit of 12.')
         
         if n_plots <= 3:
             nrows = 1
@@ -1470,11 +1500,8 @@ class AtomicColumnLattice:
             nrows = 3
             ncols = np.ceil(n_plots/3).astype(int)
             width_ratios=[3] * ncols + [1]
-            
-        else:
-            raise Exception('The number of plots exceeds the limit of 12.')
         
-        figsize=(ncols * 5 + 2, 5 * nrows + 2)
+        figsize=(ncols * 5 + 3, 5 * nrows + 3)
     
         fig = plt.figure(figsize=figsize)#, tight_layout=True)
         gs = fig.add_gridspec(nrows=nrows, ncols=ncols + 1, 
@@ -1573,8 +1600,18 @@ class AtomicColumnLattice:
         if col < 2:
             gs_legend = gs[row, 2].subgridspec(3, 3)
             legend = fig.add_subplot(gs_legend[1,1])
+            legend.text(0.5, -.7, 
+                        f'Displacement\n(0 - {max_colorwheel_range_pm} pm)', 
+                        transform=legend.transAxes,
+                        horizontalalignment='center', 
+                        fontsize=12, fontweight='bold')
         else:
             legend = fig.add_subplot(gs[-1])    
+            legend.text(0.5, -.3, 
+                        f'Displacement\n(0 - {max_colorwheel_range_pm} pm)', 
+                        transform=legend.transAxes,
+                        horizontalalignment='center', 
+                        fontsize=12, fontweight='bold')
         legend.imshow(rgb)
         legend.set_xticks([])
         legend.set_yticks([])
@@ -1583,17 +1620,10 @@ class AtomicColumnLattice:
         legend.add_artist(circle)
         legend.axis('off')
         legend.axis('image')
-        legend.text(0.5, -.35, 
-                    f'Displacement\n(0 - {max_colorwheel_range_pm} pm)', 
-                    transform=legend.transAxes,
-                    horizontalalignment='center', 
-                    fontsize=12, fontweight='bold')
-        # if col < 2:
-        #     legend.set_position([1/3, 2/3, 1/3, 2/3])
+        
         
         fig.subplots_adjust(hspace=0, wspace=0, 
                             top=0.9, bottom=0.01, 
                             left=0.01, right=0.99)
-        
         
         
