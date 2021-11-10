@@ -1,19 +1,3 @@
-import numpy as np
-import matplotlib.pyplot as plt
-import pandas as pd
-import imageio
-from matplotlib import colors as colors 
-from matplotlib.patches import Wedge
-import matplotlib.gridspec as gridspec
-from matplotlib.patches import Circle as Circle
-from matplotlib.legend_handler import HandlerPatch
-import copy
-
-from matplotlib_scalebar.scalebar import ScaleBar
-
-from scipy.ndimage.filters import (gaussian_filter, gaussian_laplace, 
-                                   maximum_filter)
-
 from SingleOrigin import *
 
 #%%
