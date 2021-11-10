@@ -178,9 +178,9 @@ class AtomicColumnLattice:
         
         h, w = self.fft.shape
         m = min(h,w)
-        U = min(1000, int(m/2))
+        U = int(m/2)
         crop_dim = 2*U
-        
+                
         fft_der = image_norm(-gaussian_laplace(self.fft, sigma))
         masks, num_masks, slices, spots = watershed_segment(fft_der)
         spots.loc[:, 'stdev'] = ndimage.standard_deviation(fft_der, masks, 
@@ -190,11 +190,15 @@ class AtomicColumnLattice:
         
         origin = np.array([U, U])
         
+        recip_vects = np.linalg.norm(xy - origin, axis=1)
+        min_recip_vect = np.min(recip_vects[recip_vects>0])
+        window = min(min_recip_vect*10, U)
+        
         fig, ax = plt.subplots(figsize=(10,10))
         plt.title('''Pick reciprocal basis vectors''',
                   fontdict = {'color' : 'red'})
-        ax.set_ylim(bottom = U+U/4, top = U-U/4)
-        ax.set_xlim(left = U-U/4, right = U+U/4)
+        ax.set_ylim(bottom = U+window, top = U-window)
+        ax.set_xlim(left = U-window, right = U+window)
         ax.imshow((self.fft)**(0.1), cmap='gray')
         ax.scatter(xy[:,0], xy[:,1], c='red', s=8)
         ax.scatter(origin[0], origin[1], c='white', s=16)
@@ -278,8 +282,8 @@ class AtomicColumnLattice:
                     length_includes_head=True,
                     head_width=2, head_length=3)
 
-        ax.set_ylim(bottom = U+U/4, top = U-U/4)
-        ax.set_xlim(left = U-U/4, right = U+U/4)
+        ax.set_ylim(bottom = U+window, top = U-window)
+        ax.set_xlim(left = U-window, right = U+window)
         ax.set_xticks([])
         ax.set_yticks([])
         plt.title('Reciprocal Lattice Fit')
@@ -592,7 +596,8 @@ class AtomicColumnLattice:
         
     def fit_atom_columns(self, buffer=0,local_thresh_factor=1, 
                          diff_filter='auto', grouping_filter='auto',
-                         filter_by='elem', sites_to_fit='all'):
+                         filter_by='elem', sites_to_fit='all',
+                         watershed_line=True):
         """Algorithm for fitting 2D Gaussians to HR STEM image.
         
         Uses Laplacian of Gaussian filter to isolate each peak by the 
@@ -667,7 +672,7 @@ class AtomicColumnLattice:
             
             else:
                 raise Exception('"resolution" must be defined for the class '
-                                + 'instance to enable "diff_filter" '
+                                + 'instance to enable "grouping_filter" '
                                 + 'auto calculation.')
                 
         elif grouping_filter == None: 
@@ -693,6 +698,7 @@ class AtomicColumnLattice:
                                 + 'auto calculation.')
         
         elif diff_filter == None:
+            print('setting to True')
             use_Guass_for_LoG = True
             
         elif ((type(diff_filter) == float or type(diff_filter) == int) and
@@ -732,9 +738,6 @@ class AtomicColumnLattice:
                                                          grouping_filter, 
                                                          truncate=4))
                 print('Gauss using Gauss:', grouping_filter)
-            
-        t1 = time.time()
-        print(f'initial checks and filtering: {t1 - t0}.')
         
         if sites_to_fit != 'all':
             at_cols = at_cols[at_cols.loc[:, filter_by].isin(sites_to_fit)]
@@ -745,21 +748,24 @@ class AtomicColumnLattice:
                                for i in range(-1, 2)
                                for j in range(-1, 2)])) @ self.trans_mat
         dists = np.linalg.norm(np.array([poss - pos for pos in poss]), axis=2)
-        min_dist = (np.floor(np.amin(dists, initial=np.inf, where=dists>0) 
-                            / 2.2) - 1).astype(int)
+        min_dist = (np.amin(dists, initial=np.inf, where=dists>0) - 1) / 2
         
-        # print(f'minimum distance used for peak detection: {min_dist*2 + 1} '
-        #       + 'pixels \n')
+        print('minimum distance used: ', min_dist)
+        t1 = time.time()
+        print(f'initial checks and filtering: {t1 - t0}.')
         
         """Apply Watershed segmentation to generate fitting masks"""
         diff_masks, _, _, xy_peak = watershed_segment(img_LoG, 
             local_thresh_factor = local_thresh_factor, 
-            watershed_line=True, min_dist=min_dist)
+            watershed_line=watershed_line, min_dist=min_dist)
         
         """Gaussian blur to group columns for simultaneous fitting"""
         grouping_masks, num_grouping_masks, slices_Gauss, _ = watershed_segment(
-            img_gauss, local_thresh_factor = 0, watershed_line=True,
+            img_gauss, local_thresh_factor = 0, watershed_line=watershed_line,
             min_dist=min_dist)
+        
+        t2 = time.time()
+        print(f'running watershed: {t2 - t1}.')
         
         """Use local peaks in img_LoG and match to reference lattice.
         These points will be initial position guesses for fitting"""
@@ -802,9 +808,6 @@ class AtomicColumnLattice:
                                   grouping_masks, 0)
         self.fitting_masks = np.where(fitting_masks >= 1, fitting_masks, 0)
         self.grouping_masks = np.where(grouping_masks >= 1, grouping_masks, 0)
-        
-        t2 = time.time()
-        print(f'create masks: {t2 - t1}.')
         
         """Find sets of reference columns for each grouping mask"""
         peak_groupings = [[mask_num, 
@@ -939,7 +942,7 @@ class AtomicColumnLattice:
                 mask_sl = result[1]
                 h, w = mask_sl.shape
                 x0, y0 = args_packed[i][3]
-                fitting_masks[y0:y0+h, x0:x0+w] += mask_sl
+                fitting_masks[y0:y0+h, x0:x0+w] += mask_sl.astype(int)
                 
         else:
             """Small data set: use serial processing"""
@@ -1387,25 +1390,25 @@ class AtomicColumnLattice:
         else:
             filtered = self.at_cols[self.at_cols.loc[:, filter_by]
                                     .isin(sites_to_fit)].copy()
-            
-        if outliers == None:
-            outliers = 1 / self.pixel_size #Outliers defined as 1 Angstrom
-            
-        else:
+        
+        if type(outliers) == float or type(outliers) == int:
             outliers /= self.pixel_size * 100
+        
+        if outliers != None:
+            filtered = filtered[np.linalg.norm(
+                filtered.loc[:, 'x_fit':'y_fit'].to_numpy()
+                - filtered.loc[:, 'x_ref':'y_ref'].to_numpy(),
+                axis=1)
+                < outliers].copy()
             
-        filtered = filtered[np.linalg.norm(
-            filtered.loc[:, 'x_fit':'y_fit'].to_numpy()
-            - filtered.loc[:, 'x_ref':'y_ref'].to_numpy(),
-            axis=1)
-            < outliers].copy()
+        
             
         if fit_or_ref == 'fit':
             xcol, ycol = 'x_fit', 'y_fit'
         elif fit_or_ref == 'ref':
             xcol, ycol = 'x_ref', 'y_ref'
                                 
-        fig,axs = plt.subplots(ncols=1,figsize=(10,15), tight_layout=False)
+        fig,axs = plt.subplots(ncols=1,figsize=(13,10), tight_layout=True)
         
         if plot_masked_image == True:
             axs.imshow(self.image * self.fitting_masks, cmap='gray')
