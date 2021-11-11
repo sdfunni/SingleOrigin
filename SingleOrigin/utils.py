@@ -196,7 +196,7 @@ def elec_wavelength(V=200e3):
     return wavelength
 #%%
 """General image functions"""
-def import_image(path, display_image=True):
+def import_image(path, display_image=True, images_from_stack=None):
     """Import image from path and plot
     
     Parameters
@@ -207,7 +207,13 @@ def import_image(path, display_image=True):
          formats supported by imageio.imread()).
     display_image : bool
         Whether to plot image after importing.
-        Default: True 
+        Default: True
+    images_from_stack : None or 'all' or int or list
+        If file at path contains a stack of images, this argument controls 
+        importing some or all of the images. 
+            Default: None: import only the first image of the stack.
+            'all' : import all images as a 3d numpy array.
+        images
          
     Returns
     -------
@@ -229,13 +235,26 @@ def import_image(path, display_image=True):
         image = ser_file['data']
     
     else:
-        image = imageio.imread(path).astype('float64')
-    
-    image = image_norm(image)
-
+        image = imageio.volread(path)
+        image = np.array([im.astype('float64') for im in image])
+        if images_from_stack == None and len(image.shape) == 3:
+            image = image[0,:,:]
+        # if images_from_stack == 'all':
+        #     continue
+        elif (type(images_from_stack) == list 
+              or type(images_from_stack) == int):
+            image = image[images_from_stack, :, :]
+            
+    if len(image.shape) == 2:
+        image = image_norm(image)
+        image_ = image
+    if len(image.shape) == 3:
+        image = np.array([image_norm(im) for im in image])
+        image_ = image[0,:,:]
+        
     if display_image == True:
         fig, axs = plt.subplots()
-        axs.imshow(image, cmap='gray')
+        axs.imshow(image_, cmap='gray')
         axs.set_xticks([])
         axs.set_yticks([])
         
@@ -569,7 +588,6 @@ def detect_peaks(image, min_dist=4, thresh=0):
                             ).reshape((size,size))
     peaks = (maximum_filter(image,footprint=neighborhood)==image
              ) * (image > thresh)
-    print(neighborhood)
     return peaks.astype(int)
 
 
