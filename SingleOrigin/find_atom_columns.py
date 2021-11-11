@@ -698,7 +698,6 @@ class AtomicColumnLattice:
                                 + 'auto calculation.')
         
         elif diff_filter == None:
-            print('setting to True')
             use_Guass_for_LoG = True
             
         elif ((type(diff_filter) == float or type(diff_filter) == int) and
@@ -708,8 +707,6 @@ class AtomicColumnLattice:
         else:
             raise Exception('"diff_filter" must be "auto", a positive '
                             + 'float or int value, or None.')
-        
-        
         
         if use_Guass_for_LoG==True and use_LoG_for_Gauss==True:
             img_gauss = self.image
@@ -721,23 +718,19 @@ class AtomicColumnLattice:
                 img_LoG = image_norm(gaussian_filter(self.image, 
                                                        grouping_filter, 
                                                        truncate=4))
-                print('LoG using Gauss:', grouping_filter)
                 
             else:
                 img_LoG = image_norm(-gaussian_laplace(self.image, 
                                                        diff_filter, 
                                                        truncate=4))
-                print('LoG using LoG:', diff_filter)
             if use_LoG_for_Gauss:
                 img_gauss = image_norm(-gaussian_laplace(self.image, 
                                                          diff_filter, 
                                                          truncate=4))
-                print('Gauss using LoG:', diff_filter)
             else:
                 img_gauss = image_norm(gaussian_filter(self.image, 
                                                          grouping_filter, 
                                                          truncate=4))
-                print('Gauss using Gauss:', grouping_filter)
         
         if sites_to_fit != 'all':
             at_cols = at_cols[at_cols.loc[:, filter_by].isin(sites_to_fit)]
@@ -750,10 +743,6 @@ class AtomicColumnLattice:
         dists = np.linalg.norm(np.array([poss - pos for pos in poss]), axis=2)
         min_dist = (np.amin(dists, initial=np.inf, where=dists>0) - 1) / 2
         
-        print('minimum distance used: ', min_dist)
-        t1 = time.time()
-        print(f'initial checks and filtering: {t1 - t0}.')
-        
         """Apply Watershed segmentation to generate fitting masks"""
         diff_masks, _, _, xy_peak = watershed_segment(img_LoG, 
             local_thresh_factor = local_thresh_factor, 
@@ -763,9 +752,6 @@ class AtomicColumnLattice:
         grouping_masks, num_grouping_masks, slices_Gauss, _ = watershed_segment(
             img_gauss, local_thresh_factor = 0, watershed_line=watershed_line,
             min_dist=min_dist)
-        
-        t2 = time.time()
-        print(f'running watershed: {t2 - t1}.')
         
         """Use local peaks in img_LoG and match to reference lattice.
         These points will be initial position guesses for fitting"""
@@ -823,19 +809,17 @@ class AtomicColumnLattice:
             print('Atomic columns grouped for simultaneous fitting:')
             for i, size in enumerate(group_sizes):
                 print(f'{counts[i]}x {size}-column groups')
-            print('\n', 
-                  'Fitting routine will be faster without simultaneous ',
-                  'fitting, but may be less accurate. If faster fitting is ',
-                  'needed set "grouping_filter=None". \n',
-                  sep='\n')
+            # print('\n', 
+            #       'Fitting routine will be faster without simultaneous ',
+            #       'fitting, but may be less accurate. If faster fitting is ',
+            #       'needed set "grouping_filter=None". \n',
+            #       sep='\n')
         
         sl_start = np.array([[slices_Gauss[i][1].start, 
                               slices_Gauss[i][0].start] 
                              for i in range(num_grouping_masks)])
-        t3 = time.time()
-        print(f'match masks to peaks: {t3 - t2}.')
+        
         """Pack image slices and metadata together for the fitting routine"""
-        print('Preparing data for fitting...')
         args_packed = [[self.image[slices_Gauss[mask_num-1][0],
                                    slices_Gauss[mask_num-1][1]],
                         fitting_masks[slices_Gauss[mask_num-1][0],
@@ -845,7 +829,7 @@ class AtomicColumnLattice:
                         xy_peak[inds, :].reshape((-1, 2)), 
                         at_cols.index.to_numpy()[inds],
                         mask_num]
-                       for [mask_num, inds]  in tqdm(peak_groupings)]
+                       for [mask_num, inds]  in peak_groupings]
         
         """Define column fitting function for image slices"""
         
@@ -1400,9 +1384,7 @@ class AtomicColumnLattice:
                 - filtered.loc[:, 'x_ref':'y_ref'].to_numpy(),
                 axis=1)
                 < outliers].copy()
-            
         
-            
         if fit_or_ref == 'fit':
             xcol, ycol = 'x_fit', 'y_fit'
         elif fit_or_ref == 'ref':
