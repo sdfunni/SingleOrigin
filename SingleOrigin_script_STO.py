@@ -3,7 +3,7 @@ from SingleOrigin import *
 #%%
 """Location of image data"""
 
-path = '/Users/funni/Downloads/STO_RevSTEM_HAADF.tif'
+path = 'STO_RevSTEM_HAADF.tif'
 
 #%%
 """Structure import from .cif and project"""
