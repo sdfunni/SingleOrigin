@@ -1,14 +1,23 @@
 # SingleOrigin
 
-(Caffeinated) Atomic column position finding for high resolution scanning transmission electron microscope images.
+This is a package for (caffeinated) atomic column position finding intended for high resolution scanning transmission electron microscope images.
 
 Work flow:
-1) Create a unit cell structural projection for a specified zone axis based on data imported from a .cif. Automatically merges atoms with the same projected position into one column. Optional function to merge columns at a specified proximity cutt-off.
- 
-2) User picks reciprocal basis vectors from the FFT of the image. The function automatically transforms these into approximate image basis vectors.
 
-3) User then picks an origin atom column from the image. If this column type is not at the (0,0) position of the projected unit cell, an origin offset must be specified in projected crystallographic fractional coordinates. From this position, and previously calculated basis vectors, a reference lattice is generated. Watershed segmentation is used to find and mask peaks in the image. The closest masked region to each atomic column in the reference lattice is fitted with a 2D Gaussian function and intrepreted as the position for the corresponding atom column. All data is stored in a Pandas DataFrame.
+UnitCell(cif_path) : Import a .cif file of the structure and create a unit cell structural projection for the applicable zone axis.
 
-4) Option to refine the reference lattice based based on all or a subset of the fitted positions (e.g. refine based on a specific sub-lattice.) This enables atom column displacements to be calculated from the reference lattice.
+Apply methods UnitCell.transform_basis(a2, a3, za) and UnitCell.project_uc_2d(proj_axis = 0) to create zone axis projection.
 
-***See code comments for more details.
+import_image("image_path") : Load image (.tif, .png, Velox, or Gatan DM formats supported by built-in function). 
+
+AtomicColumnLattice(image, UnitCell, resolution=0.8) : initializes AtomicColumnLattice class object (acl). This will contain the image, crystallographic data & atom column position data. Class methods are used for fitting atom columns, plotting functions, etc. "resolution" argument is the probe width in pm. Used for calculating filter values during "fit_atom_columns" step.
+
+acl.fft_get_basis_vect(a1_order=1, a2_order=1, sigma=2) : User picks basis vectors from FFT to scale and orient reference lattice. Ensure correct orientation relative to image (especially for polar structures). Basis vector order values (a1_order, a2_order)  are the FFT spot order picked, i.e. may be 2 or 4 (for spots such as 002 or 440) if missing reflections due to the space group.
+
+acl.define_reference_lattice() : user picks appropriate atom column to register lattice to image.
+
+acl.fit_atom_columns(local_thresh_factor=0.95, diff_filter='auto', grouping_filter='auto) : fits the atom columns. "diff_filter" applys a Laplacian of Gaussian filterto differentiate close columns for masking. "grouping_filter" applys a Gaussian blurring filter for grouping masked regions so that close columns are fit simultaneously. Both methods are set to "auto" by default and the algorithm calculates filter values based on the estimated pixel size and specified resoultion. Fitting data saved in a Pandas DataFrame under the class attribute "at_cols".
+
+acl.refine_reference_lattice() : refines the reference lattice based on the located positions. Prints reference lattice distortions to the console.
+
+See https://github.com/sdfunni/SingleOrigin for example images and scripts.
