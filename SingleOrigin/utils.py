@@ -144,7 +144,8 @@ def IntPlAng(hkl_1 ,hkl_2 , g):
     p_q = np.array([hkl_1, hkl_2])
     [[pp, pq], [qp, qq]] = np.array(p_q @ np.linalg.inv(g) @ p_q.T)
     
-    theta = np.degrees(np.arccos(pq/(pp**0.5 * qq**0.5)))
+    theta = np.degrees(np.arccos(np.round(pq/(pp**0.5 * qq**0.5), 
+                                          decimals=10)))
     return theta
 
 def TwoTheta(hkl, g, wavelength):

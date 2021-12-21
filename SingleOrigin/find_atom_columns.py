@@ -1,3 +1,4 @@
+print('using the right acl')
 import copy
 import time
 
@@ -32,12 +33,10 @@ class AtomicColumnLattice:
     
     Class with methods for locating atomic columns in a HR STEM image using
     a reference lattice genenerated from a .cif file. 
-    -Requires minimal parameter adjustmets by the user to achieve accurate 
+        -Requires minimal parameter adjustmets by the user to achieve accurate 
     results. 
-    -Provides a fast fitting algorithm with automatic parallel processing.
-    -Automatically groups close atomic columns for simultaneous fitting.
-    -Some attributes are assigned values or modified by the various class 
-    methods.
+        -Provides a fast fitting algorithm with automatic parallel processing.
+        -Automatically groups close atomic columns for simultaneous fitting.
     
     Parameters
     ----------
@@ -47,13 +46,16 @@ class AtomicColumnLattice:
         Instance of the UnitCell() class with project_uc_2d() method applied.
     resolution : float
         The resolution of the microscope and imaging mode in Angstroms.
-        Default 0.8.
+        Default: 0.8.
     origin_atom_column : int
-        The DataFrame row index (in 'unitcell.at_cols') of the atom column 
+        The DataFrame row index (in self.unitcell_2D) of the atom column 
         that is later picked by the user to register the reference lattice. 
         If None, the closest atom column to the unit cell origin is 
         automatically chosen.
         Default: None.
+    xlim, ylim : list-like, of shape (2,)
+        Image area to be an analyzed. If "None" entire input image is used. 
+        Default: None
     
     Attributes
     ----------
@@ -539,10 +541,13 @@ class AtomicColumnLattice:
         
         init_inc = int(np.min(np.max(np.abs(at_cols.loc[:, 'u' :'v']),
                                             axis=0))/10)
+        print(init_inc)
         
         if init_inc < 3: init_inc = 3
+        # elif init_inc < 5: init_inc = 5
         
         for lim in [init_inc * i for i in [1,2,4]]:
+            print(rf'refining to +/-{lim} unit cells')
             filtered = at_cols[(np.abs(at_cols.u) <= lim) & 
                                 (np.abs(at_cols.v) <= lim)]
             
@@ -1479,6 +1484,7 @@ class AtomicColumnLattice:
             y_crop = [y_crop[1], y_crop[0]]
         
         n_plots = len(sites_to_plot)
+        print(n_plots)
         if n_plots > 12:
             raise Exception('The number of plots exceeds the limit of 12.')
         
@@ -1491,6 +1497,7 @@ class AtomicColumnLattice:
             nrows = 2
             ncols = np.ceil(n_plots/2).astype(int)
             width_ratios=[3] * ncols + [1]
+            print(nrows, ncols)
             
         elif n_plots <= 12:
             nrows = 3
@@ -1510,8 +1517,8 @@ class AtomicColumnLattice:
             y_crop=[self.h, 0],
         
         for ax, site in enumerate(sites_to_plot):
-            row = ax // 3
-            col = ax % 3
+            row = ax // nrows
+            col = ax % ncols
             axs = fig.add_subplot(gs[row, col])
             axs.imshow(self.image, cmap='gray')
 

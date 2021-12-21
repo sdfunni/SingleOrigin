@@ -1,6 +1,6 @@
 __version__ = "2.0"
 
-from SingleOrigin.utils import (metric_tensor,
+from SingleOrigin_package.src.SingleOrigin.utils import (metric_tensor,
                                 bond_length,
                                 bond_angle,
                                 IntPlSpc,
@@ -18,6 +18,7 @@ from SingleOrigin.utils import (metric_tensor,
                                 detect_peaks,
                                 watershed_segment)
 
-from SingleOrigin.cell_transform import UnitCell
+from SingleOrigin_package.src.SingleOrigin.cell_transform import UnitCell
 
-from SingleOrigin.find_atom_columns import AtomicColumnLattice
+from SingleOrigin_package.src.SingleOrigin.find_atom_columns import AtomicColumnLattice
+print('using the right one...')

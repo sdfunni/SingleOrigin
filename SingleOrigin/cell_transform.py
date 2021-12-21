@@ -1,10 +1,11 @@
 import warnings
+import copy
 import numpy as np
 import matplotlib.pyplot as plt
 import  matplotlib.patches as patches
 from CifFile import ReadCif
 import pandas as pd
-from SingleOrigin.utils import *
+from SingleOrigin.utils import (metric_tensor, bond_length, bond_angle)
 
 #%%
 class UnitCell():
