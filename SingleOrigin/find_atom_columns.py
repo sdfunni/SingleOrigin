@@ -1,4 +1,21 @@
-print('using the right acl')
+"""SingleOrigin is a module for atomic column position finding intended for 
+    high resolution scanning transmission electron microscope images.
+    Copyright (C) 2022  Stephen D. Funni
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see https://www.gnu.org/licenses"""
+
+
 import copy
 import time
 
@@ -26,7 +43,7 @@ from joblib import Parallel, delayed
 from tqdm import tqdm
 
 from SingleOrigin.utils import (image_norm, img_ellip_param, gaussian_2d,
-                                fit_gaussian2D, watershed_segment)        
+                                LoG_2d, fit_gaussian2D, watershed_segment)        
 #%%
 class AtomicColumnLattice:
     """Object class for quantification of atomic columns in HR STEM images.
@@ -149,6 +166,7 @@ class AtomicColumnLattice:
             origin_atom_column, 'u':'v'].to_numpy()
         self.basis_offset_pix = self.unitcell_2D.loc[
             origin_atom_column, 'x':'y'].to_numpy()
+        self.use_LoG_fitting = False
         
     
     def fft_get_basis_vect(self, a1_order=1, a2_order=1, sigma=5):
@@ -541,7 +559,7 @@ class AtomicColumnLattice:
         
         init_inc = int(np.min(np.max(np.abs(at_cols.loc[:, 'u' :'v']),
                                             axis=0))/10)
-        print(init_inc)
+        # print(init_inc)
         
         if init_inc < 3: init_inc = 3
         # elif init_inc < 5: init_inc = 5
@@ -602,7 +620,7 @@ class AtomicColumnLattice:
     def fit_atom_columns(self, buffer=0,local_thresh_factor=1, 
                          diff_filter='auto', grouping_filter='auto',
                          filter_by='elem', sites_to_fit='all',
-                         watershed_line=True):
+                         watershed_line=True, use_LoG_fitting=False):
         """Algorithm for fitting 2D Gaussians to HR STEM image.
         
         Uses Laplacian of Gaussian filter to isolate each peak by the 
@@ -657,6 +675,7 @@ class AtomicColumnLattice:
         print('Creating atom column masks...')
         t0 = time.time()
         self.buffer = buffer
+        self.use_LoG_fitting = use_LoG_fitting
         use_Guass_for_LoG = False
         use_LoG_for_Gauss = False
         
@@ -838,71 +857,154 @@ class AtomicColumnLattice:
         
         """Define column fitting function for image slices"""
         
-
-        def fit_column(args):
-            [img_sl, mask_sl, log_mask_num, xy_start, xy_peak, inds, mask_num
-             ] = args
-            num = xy_peak.shape[0]
-            masks = np.zeros(mask_sl.shape)
-            for mask_num in log_mask_num: 
-                if mask_num == 0: continue
-                mask = np.where(mask_sl == mask_num, mask_num, 0)
-                masks += mask
+        if not use_LoG_fitting:
+            def fit_column(args):
+                [img_sl, mask_sl, log_mask_num, xy_start, xy_peak, inds, 
+                 mask_num] = args
+                num = xy_peak.shape[0]
+                masks = np.zeros(mask_sl.shape)
+                for mask_num in log_mask_num: 
+                    if mask_num == 0: continue
+                    mask = np.where(mask_sl == mask_num, mask_num, 0)
+                    masks += mask
+                    
+                img_msk = img_sl * np.where(masks > 0, 1, 0) 
                 
-            img_msk = img_sl * np.where(masks > 0, 1, 0) 
-            
-            if num == 1:
-                [x0, y0] = (xy_peak - xy_start).flatten()
-                _, _, _, theta, sig_1, sig_2 = img_ellip_param(img_msk)
-                I0 = (np.average(img_msk[img_msk != 0])
-                      - np.std(img_msk[img_msk != 0]))
-                A0 = np.max(img_msk) - I0
- 
-                p0 = np.array([[x0, y0, sig_1, sig_2, np.radians(theta), 
-                                A0, I0]])
+                if num == 1:
+                    [x0, y0] = (xy_peak - xy_start).flatten()
+                    _, _, _, theta, sig_1, sig_2 = img_ellip_param(img_msk)
+                    I0 = (np.average(img_msk[img_msk != 0])
+                          - np.std(img_msk[img_msk != 0]))
+                    A0 = np.max(img_msk) - I0
+     
+                    p0 = np.array([[x0, y0, sig_1, sig_2, np.radians(theta), 
+                                    A0, I0]])
+                    
+                    params = fit_gaussian2D(img_msk, p0, 
+                                            use_LoG_fitting=False)
+                    
+                    params = np.array([params[:,0] + xy_start[0],
+                                       params[:,1] + xy_start[1],
+                                       params[:,2],
+                                       params[:,3],
+                                       np.degrees(params[:,4]),
+                                       params[:,5],
+                                       params[:,6]]).T
                 
-                params = fit_gaussian2D(img_msk, p0)
+                if num > 1:
+                    x0y0 = xy_peak - xy_start
+                    x0 = x0y0[:, 0]
+                    y0 = x0y0[:, 1]
+                    masks_to_peaks = ndimage.map_coordinates(masks, 
+                                                             np.flipud(x0y0.T), 
+                                                             order=0
+                                                             ).astype(int)
+                    
+                    sig_1 = []
+                    sig_2 = []
+                    theta = []
+                    Z0 = []
+                    I0 = []
+                    A0 = []
+                    
+                    for i, mask_num in enumerate(masks_to_peaks):
+                        mask = np.where(masks == mask_num, 1, 0)
+                        masked_sl = img_sl * mask
+                        _, _, _, theta_, sig_1_, sig_2_ = (
+                            img_ellip_param(masked_sl))
+                        sig_1 += [sig_1_]
+                        sig_2 += [sig_2_]
+                        theta += [np.radians(theta_)]
+                        I0 += [(np.average(masked_sl[masked_sl != 0])
+                              - np.std(masked_sl[masked_sl != 0]))]
+                        A0 += [np.max(masked_sl) - I0[i]]
+                    
+                    p0 = np.array([x0, y0, sig_1, sig_2, theta, A0, I0]).T
+                    p0 = np.append(p0.flatten(), Z0)
+                    
+                    params = fit_gaussian2D(img_msk, p0, masks, 
+                                            use_LoG_fitting=use_LoG_fitting)
+                    
+                    params = np.array([params[:,0] + xy_start[0],
+                                        params[:,1] + xy_start[1],
+                                        params[:,2],
+                                        params[:,3],
+                                        np.degrees(params[:,4]),
+                                        params[:,5],
+                                        params[:,6]]).T
                 
-                params = np.array([params[:,0] + xy_start[0],
-                                   params[:,1] + xy_start[1],
-                                   params[:,2],
-                                   params[:,3],
-                                   np.degrees(params[:,4]),
-                                   params[:,5],
-                                   params[:,6]]).T
-            
-            if num > 1:
-                x0y0 = xy_peak - xy_start
-                x0 = x0y0[:, 0]
-                y0 = x0y0[:, 1]
-                masks_to_peaks = ndimage.map_coordinates(masks, 
-                                                         np.flipud(x0y0.T), 
-                                                         order=0).astype(int)
+                return params, masks
+        
+        elif use_LoG_fitting:
+            def fit_column(args):
+                [img_sl, mask_sl, log_mask_num, xy_start, xy_peak, inds, 
+                 mask_num] = args
+                num = xy_peak.shape[0]
+                masks = np.zeros(mask_sl.shape)
+                for mask_num in log_mask_num: 
+                    if mask_num == 0: continue
+                    mask = np.where(mask_sl == mask_num, mask_num, 0)
+                    masks += mask
+                    
+                img_msk = img_sl * np.where(masks > 0, 1, 0) 
                 
-                sig_1 = []
-                sig_2 = []
-                theta = []
-                Z0 = []
-                I0 = []
-                A0 = []
+                if num == 1:
+                    [x0, y0] = (xy_peak - xy_start).flatten()
+                    _, _, _, theta, sig_1, sig_2 = img_ellip_param(img_msk)
+                    I0 = (np.average(img_msk[img_msk != 0])
+                          - np.std(img_msk[img_msk != 0]))
+                    A0 = np.max(img_msk) - I0
+     
+                    p0 = np.array([[x0, y0, np.mean(sig_1, sig_2), 1, 0, 
+                                    A0, I0]])
+                    
+                    params = fit_gaussian2D(img_msk, p0, 
+                                            use_LoG_fitting=use_LoG_fitting)
+                    
+                    # params = np.array([params[:,0] + xy_start[0],
+                    #                    params[:,1] + xy_start[1],
+                    #                    params[:,2],
+                    #                    params[:,2],
+                    #                    np.degrees(params[:,4]),
+                    #                    params[:,5],
+                    #                    params[:,6]]).T
                 
-                for i, mask_num in enumerate(masks_to_peaks):
-                    mask = np.where(masks == mask_num, 1, 0)
-                    masked_sl = img_sl * mask
-                    _, _, _, theta_, sig_1_, sig_2_ = (
-                        img_ellip_param(masked_sl))
-                    sig_1 += [sig_1_]
-                    sig_2 += [sig_2_]
-                    theta += [np.radians(theta_)]
-                    I0 += [(np.average(masked_sl[masked_sl != 0])
-                          - np.std(masked_sl[masked_sl != 0]))]
-                    A0 += [np.max(masked_sl) - I0[i]]
-                
-                p0 = np.array([x0, y0, sig_1, sig_2, theta, A0, I0]).T
-                p0 = np.append(p0.flatten(), Z0)
-                
-                params = fit_gaussian2D(img_msk, p0, masks)
-                
+                if num > 1:
+                    x0y0 = xy_peak - xy_start
+                    x0 = x0y0[:, 0]
+                    y0 = x0y0[:, 1]
+                    masks_to_peaks = ndimage.map_coordinates(masks, 
+                                                             np.flipud(x0y0.T), 
+                                                             order=0
+                                                             ).astype(int)
+                    
+                    sig = []
+                    sig_r = []
+                    theta = []
+                    Z0 = []
+                    I0 = []
+                    A0 = []
+                    
+                    for i, mask_num in enumerate(masks_to_peaks):
+                        mask = np.where(masks == mask_num, 1, 0)
+                        masked_sl = img_sl * mask
+                        _, _, _, theta_, sig_1_, sig_2_ = (
+                            img_ellip_param(masked_sl))
+                        sig += [(sig_1_+sig_2_)/2]
+                        sig_r += [1]
+                        theta += [0]
+                        I0 += [(np.average(masked_sl[masked_sl != 0])
+                              - np.std(masked_sl[masked_sl != 0]))]
+                        A0 += [np.max(masked_sl) - I0[i]]
+                    
+                    p0 = np.array([x0, y0, sig, sig_r, theta, A0, I0]).T
+                    p0[:, 2] *= 1.75
+                    p0[:, 5] *= p0[:, 2]**2
+                    p0 = np.append(p0.flatten(), Z0)
+                    
+                    params = fit_gaussian2D(img_msk, p0, masks, 
+                                            use_LoG_fitting=True)
+                    
                 params = np.array([params[:,0] + xy_start[0],
                                     params[:,1] + xy_start[1],
                                     params[:,2],
@@ -910,11 +1012,14 @@ class AtomicColumnLattice:
                                     np.degrees(params[:,4]),
                                     params[:,5],
                                     params[:,6]]).T
-            
-            return params, masks
-           
+                
+                return params, masks
+        
+        else:
+            raise Exception('the arg "use_LoG_fitting" must be a bool')
+        
         """Run fitting routine"""
-        print('Fitting atom columns with 2D Gaussians...')
+        print('Fitting atom columns...')
         t0 = time.time()
         if len(args_packed) >= 50:
             """Large data set: use parallel processing"""
@@ -922,7 +1027,7 @@ class AtomicColumnLattice:
             n_jobs = psutil.cpu_count(logical=False)
             
             results_ = Parallel(n_jobs=n_jobs)(delayed(fit_column)(arg) 
-                                              for arg in tqdm(args_packed))
+                                               for arg in tqdm(args_packed))
             results = np.concatenate([np.concatenate(
                 (result[0], args_packed[i][5].reshape(-1, 1)), axis=1)
                 for i, result in enumerate(results_)])
@@ -1179,33 +1284,66 @@ class AtomicColumnLattice:
                           if mask_num != 0]
         
         print('Calculating residuals:')
-        def peak_residuals(mask_num, inds, fitting_masks_to_peaks):
-            masks_labeled = np.where(np.isin(fitting_masks, 
-                             fitting_masks_to_peaks[inds]), 
-                             fitting_masks, 0).ravel()
-            y, x = np.indices(self.image.shape)
-            
-            unmasked_data = np.nonzero(masks_labeled)
-            masks_labeled = np.take(masks_labeled, unmasked_data)
-            x = np.take(x.ravel(), unmasked_data)
-            y = np.take(y.ravel(), unmasked_data)
-            
-            peak = np.zeros(masks_labeled.shape)
-            
-            for ind in inds:
-                ind_ = filtered.index.tolist()[ind]
-                row = filtered.loc[ind_, :]
+        
+        if not self.use_LoG_fitting:
+            def peak_residuals(mask_num, inds, fitting_masks_to_peaks):
+                masks_labeled = np.where(np.isin(fitting_masks, 
+                                 fitting_masks_to_peaks[inds]), 
+                                 fitting_masks, 0).ravel()
+                y, x = np.indices(self.image.shape)
                 
-                peak += gaussian_2d(x, y, row.x_fit, row.y_fit,
-                                    row.sig_1, row.sig_2, 
-                                    row.theta, row.peak_int, 0)
+                unmasked_data = np.nonzero(masks_labeled)
+                masks_labeled = np.take(masks_labeled, unmasked_data)
+                x = np.take(x.ravel(), unmasked_data)
+                y = np.take(y.ravel(), unmasked_data)
                 
-                if fitting_masks_to_peaks[ind] != 0:
-                    peak += (np.where(masks_labeled == 
-                                      fitting_masks_to_peaks[ind], 1, 0) 
-                             * row.bkgd_int)
+                peak = np.zeros(masks_labeled.shape)
+                
+                for ind in inds:
+                    ind_ = filtered.index.tolist()[ind]
+                    row = filtered.loc[ind_, :]
                     
-            return x, y, peak
+                    peak += gaussian_2d(x, y, row.x_fit, row.y_fit,
+                                        row.sig_1, row.sig_2, 
+                                        row.theta, row.peak_int, 0)
+                    
+                    if fitting_masks_to_peaks[ind] != 0:
+                        peak += (np.where(masks_labeled == 
+                                          fitting_masks_to_peaks[ind], 1, 0) 
+                                 * row.bkgd_int)
+                        
+                return x, y, peak
+        elif self.use_LoG_fitting:
+            def peak_residuals(mask_num, inds, fitting_masks_to_peaks):
+                masks_labeled = np.where(np.isin(fitting_masks, 
+                                 fitting_masks_to_peaks[inds]), 
+                                 fitting_masks, 0).ravel()
+                y, x = np.indices(self.image.shape)
+                
+                unmasked_data = np.nonzero(masks_labeled)
+                masks_labeled = np.take(masks_labeled, unmasked_data)
+                x = np.take(x.ravel(), unmasked_data)
+                y = np.take(y.ravel(), unmasked_data)
+                
+                peak = np.zeros(masks_labeled.shape)
+                
+                for ind in inds:
+                    ind_ = filtered.index.tolist()[ind]
+                    row = filtered.loc[ind_, :]
+                    
+                    peak += LoG_2d(x, y, row.x_fit, row.y_fit,
+                                        row.sig_1, row.sig_2, 
+                                        row.theta, row.peak_int, 0)
+                    
+                    if fitting_masks_to_peaks[ind] != 0:
+                        peak += (np.where(masks_labeled == 
+                                          fitting_masks_to_peaks[ind], 1, 0) 
+                                 * row.bkgd_int)
+                        
+                return x, y, peak
+            
+        else:
+            raise Exception('"self.use_LoG_fitting" must be a bool')
             
         n_jobs = psutil.cpu_count(logical=False)
         
@@ -1225,6 +1363,8 @@ class AtomicColumnLattice:
             self.residuals[y, x] -= peak
             
         self.residuals *= buffer_mask
+        self.residuals = np.where(np.abs(self.residuals) < 0.2, 
+                                  self.residuals, 0)
         
         cmap_lim = np.max(np.abs(self.residuals))
         
@@ -1484,7 +1624,6 @@ class AtomicColumnLattice:
             y_crop = [y_crop[1], y_crop[0]]
         
         n_plots = len(sites_to_plot)
-        print(n_plots)
         if n_plots > 12:
             raise Exception('The number of plots exceeds the limit of 12.')
         
@@ -1517,7 +1656,7 @@ class AtomicColumnLattice:
             y_crop=[self.h, 0],
         
         for ax, site in enumerate(sites_to_plot):
-            row = ax // nrows
+            row = ax // ncols
             col = ax % ncols
             axs = fig.add_subplot(gs[row, col])
             axs.imshow(self.image, cmap='gray')
