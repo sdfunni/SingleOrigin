@@ -18,6 +18,7 @@
 
 import warnings
 import copy
+from PyQt5.QtWidgets import QFileDialog as qfd
 import numpy as np
 import matplotlib.pyplot as plt
 import  matplotlib.patches as patches
@@ -68,7 +69,9 @@ class UnitCell():
     
     """
     
-    def __init__(self, cif_path, origin_shift = [0, 0, 0]):
+    def __init__(self, directory='', origin_shift = [0, 0, 0]):
+        cif_path, _ = qfd.getOpenFileName(caption='Select a .cif file...', 
+                                          directory=directory, filter='*.cif')
         cif_data = copy.deepcopy(ReadCif(cif_path))
         Crystal = cif_data.dictionary[list(cif_data.dictionary.keys()
                                                 )[0]].block
@@ -99,7 +102,15 @@ class UnitCell():
         
         atoms=pd.DataFrame({'u': xyz[:,0], 'v': xyz[:,1], 'w': xyz[:,2],
                                  'elem': elem[:,0],
-                                 'site_frac': site_frac[:,0]})
+                                 'site_frac': site_frac[:,0]
+                                 })
+        
+        try:
+            dwf = np.array(Crystal['_atom_site_u_iso_or_equiv'][0],
+                            ndmin=2).T
+            
+            atoms['Debye_Waller'] = dwf[:,0]
+        except: pass
         
         # Sort and combine atoms if multiple at one position
         atoms = atoms.sort_values(['u', 'v', 'w'])
@@ -203,6 +214,7 @@ class UnitCell():
         alpha_ = bond_angle(alpha_t[1], [0,0,0], alpha_t[2], self.g)
         beta_ = bond_angle(alpha_t[0], [0,0,0], alpha_t[2], self.g)
         gamma_ = bond_angle(alpha_t[0], [0,0,0], alpha_t[1], self.g)
+        
         print('transformed lattice parameters:', '\n',
               'a1:    ', np.around(a1_mag, decimals=4), '\n',
               'a2:    ', np.around(a2_mag, decimals=4), '\n',
@@ -248,6 +260,13 @@ class UnitCell():
         self.g = g
         self.g_star = g_star
         self.alpha_t = alpha_t
+        
+        self.a = a1_mag
+        self.b = a2_mag
+        self.c = a3_mag
+        self.alpha = alpha_
+        self.beta = beta_
+        self.gamma = gamma_
     
     def project_uc_2d(self, proj_axis=0, ignore_elements = [],
                       unique_proj_cell=True):
@@ -289,28 +308,32 @@ class UnitCell():
         
         self.alpha_t = self.alpha_t[[(proj_axis + i) % 3 for i in range(3)], :]
          
-        at_col = self.atoms.copy()
+        at_cols = self.atoms.copy()
+        
+        try: at_cols.drop(['Debye_Waller'], axis=1, inplace=True)
+        except: pass
         
         a_2d=np.delete(self.a_3d, proj_axis, axis=0)
         a_2d=np.delete(a_2d, proj_axis, axis=1)
         cart_ax = ['x', 'y', 'z']
         cryst_ax = ['u', 'v', 'w']
-        at_col = at_col.drop([cart_ax[proj_axis], 
-                              cryst_ax[proj_axis]], axis = 1)
+        at_cols = at_cols.drop([cart_ax[proj_axis], 
+                                cryst_ax[proj_axis]], axis = 1)
+        
         cryst_ax.pop(proj_axis)
-        elem = [''.join(item) for item in at_col.loc[:,'elem']]
-        x = list(at_col.loc[:, cryst_ax[0]])
-        y = list(at_col.loc[:, cryst_ax[1]])
+        elem = [''.join(item) for item in at_cols.loc[:,'elem']]
+        x = list(at_cols.loc[:, cryst_ax[0]])
+        y = list(at_cols.loc[:, cryst_ax[1]])
         (_, index, counts) =np.unique(np.array(list(zip(x, y, elem))),
                                 return_index=True, return_counts=True, axis=0)
         weights = pd.DataFrame(list(zip(index,counts))).sort_values(by=[0], 
                                                     ignore_index=True)
-        index = weights.iloc[:,0].tolist()
-        at_col = at_col.iloc[index, :]
-        at_col.loc[:,'weight']=list(weights.loc[:,1])
         
-        at_cols = at_col.copy()
-        at_cols = at_col.reset_index(drop=True)
+        index = weights.iloc[:,0].tolist()
+        at_cols = at_cols.iloc[index, :]
+        at_cols.loc[:,'weight']=list(weights.loc[:,1])
+        
+        at_cols = at_cols.reset_index(drop=True)
         
         cryst_ax = list(set(cryst_ax).intersection(
             set(at_cols.columns.to_list())))
@@ -340,11 +363,9 @@ class UnitCell():
             at_cols = at_cols[((at_cols.u >= 0) & (at_cols.u < 1) &
                              (at_cols.v >= 0) & (at_cols.v < 1))]
             a_2d *= np.array([[1 / a1_mult, 1 / a2_mult]]).T
-            
+        
         at_cols = at_cols.sort_values(by=['elem', 'u', 'v'])
         at_cols.reset_index(drop=True, inplace=True)
-        at_cols.reset_index(drop=True, inplace=True)
-        at_cols.reset_index(drop=False, inplace=True)
         
         self.at_cols = at_cols
         self.a_2d = a_2d
@@ -368,7 +389,7 @@ class UnitCell():
             
         """
             
-        print('Distances being combined...')
+        print('Distances (in Angstroms) being combined...')
         prox_rows = []
         for i, row_i in self.at_cols.iterrows():
             for j, row_j in self.at_cols.iterrows():
@@ -380,7 +401,7 @@ class UnitCell():
                 if i == j: break
                 
                 elif dist < toler:
-                    print(dist)
+                    print(np.around(dist, 5))
                     prox_rows.append([j,i])
 
         if len(prox_rows) == 0: print('None to combine')
@@ -408,8 +429,8 @@ class UnitCell():
         for i, rows in enumerate(prox_rows):
             if len(rows) == 0: continue
         
-            new.append(self.at_cols.loc[rows[0], :])
-            new[i].at['u'] = np.average([self.at_cols.at[ind, 'u'] 
+            new.append(self.at_cols.loc[rows[0], :].copy())
+            new[i].loc['u'] = np.average([self.at_cols.at[ind, 'u'] 
                                          for ind in rows])
             new[i].at['v'] = np.average([self.at_cols.at[ind, 'v'] 
                                          for ind in rows])
@@ -424,7 +445,7 @@ class UnitCell():
             self.at_cols = self.at_cols.drop(rows, axis=0)
             
         self.at_cols = self.at_cols.append(new)
-        self.at_cols = self.at_cols.reset_index(drop=True)
+        self.at_cols.reset_index(drop=True, inplace=True)
         return self.at_cols
     
     def plot_unit_cell(self, label_by='elem'):
@@ -474,3 +495,61 @@ class UnitCell():
         axs.set_yticks([])
         axs.set_title('Projected Unit Cell', fontdict = {'fontsize' : 20,
                                                          'color' : 'red'})
+        
+    def UnitCell_to_xyz(self, file_name, path='', element_label='number',
+                        comment=''):
+        """Export atom position data to .xyz file format.
+        
+        Save 3D atom position information from UnitCell object to .xyz file 
+        format. Compatible with Prismatic format requirements.
+        
+        Parameters
+        ----------
+        file_name : str
+            Desired file name.
+        path : str
+            Relative or absolute path for saving file.
+        element_label : str ('number' or 'symbol')
+            Indicator for element type in the output .xyz file. 'number' outputs
+            the atomic number. 'symbol' outputs the standard element symbol.
+        comment : str
+            Comment line to be written into the first line of the .xyz file.
+            
+        Returns
+        -------
+        None.
+            
+        """
+        element_table = pd.read_csv('Element_table.txt')
+        atoms = self.atoms
+        x = atoms.x.round(decimals=5).to_numpy(dtype=str)
+        y = atoms.y.round(decimals=5).to_numpy(dtype=str)
+        z = atoms.z.round(decimals=5).to_numpy(dtype=str)
+        elem = atoms.elem.to_numpy(dtype=str)
+        frac = atoms.site_frac.to_numpy(dtype=str)
+        if element_label == 'number':
+            elem = np.array([element_table.Z[element_table.sym == el].item()
+                             for el in elem], dtype=str)
+        elif element_label == 'symbol':
+            pass
+        else:
+            raise ValueError('"element_label" must be either "number" or "symbol"')
+        dwf = atoms.Debye_Waller.to_numpy(dtype=str)
+        
+        file = open(path +'/' + file_name + '.xyz', 'w')
+        if comment == '':
+            file.write(file_name + '\n')
+        else:
+            file.write(comment + '\n')
+        
+        file.write('    ' + str(self.a) + 
+                   '    ' + str(self.b) +
+                   '    ' + str(self.c) + '\n')
+        
+        atoms_ = [elem[i] + '    ' + x[i] + '    ' + y[i] + '    ' + z[i] + '    ' 
+                  + frac[i] + '    ' + dwf[i] + '\n'
+                  for i in range(atoms.shape[0])]
+        for atom in atoms_:
+            file.write(atom)
+        file.write('-1')
+        file.close()
