@@ -1,0 +1,13 @@
+numpy
+pandas
+matplotlib
+scipy
+imageio
+ncempy
+scikit-image
+opencv-python
+matplotlib_scalebar
+psutil
+joblib
+tqdm
+PyCifRW
