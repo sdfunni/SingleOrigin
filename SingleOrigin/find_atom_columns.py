@@ -131,7 +131,7 @@ class AtomicColumnLattice:
                                plot_masked_image=False):
         Plot fitted or reference atom colum positions.
     plot_disp_vects(self, filter_by='elem', sites_to_plot='all', 
-                    titles=None, x_crop=None, y_crop=None,
+                    titles=None, x_lim=None, y_lim=None,
                     scalebar=True, scalebar_len_nm=2,
                     arrow_scale_factor = 1,
                     outlier_disp_cutoff = None, max_colorwheel_range_pm=None,
@@ -1679,7 +1679,7 @@ class AtomicColumnLattice:
         return fig, axs
         
     def plot_disp_vects(self, filter_by='elem', sites_to_plot='all', 
-                        x_crop=None, y_crop=None,
+                        x_lim=None, y_lim=None,
                         scalebar=True, scalebar_len_nm=2,
                         arrow_scale_factor = 1,
                         outlier_disp_cutoff = None, 
@@ -1698,11 +1698,11 @@ class AtomicColumnLattice:
             The criteria for the sites to print, e.g. a list of the elements 
             to plot: ['Ba', 'Ti']
             Default 'all'
-        x_crop : None or list-like shape (2,)
+        x_lim : None or list-like shape (2,)
             The x axis limits to be plotted. If None, the whole image is 
             displayed.
             Default: None
-        y_crop : None or list-like shape (2,)
+        y_lim : None or list-like shape (2,)
             The y axis limits to be plotted. Note that the larger valued limit
             should be first or the plot will be flipped top-to-bottom.  If 
             None, the whole image is displayed.
@@ -1769,12 +1769,12 @@ class AtomicColumnLattice:
             std = np.std(mags)
             max_colorwheel_range_pm = int(np.ceil((avg + 3*std)/5) * 5)
         
-        if x_crop==None:
-            x_crop=[0, self.w]
-        if y_crop==None:
-            y_crop=[self.h, 0]
-        if y_crop[0] < y_crop[1]:
-            y_crop = [y_crop[1], y_crop[0]]
+        if x_lim==None:
+            x_lim=[0, self.w]
+        if y_lim==None:
+            y_lim=[self.h, 0]
+        if y_lim[0] < y_lim[1]:
+            y_lim = [y_lim[1], y_lim[0]]
         
         n_plots = len(sites_to_plot)
         if n_plots > 12:
@@ -1803,10 +1803,10 @@ class AtomicColumnLattice:
                               width_ratios=width_ratios,
                               height_ratios=[3 for _ in range(nrows)], 
                               wspace=0.05)
-        if x_crop == None:
-            x_crop=[0, self.w] 
-        if y_crop == None:
-            y_crop=[self.h, 0],
+        if x_lim == None:
+            x_lim=[0, self.w] 
+        if y_lim == None:
+            y_lim=[self.h, 0],
         axs = []
         for ax, site in enumerate(sites_to_plot):
             row = ax // ncols
@@ -1814,8 +1814,8 @@ class AtomicColumnLattice:
             axs += [fig.add_subplot(gs[row, col])]
             axs[ax].imshow(self.image, cmap='gray')
 
-            axs[ax].set_xlim(x_crop[0], x_crop[1])
-            axs[ax].set_ylim(y_crop[0], y_crop[1])
+            axs[ax].set_xlim(x_lim[0], x_lim[1])
+            axs[ax].set_ylim(y_lim[0], y_lim[1])
             
             axs[ax].set_xticks([])
             axs[ax].set_yticks([])
@@ -1830,8 +1830,8 @@ class AtomicColumnLattice:
                 axs[ax].add_artist(scalebar)
                 
             sub_latt = filtered[filtered.loc[:, filter_by] == site]
-            h = y_crop[0] - y_crop[1]
-            title = axs[ax].text(x_crop[0] + 0.02*h, y_crop[1] + 0.02*h, 
+            h = y_lim[0] - y_lim[1]
+            title = axs[ax].text(x_lim[0] + 0.02*h, y_lim[1] + 0.02*h, 
                              rf'{"$" + sites_to_plot[ax] + "$"}', 
                              color='white', size=24,  weight='bold',
                              va='top', ha='left')
