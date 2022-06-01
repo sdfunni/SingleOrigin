@@ -88,17 +88,13 @@ def bond_length(at1, at2, g):
     d = np.sqrt(at12 @ g @ at12.T).item()
     return d
 
-def bond_angle(at1 ,at2, at3, g):
-    """Calculate the angle from a central point to two other points
+def bond_angle(vec1, vec2, g):
+    """Calculate the angle between two bond vectors
     
     Parameters
     ----------
-    at1, at3 : array_like of shape (1,3) or (3,)
-        Two points forming rays from the vertex. Positions in fractional 
-        coordinates.
-        
-    at2 : array_like of shape (1,3) or (3,)
-        Vertex. Position in fractional coordinates.
+    vec1, vec2 : array_like of shape (1,3) or (3,)
+        Two bond vectors in fractional coordinates.
         
     g : 3x3 ndarray
         The metric tensor
@@ -110,11 +106,7 @@ def bond_angle(at1 ,at2, at3, g):
         
     """
     
-    at1 = np.array(at1)
-    at2 = np.array(at2)
-    at3 = np.array(at3)
-    
-    p_q = np.array([at1 - at2, at3 - at2])
+    p_q = np.array([vec1, vec2])
     
     [[pp, pq], [qp, qq]] = np.array(p_q @ g @ p_q.T)
     theta = np.degrees(np.arccos(pq/(pp**0.5 * qq**0.5)))
@@ -237,9 +229,14 @@ def import_image(directory='', display_image=True, images_from_stack=None):
         The metadata available in the original file
         
     """
-    path, _ = qfd.getOpenFileName(caption='Select an image to load...', 
-          directory=directory,  
-          filter="Images (*.png *.png *.jpg *.tif *.dm4 *.dm3 *.emd *.ser)")
+    if directory[-4:] in ['.dm4', '.dm3', '.emd', 
+                          '.ser', '.tif', '.png', '.jpg']: 
+        path = directory
+        
+    else:
+        path, _ = qfd.getOpenFileName(caption='Select an image to load...', 
+              directory=directory,  
+              filter="Images (*.png *.jpg *.tif *.dm4 *.dm3 *.emd *.ser)")
     
     if path[-3:] in ['dm4', 'dm3']:
         dm_file = dmReader(path)
