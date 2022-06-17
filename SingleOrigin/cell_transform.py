@@ -157,7 +157,7 @@ class UnitCell():
                         new_pos = atom.copy()
                         [new_pos.at['u'], new_pos.at['v'], new_pos.at['w']] = [
                             *xyz_]
-                        atoms = atoms.append(new_pos, ignore_index=True)
+                        atoms = pd.concat([atoms, new_pos], ignore_index=True)
 
         atoms = atoms.loc[atoms.round({'u': 3, 'v': 3, 'w': 3}
                                       ).drop_duplicates().index, :]
@@ -240,8 +240,10 @@ class UnitCell():
                                for i in range(self.atoms.shape[0])])
         
         atoms = pd.DataFrame(columns = (list(self.atoms)))
-        for i in range(latt_cells.shape[0]):
-            atoms = atoms.append(self.atoms)
+        
+        atoms = pd.concat([self.atoms] * latt_cells.shape[0])
+        # for i in range(latt_cells.shape[0]):
+        #     atoms = atoms.append(self.atoms)
         atoms.reset_index(drop=True, inplace=True)
         atoms.loc[:, 'u':'w'] = (atoms.loc[:, 'u':'w'].to_numpy()
                                  + latt_cells_) @ np.linalg.inv(alpha_t)
@@ -444,7 +446,8 @@ class UnitCell():
             new[i].at['site_frac'] = s.join(site_frac)
             self.at_cols = self.at_cols.drop(rows, axis=0)
             
-        self.at_cols = self.at_cols.append(new)
+        new = pd.DataFrame(new, columns=self.at_cols.columns.tolist())
+        self.at_cols = pd.concat([self.at_cols, new])
         self.at_cols.reset_index(drop=True, inplace=True)
         return self.at_cols
     

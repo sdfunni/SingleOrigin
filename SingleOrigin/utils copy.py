@@ -573,20 +573,24 @@ def gaussian2d_ss(p0, x, y, z, masks=None):
     
     """
     
-    if p0.shape[0] > 7:
-        # model = np.ones(z.shape) * p0[-1]
-        I0 = p0[-1]
-        p0_ = p0[:-1].reshape((-1,6))
-        x0, y0, sig_1, sig_2, ang, A = np.split(p0_, 6, axis=1)
+    p0 = p0.reshape((-1, 7))
+    #Initialize model by getting background values:
+    if p0.shape[0] > 1:
+        if type(masks) == type(None):
+            raise Exception('Must specify "masks" arg for fitting '
+                            +'simultaneous peaks')
+        model = np.sum(masks * p0[:,-1].reshape((-1,1)), axis=0)
+        
     else:
-        x0, y0, sig_1, sig_2, ang, A, I0 = p0
+        model = p0[0, -1]
     
     #Sum the functions for each peak:
-    model = np.sum(A*np.exp(-1/2*(((np.cos(ang) * (x - x0)
+    x0, y0, sig_1, sig_2, ang, A, _ = np.split(p0, 7, axis=1)
+    model += np.sum(A*np.exp(-1/2*(((np.cos(ang) * (x - x0)
                                      + np.sin(ang) * (y - y0)) / sig_1)**2
                                    +((-np.sin(ang) * (x - x0)
                                       + np.cos(ang) * (y - y0)) / sig_2)**2)), 
-                    axis=0) + I0
+                    axis=0)
     
     #Subtract from data to get residuals:
     R = z - model
@@ -623,19 +627,23 @@ def LoG2d_ss(p0, x, y, z, masks=None):
     
     """
     
+    p0 = p0.reshape((-1, 7))
     #Initialize model by getting background values:
-    if p0.shape[0] > 7:
-        # model = np.ones(z.shape) * p0[-1]
-        I0 = p0[-1]
-        p0_ = p0[:-1].reshape((-1,6))
-        x0, y0, sig, sig_r, ang, A = np.split(p0_, 6, axis=1)
+    if p0.shape[0] > 1:
+        if type(masks) == type(None):
+            raise Exception('Must specify "masks" arg for fitting '
+                            +'simultaneous peaks')
+        model = np.sum(masks * p0[:,-1].reshape((-1,1)), axis=0)
+        
     else:
-        x0, y0, sig, sig_r, ang, A, I0 = p0
+        model = p0[0, -1]
     
     #Sum the functions for each peak:
-    model = np.sum(-A*np.exp(-((x - x0)**2 + (y - y0)**2) / (2*sig**2))
+    x0, y0, sig, sig_r, ang, A, _ = np.split(p0, 7, axis=1)
+
+    model += np.sum(-A*np.exp(-((x - x0)**2 + (y - y0)**2) / (2*sig**2))
                     * (((x - x0)**2 + (y - y0)**2) / (sig**4) -2/sig**2), 
-                    axis=0) + I0
+                    axis=0)
     
     #Subtract from data to get residuals:
     R = z - model
@@ -654,11 +662,9 @@ def fit_gaussian2D(data, p0, masks=None, method='L-BFGS-B', use_LoG_fitting=Fals
     ----------
     data : ndarray
         Image containing a Gaussian peak
-    p0 : array_like with shape (6*n + 1,)
-        Initial guess for the n-Gaussian parameter vector where each peak
-        has 6 independent parameters (x0, y0, sig_1, sig_2, ang, A) the
-        whole region has a constant background (I_0).
-        
+    p0 : array_like with shape (7,)
+        Initial guess for the Gaussian function parameter vector:
+            [x0, y0, sig_1, sig_2, ang, A, I_o]
     masks : 2d array_like of size (n, m)
         n = number of peaks to fit
         m = number of unmasked pixels
@@ -683,22 +689,21 @@ def fit_gaussian2D(data, p0, masks=None, method='L-BFGS-B', use_LoG_fitting=Fals
     # if method not in ['BFGS', 'L-BFGS-B', 'TNC', 'Powell', 'trust-constr',
     #                   'Nelder-Mead', 'COBYLA', 'SLSQP', 'CG']:
     #    raise Exception('Must use a supported method')
-    
-    num_gauss = int(np.ceil(p0.shape[0]/7))
+    p0 = p0.flatten()
+    num_gauss = p0.shape[0]//7
     img_shape = data.shape
     
-    I0 = p0[-1]
-    p0_ = p0[:-1].reshape((num_gauss, 6))
+    p0_ = p0.reshape((num_gauss, 7))
     
     p0_[:, 4] *= -1
     
     y, x = np.indices(img_shape)
-    z=data.flatten()
+    z=data.ravel()
     
     unmasked_data = np.nonzero(z)
     z = np.take(z, unmasked_data)
-    x = np.take(x.flatten(), unmasked_data)
-    y = np.take(y.flatten(), unmasked_data)
+    x = np.take(x, unmasked_data)
+    y = np.take(y, unmasked_data)
     
     x0y0 = p0_[:,:2]    
     if type(masks) == type(None):
@@ -713,12 +718,12 @@ def fit_gaussian2D(data, p0, masks=None, method='L-BFGS-B', use_LoG_fitting=Fals
     masks_to_peaks = ndimage.map_coordinates(masks_labeled, 
                                              np.flipud(x0y0.T), 
                                              order=0).astype(int)
-    masks_labeled = np.take(masks_labeled, unmasked_data).flatten()
+    masks_labeled = np.take(masks_labeled, unmasked_data).ravel()
     
     masks_labeled = np.array([np.where(masks_labeled == mask_num, 1, 0)
                               for i, mask_num in enumerate(masks_to_peaks)])
-
-    p0_ = np.append(p0_.flatten(), I0)
+    
+    p0_ = p0_.flatten()
     
     with warnings.catch_warnings():
         warnings.filterwarnings('ignore', category=UserWarning, 
@@ -727,8 +732,8 @@ def fit_gaussian2D(data, p0, masks=None, method='L-BFGS-B', use_LoG_fitting=Fals
             bounds = None
             if np.isin(method, ['L-BFGS-B', 'TNC', 'Nelder-Mead',
                                 'trust-constr', 'SLSQP']):
-                bounds = [(None, None), (None, None), (1, None), 
-                          (1, 1), (0,0), (0,None)] * num_gauss + [(0,None)]
+                bounds = [(None, None), (None, None), (1, np.inf), 
+                          (1, 1), (0,0), (0,np.inf), (0,1)] * num_gauss 
             if method == 'BFGS': bounds=None
             params = minimize(LoG2d_ss, p0_, 
                               args=(x, y, z, masks_labeled), 
@@ -738,16 +743,14 @@ def fit_gaussian2D(data, p0, masks=None, method='L-BFGS-B', use_LoG_fitting=Fals
             if np.isin(method, ['L-BFGS-B', 'TNC', 'Nelder-Mead',
                                 'trust-constr', 'SLSQP']):
                 bounds = [(None, None), (None, None), (None, None), 
-                          (None, None), (None, None), (0,None),
-                          ] * num_gauss +[(0,None)]
+                          (None, None), (None, None), (0,None), (0,None)
+                          ] * num_gauss
             
             params = minimize(gaussian2d_ss, p0_, 
                               args=(x, y, z, masks_labeled), 
                               bounds=bounds, method=method).x
     
-    params = np.concatenate((params[:-1].reshape((-1, 6)), 
-                             np.ones((num_gauss, 1))*params[-1]), 
-                            axis=1)
+    params = params.reshape((-1, 7))
     
     params[:, 4] *= -1
     params[:, 4] = ((params[:, 4] + np.pi/2) % np.pi) - np.pi/2
