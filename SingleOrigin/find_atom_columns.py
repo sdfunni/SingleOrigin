@@ -662,7 +662,8 @@ class AtomicColumnLattice:
     def fit_atom_columns(self, buffer=0,local_thresh_factor=0.95, 
                          diff_filter='auto', grouping_filter='auto',
                          filter_by='elem', sites_to_fit='all',
-                         watershed_line=True, use_LoG_fitting=False):
+                         watershed_line=True, use_LoG_fitting=False,
+                         parallelize=True):
         """Algorithm for fitting 2D Gaussians to HR STEM image.
         
         Uses Laplacian of Gaussian filter to isolate each peak by the 
@@ -719,6 +720,11 @@ class AtomicColumnLattice:
             integrated to calculate the peak volume. Only interpretable 
             parameters are the peak position.
             Defalut: False.
+        parallelize : bool
+            Whether to use parallel CPU processing. Will use all available
+            physical cores if set to True. If False, will use serial 
+            processing.
+            
         Returns
         -------
         None.
@@ -801,7 +807,7 @@ class AtomicColumnLattice:
                                                        truncate=4))
                 
             else:
-                img_LoG = so.image_norm(-gaussian_laplace(acl.image, 
+                img_LoG = image_norm(-gaussian_laplace(self.image, 
                                                        diff_filter, 
                                                        truncate=4))
             if use_LoG_for_Gauss:
@@ -818,11 +824,11 @@ class AtomicColumnLattice:
             
         """Find minimum distance (in pixels) between atom columns for peak
         detection neighborhood"""
-        unit_cell_uv = acl.unitcell_2D.loc[:, 'u':'v'].to_numpy()
+        unit_cell_uv = self.unitcell_2D.loc[:, 'u':'v'].to_numpy()
         unit_cell_xy = np.concatenate(([unit_cell_uv + [i,j] 
                                         for i in range(-1, 2)
                                         for j in range(-1, 2)])
-                                      ) @ acl.trans_mat
+                                      ) @ self.trans_mat
         dists = np.linalg.norm(np.array([unit_cell_xy - pos 
                                          for pos in unit_cell_xy]), axis=2)
         min_dist = (np.amin(dists, initial=np.inf, where=dists>0) - 1) / 2
@@ -1081,7 +1087,7 @@ class AtomicColumnLattice:
         """Run fitting routine"""
         print('Fitting atom columns...')
         t0 = time.time()
-        if len(args_packed) >= 50:
+        if parallelize == True:
             """Large data set: use parallel processing"""
             print('Using parallel processing')
             n_jobs = psutil.cpu_count(logical=False)
@@ -1122,6 +1128,7 @@ class AtomicColumnLattice:
                 
         else:
             """Small data set: use serial processing"""
+            print('Using serial processing')
             try:
                 results_ = [fit_column(arg) for arg in tqdm(args_packed)]
                 
