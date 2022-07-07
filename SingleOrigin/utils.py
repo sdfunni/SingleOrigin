@@ -433,7 +433,7 @@ def img_equ_ellip(image):
     x0, y0 : coordinates of the ellipse center
     
     """
-    
+
     M = moments(image, order=1)
     mu = moments_central(image, order=2)
     

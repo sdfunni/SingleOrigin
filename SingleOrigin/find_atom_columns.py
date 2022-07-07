@@ -163,7 +163,7 @@ class AtomicColumnLattice:
             image = image[:, xlim[0]:xlim[1]]
         if ylim != None:
             image = image[ylim[0]:ylim[1], :]
-        self.image = image
+        self.image = image_norm(image)
         
         self.probe_fwhm = probe_fwhm
         self.h, self.w = self.image.shape
