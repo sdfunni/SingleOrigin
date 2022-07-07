@@ -34,8 +34,9 @@ from ncempy.io.ser import serReader
 from ncempy.io.emdVelox import emdVeloxReader
 
 from skimage.segmentation import watershed
+from skimage.measure import (moments, moments_central)
+# import cv2
 
-import cv2
 from tifffile import imwrite
 
 from matplotlib import pyplot as plt
@@ -433,9 +434,11 @@ def img_equ_ellip(image):
     
     """
     
-    M = cv2.moments(image)
-    [x0, y0] = [M['m10']/M['m00'], M['m01']/M['m00']]
-    [u20, u11, u02] = [M['mu20']/M['m00'], M['mu11']/M['m00'], M['mu02']/M['m00']]
+    M = moments(image, order=1)
+    mu = moments_central(image, order=2)
+    
+    [x0, y0] = [M[1,0]/M[0,0], M[0,1]/M[0,0]]
+    [u20, u11, u02] = [mu[2,0]/M[0,0], mu[1,1]/M[0,0], mu[0,2]/M[0,0]]
     cov = np.array([[u20, u11],
                     [u11, u02]])
     eigvals, eigvects = np.linalg.eig(cov)
