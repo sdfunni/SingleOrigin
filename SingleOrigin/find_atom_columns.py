@@ -100,8 +100,8 @@ class AtomicColumnLattice:
         the same shape as image.
     a1_star, a2_star : The reciprocal basis vectors in FFT pixel coordinates.
     a1, a2 : The real space basis vectors in image pixel coordinates.
-    trans_mat : The transformation matrix from fractional to image pixel
-        coordinates.
+    dir_struct_matrix : The direct structure matrix (i.e. transformation 
+        matrix from fractional to image pixel coordinates.)
     pixel_size : The estimated pixel size using the reference lattice basis
         vectors and lattice parameter values from the .cif file.
     
@@ -175,18 +175,19 @@ class AtomicColumnLattice:
         self.fit_masks = np.zeros(image.shape)
         self.a1, self.a2 = None, None
         self.a1_star, self.a2_star = None, None
-        self.trans_mat = None
+        self.dir_struct_matrix = None
         self.pixel_size = None
         self.residuals = None
         
         if origin_atom_column == None:
             origin_atom_column = np.argmin(np.linalg.norm(
-                self.unitcell_2D.loc[:, 'x':'y'], axis=1))
+                self.unitcell_2D.loc[:, 'x':'y'].to_numpy(dtype=float), 
+                axis=1))
         
         self.basis_offset_frac = self.unitcell_2D.loc[
-            origin_atom_column, 'u':'v'].to_numpy()
+            origin_atom_column, 'u':'v'].to_numpy(dtype=float)
         self.basis_offset_pix = self.unitcell_2D.loc[
-            origin_atom_column, 'x':'y'].to_numpy()
+            origin_atom_column, 'x':'y'].to_numpy(dtype=float)
         self.use_LoG_fitting = False
         
     
@@ -228,7 +229,7 @@ class AtomicColumnLattice:
         spots.loc[:, 'stdev'] = ndimage.standard_deviation(fft_der, masks, 
                                             index=np.arange(1, num_masks+1))
         spots_ = spots[(spots.loc[:, 'stdev'] > 0.003)].reset_index(drop=True)
-        xy = spots_.loc[:,'x':'y'].to_numpy()
+        xy = spots_.loc[:,'x':'y'].to_numpy(dtype=float)
         
         origin = np.array([U, U])
         
@@ -259,11 +260,11 @@ class AtomicColumnLattice:
         a1_star = (basis_picks_xy[0, :] - origin) / a1_order
         a2_star = (basis_picks_xy[1, :] - origin) / a2_order
         
-        trans_mat_rec = np.array([a1_star, a2_star])
+        a_star = np.array([a1_star, a2_star])
         
         recip_latt_indices = np.array([[i,j] for i in range(-5,6) 
                                        for j in range(-5,6)])
-        xy_ref = recip_latt_indices @ trans_mat_rec + origin
+        xy_ref = recip_latt_indices @ a_star + origin
         
         vects = np.array([xy - xy_ for xy_ in xy_ref])
         inds = np.argmin(np.linalg.norm(vects, axis=2), axis=1)
@@ -281,22 +282,22 @@ class AtomicColumnLattice:
         recip_latt = pd.DataFrame(df)
 
         recip_latt = recip_latt[np.linalg.norm(
-            recip_latt.loc[:, 'x_fit':'y_fit'].to_numpy()
-            -recip_latt.loc[:, 'x_ref':'y_ref'].to_numpy(), axis=1) 
-            < 0.25*np.min(np.linalg.norm(trans_mat_rec, axis=1))
+            recip_latt.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
+            -recip_latt.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float), axis=1) 
+            < 0.25*np.min(np.linalg.norm(a_star, axis=1))
             ].reset_index(drop=True)
         
         def disp_vect_sum_squares(p0, M_star, xy, origin):
             
-            trans_mat_rec_ = p0.reshape((2,2))
-            err_xy = xy - M_star @ trans_mat_rec_ - origin
+            a_star = p0.reshape((2,2))
+            err_xy = xy - M_star @ a_star - origin
             sum_sq = np.sum(err_xy**2)
             return sum_sq
         
-        M_star = recip_latt.loc[:, 'h':'k'].to_numpy()
-        xy = recip_latt.loc[:, 'x_fit':'y_fit'].to_numpy()
+        M_star = recip_latt.loc[:, 'h':'k'].to_numpy(dtype=float)
+        xy = recip_latt.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
         
-        p0 = trans_mat_rec.flatten()
+        p0 = a_star.flatten()
         
         params = minimize(disp_vect_sum_squares, p0, 
                           args=(M_star, xy, origin)).x
@@ -304,17 +305,17 @@ class AtomicColumnLattice:
         a1_star = params[:2] 
         a2_star = params[2:] 
         
-        trans_mat_rec = params.reshape((2,2))
-        trans_mat = np.linalg.inv(trans_mat_rec.T) * crop_dim
+        a_star = params.reshape((2,2))
+        dir_struct_matrix = np.linalg.inv(a_star.T) * crop_dim
         
         recip_latt.loc[:, 'x_ref':'y_ref'] = (
-            recip_latt.loc[:, 'h':'k'].to_numpy() @ trans_mat_rec + origin)
+            recip_latt.loc[:, 'h':'k'].to_numpy(dtype=float) @ a_star + origin)
         plt.close('all')
         
         fig2, ax = plt.subplots(figsize=(10,10))
         ax.imshow((self.fft)**(0.1), cmap = 'gray')
-        ax.scatter(recip_latt.loc[:, 'x_fit'].to_numpy(), 
-                    recip_latt.loc[:, 'y_fit'].to_numpy())
+        ax.scatter(recip_latt.loc[:, 'x_fit'].to_numpy(dtype=float), 
+                    recip_latt.loc[:, 'y_fit'].to_numpy(dtype=float))
         ax.arrow(origin[0], origin[1], a1_star[0], a1_star[1],
                     fc='red', ec='red', width=0.1, 
                     length_includes_head=True,
@@ -332,10 +333,10 @@ class AtomicColumnLattice:
         
         self.a1_star = a1_star
         self.a2_star = a2_star
-        self.a1 = trans_mat[0,:]
-        self.a2 = trans_mat[1,:]
-        self.trans_mat = trans_mat
-        self.basis_offset_pix = self.basis_offset_frac @ self.trans_mat
+        self.a1 = dir_struct_matrix[0,:]
+        self.a2 = dir_struct_matrix[1,:]
+        self.dir_struct_matrix = dir_struct_matrix
+        self.basis_offset_pix = self.basis_offset_frac @ self.dir_struct_matrix
         self.pixel_size = np.average([np.linalg.norm(self.a_2d[0,:])
                                       /np.linalg.norm(self.a1),
                                       np.linalg.norm(self.a_2d[1,:])
@@ -366,7 +367,7 @@ class AtomicColumnLattice:
         
         [h, w] = [self.h, self.w]
         
-        crop_view = (np.max(np.abs(self.trans_mat)) * crop_factor)
+        crop_view = (np.max(np.abs(self.dir_struct_matrix)) * crop_factor)
         fig, ax = plt.subplots(figsize=(10,10))
         message=('Pick an atom column of the reference atom column type'
                  +' (white outlined position)')
@@ -378,17 +379,17 @@ class AtomicColumnLattice:
         self.unitcell_2D['x_ref'] = ''
         self.unitcell_2D['y_ref'] = ''
         self.unitcell_2D.loc[:, 'x_ref': 'y_ref'] = self.unitcell_2D.loc[
-            :, 'u':'v'].to_numpy() @ self.trans_mat
+            :, 'u':'v'].to_numpy(dtype=float) @ self.dir_struct_matrix
         
-        uc_w = np.max(np.abs(self.trans_mat[:,0]))
-        uc_h = np.max(np.abs(self.trans_mat[:,1]))
+        uc_w = np.max(np.abs(self.dir_struct_matrix[:,0]))
+        uc_h = np.max(np.abs(self.dir_struct_matrix[:,1]))
         rect_params = [w/2-crop_view + 0.1*uc_w, 
                        h/2+crop_view - 0.2*uc_h, 
-                       np.max(np.abs(self.trans_mat[:,0]))*1.1, 
-                       -np.max(np.abs(self.trans_mat[:,1]))*1.1]
+                       np.max(np.abs(self.dir_struct_matrix[:,0]))*1.1, 
+                       -np.max(np.abs(self.dir_struct_matrix[:,1]))*1.1]
         
-        x_mean = np.mean(self.trans_mat[:,0])
-        y_mean = np.mean(self.trans_mat[:,1])
+        x_mean = np.mean(self.dir_struct_matrix[:,0])
+        y_mean = np.mean(self.dir_struct_matrix[:,1])
         
         x0 = rect_params[2]/2 - x_mean + rect_params[0]
         y0 = rect_params[3]/2 - y_mean + rect_params[1]
@@ -408,8 +409,8 @@ class AtomicColumnLattice:
                         alpha = 1)
         ax.add_patch(box)
         
-        ax.scatter(self.unitcell_2D.loc[:,'x_ref'].to_numpy() + x0, 
-                    self.unitcell_2D.loc[:,'y_ref'].to_numpy() + y0,
+        ax.scatter(self.unitcell_2D.loc[:,'x_ref'].to_numpy(dtype=float) + x0, 
+                    self.unitcell_2D.loc[:,'y_ref'].to_numpy(dtype=float) + y0,
                     c=color_list, cmap='RdYlGn', s=10, zorder=10)
         
         ax.arrow(x0, y0, self.a1[0], self.a1[1],
@@ -544,8 +545,9 @@ class AtomicColumnLattice:
         
         at_cols.loc[:,'u':'v'] += latt_cells
         
-        at_cols.loc[:,'x_ref':'y_ref'] = (at_cols.loc[:,'u':'v'].to_numpy() 
-                                           @ self.trans_mat 
+        at_cols.loc[:,'x_ref':'y_ref'] = (at_cols.loc[:,'u':'v'
+                                                      ].to_numpy(dtype=float) 
+                                           @ self.dir_struct_matrix 
                                            + np.array([self.x0, self.y0]))
         
         at_cols = at_cols[((at_cols.x_ref >= 0) &
@@ -571,37 +573,35 @@ class AtomicColumnLattice:
         '''Refine reference lattice on watershed mask CoMs'''
         print('Performing rough reference lattice refinement...')
         img_LoG = image_norm(-gaussian_laplace(self.image, LoG_sigma))
-        poss = self.unitcell_2D.loc[:, 'x_ref':'y_ref'].to_numpy()
+        poss = self.unitcell_2D.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float)
         dists = np.linalg.norm(np.array([poss - pos for pos in poss]), axis=2)
         min_dist = np.amin(dists, initial=np.inf, where=dists>0)
         
         masks, num_masks, slices, peaks = watershed_segment(
             img_LoG,  buffer=0, min_dist=min_dist)
         
-        coords = peaks.loc[:, 'x':'y'].to_numpy()
-        print('prior basis vectors:', 
-              f'[[{self.trans_mat[0,0]:.{4}f} {self.trans_mat[0,1]:.{4}f}]',
-              f' [{self.trans_mat[1,0]:.{4}f} {self.trans_mat[1,1]:.{4}f}]]'
-              +'\n', sep='\n')
+        coords = peaks.loc[:, 'x':'y'].to_numpy(dtype=float)
         
         init_inc = int(np.min(np.max(np.abs(at_cols.loc[:, 'u' :'v']),
                                             axis=0))/10)
-        # print(init_inc)
         
         if init_inc < 3: init_inc = 3
-        # elif init_inc < 5: init_inc = 5
-        origin_ind = at_cols[(at_cols.u == self.basis_offset_frac[0]) &
-                             (at_cols.v == self.basis_offset_frac[1])].index[0]
-        at_cols_orig_type = at_cols[(at_cols.x == at_cols.at[origin_ind,'x']) &
-                                    (at_cols.y == at_cols.at[origin_ind,'y'])]
+
+        origin_ind = at_cols[
+            (at_cols.u == self.basis_offset_frac[0]) &
+            (at_cols.v == self.basis_offset_frac[1])].index[0]
+        at_cols_orig_type = at_cols[
+            (at_cols.x == at_cols.at[origin_ind,'x']) &
+            (at_cols.y == at_cols.at[origin_ind,'y'])]
         
         for lim in [init_inc * i for i in [1,2,4]]:
             print(rf'refining to +/-{lim} unit cells')
-            filtered = at_cols_orig_type[(np.abs(at_cols_orig_type.u) <= lim) & 
-                                         (np.abs(at_cols_orig_type.v) <= lim)]
+            filtered = at_cols_orig_type[
+                (np.abs(at_cols_orig_type.u) <= lim) &
+                (np.abs(at_cols_orig_type.v) <= lim)]
             
-            M = filtered.loc[:, 'u':'v'].to_numpy()
-            xy_ref = filtered.loc[:, 'x_ref':'y_ref'].to_numpy()
+            M = filtered.loc[:, 'u':'v'].to_numpy(dtype=float)
+            xy_ref = filtered.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float)
             
             vects = np.array([coords - xy for xy in xy_ref])
             
@@ -610,14 +610,15 @@ class AtomicColumnLattice:
             
             def disp_vect_sum_squares(p0, M, xy):
                 
-                trans_mat = p0[:4].reshape((2,2))
+                dir_struct_matrix = p0[:4].reshape((2,2))
                 origin = p0[4:]
                 
-                R = np.linalg.norm(xy - M @ trans_mat - origin, axis=1)
+                R = np.linalg.norm(xy - M @ dir_struct_matrix - origin, 
+                                   axis=1)
                 sum_sq = (R @ R.T).item()
                 return sum_sq
             
-            p0 = np.concatenate((self.trans_mat.flatten(),
+            p0 = np.concatenate((self.dir_struct_matrix.flatten(),
                                   np.array([self.x0, self.y0])))
             
             params = minimize(disp_vect_sum_squares, p0, args=(M, xy)).x
@@ -625,13 +626,14 @@ class AtomicColumnLattice:
             self.a1 = params[:2]
             self.a2 = params[2:4]
             
-            self.trans_mat = params[:4].reshape((2,2))
+            self.dir_struct_matrix = params[:4].reshape((2,2))
             
             self.x0 = params[4]
             self.y0 = params[5]
             
             at_cols.loc[:, 'x_ref':'y_ref'] = (
-                at_cols.loc[:, 'u':'v'].to_numpy() @ self.trans_mat
+                at_cols.loc[:, 'u':'v'].to_numpy(dtype=float) 
+                @ self.dir_struct_matrix
                 + np.array([self.x0, self.y0])
                 )
             
@@ -641,7 +643,8 @@ class AtomicColumnLattice:
                                (at_cols.y_ref <= h - 5))]
             
         at_cols.loc[:, 'x_ref':'y_ref'] = (
-            at_cols.loc[:, 'u':'v'].to_numpy() @ self.trans_mat
+            at_cols.loc[:, 'u':'v'].to_numpy(dtype=float) 
+            @ self.dir_struct_matrix
             + np.array([self.x0, self.y0])
             )
         
@@ -651,12 +654,6 @@ class AtomicColumnLattice:
                            (at_cols.y_ref <= h - 5))]
             
         self.at_cols_uncropped = copy.deepcopy(at_cols)
-        
-        
-        print('refined basis vectors:', 
-              f'[[{self.trans_mat[0,0]:.{4}f} {self.trans_mat[0,1]:.{4}f}]',
-              f' [{self.trans_mat[1,0]:.{4}f} {self.trans_mat[1,1]:.{4}f}]]'
-              +'\n', sep='\n')
                 
         
     def fit_atom_columns(self, buffer=0,local_thresh_factor=0.95, 
@@ -764,8 +761,8 @@ class AtomicColumnLattice:
         elif grouping_filter == None: 
             use_LoG_for_Gauss = True
             
-        elif ((type(grouping_filter) == float or type(grouping_filter) == int) and
-              grouping_filter > 0):
+        elif ((type(grouping_filter) == float or type(grouping_filter) == int) 
+              and grouping_filter > 0):
             pass
             
         else:
@@ -824,11 +821,11 @@ class AtomicColumnLattice:
             
         """Find minimum distance (in pixels) between atom columns for peak
         detection neighborhood"""
-        unit_cell_uv = self.unitcell_2D.loc[:, 'u':'v'].to_numpy()
+        unit_cell_uv = self.unitcell_2D.loc[:, 'u':'v'].to_numpy(dtype=float)
         unit_cell_xy = np.concatenate(([unit_cell_uv + [i,j] 
                                         for i in range(-1, 2)
                                         for j in range(-1, 2)])
-                                      ) @ self.trans_mat
+                                      ) @ self.dir_struct_matrix
         dists = np.linalg.norm(np.array([unit_cell_xy - pos 
                                          for pos in unit_cell_xy]), axis=2)
         min_dist = (np.amin(dists, initial=np.inf, where=dists>0) - 1) / 2
@@ -845,8 +842,8 @@ class AtomicColumnLattice:
         
         """Use local peaks in img_LoG and match to reference lattice.
         These points will be initial position guesses for fitting"""
-        xy_peak = xy_peak.loc[:, 'x':'y'].to_numpy()
-        xy_ref = at_cols.loc[:, 'x_ref':'y_ref'].to_numpy()
+        xy_peak = xy_peak.loc[:, 'x':'y'].to_numpy(dtype=float)
+        xy_ref = at_cols.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float)
         
         vects = np.array([xy_peak - xy for xy in xy_ref])
         norms = np.linalg.norm(vects, axis=2)
@@ -900,7 +897,7 @@ class AtomicColumnLattice:
             for i, size in enumerate(group_sizes):
                 print(f'{counts[i]}x {size}-column groups')
                 
-        at_cols_inds = at_cols.index.to_numpy()
+        at_cols_inds = at_cols.index.to_numpy(dtype=float)
         
         """Find min & max slice indices for each group of fitting masks"""
         group_fit_slices = [[slices_LoG[ind] for ind in inds] 
@@ -1179,14 +1176,14 @@ class AtomicColumnLattice:
         results = pd.DataFrame(data=results[:, :-1], 
                               index=results[:,-1].astype(int), 
                               columns=col_labels[:-1]).sort_index()
-        results.loc[:, 'total_col_int'] = (2 * np.pi 
-                                           * results.peak_int.to_numpy()
-                                           * results.sig_1.to_numpy()
-                                           * results.sig_2.to_numpy())
+        results.loc[:, 'total_col_int'] = (
+            2 * np.pi * results.peak_int.to_numpy(dtype=float)
+            * results.sig_1.to_numpy(dtype=float)
+            * results.sig_2.to_numpy(dtype=float))
        
         at_cols.update(results)
-        sigmas = at_cols.loc[:, 'sig_1':'sig_2'].to_numpy()
-        theta = at_cols.loc[:, 'theta'].to_numpy()
+        sigmas = at_cols.loc[:, 'sig_1':'sig_2'].to_numpy(dtype=float)
+        theta = at_cols.loc[:, 'theta'].to_numpy(dtype=float)
         sig_maj_inds = np.argmax(sigmas, axis=1)
         sig_min_inds = np.argmin(sigmas, axis=1)
         sig_maj = sigmas[[i for i in range(sigmas.shape[0])], 
@@ -1315,42 +1312,42 @@ class AtomicColumnLattice:
             outlier_disp_cutoff /= self.pixel_size * 100
             
         filtered = filtered[np.linalg.norm(
-            filtered.loc[:, 'x_fit':'y_fit'].to_numpy()
-            - filtered.loc[:, 'x_ref':'y_ref'].to_numpy(),
+            filtered.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
+            - filtered.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float),
             axis=1)
             < outlier_disp_cutoff].copy()
 
         def disp_vect_sum_squares(p0, M, xy):
             
-            trans_mat = p0[:4].reshape((2,2))
+            dir_struct_matrix = p0[:4].reshape((2,2))
             origin = p0[4:]
             
-            err_xy = xy - M @ trans_mat - origin
+            err_xy = xy - M @ dir_struct_matrix - origin
             sum_sq = np.sum(err_xy**2)
             return sum_sq
         
-        M = filtered.loc[:, 'u':'v'].to_numpy()
-        xy = filtered.loc[:, 'x_fit':'y_fit'].to_numpy()
+        M = filtered.loc[:, 'u':'v'].to_numpy(dtype=float)
+        xy = filtered.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
         
-        p0 = np.concatenate((self.trans_mat.flatten(),
+        p0 = np.concatenate((self.dir_struct_matrix.flatten(),
                              np.array([self.x0, self.y0])))
         params = minimize(disp_vect_sum_squares, p0, args=(M, xy)).x
         
         self.a1 = params[:2]
         self.a2 = params[2:4]
         
-        self.trans_mat = params[:4].reshape((2,2))
+        self.dir_struct_matrix = params[:4].reshape((2,2))
         
         print('Origin shift:', params[4:] - np.array([self.x0, self.y0]))
         self.x0 = params[4]
         self.y0 = params[5]
-        print('Optimized basis vectors:', self.trans_mat)
+        print('Optimized basis vectors:', self.dir_struct_matrix)
         
-        self.basis_offset_pix = self.basis_offset_frac @ self.trans_mat
+        self.basis_offset_pix = self.basis_offset_frac @ self.dir_struct_matrix
         
-        self.at_cols.loc[:, 'x_ref':'y_ref'] = (self.at_cols.loc[:, 'u':'v']
-                                                .to_numpy() @ self.trans_mat
-                                                + np.array([self.x0, self.y0]))
+        self.at_cols.loc[:, 'x_ref':'y_ref'] = (
+            self.at_cols.loc[:, 'u':'v'].to_numpy(dtype=float) 
+            @ self.dir_struct_matrix + np.array([self.x0, self.y0]))
         
         self.pixel_size = np.average([np.linalg.norm(self.a_2d[0,:])
                                       /np.linalg.norm(self.a1),
@@ -1358,10 +1355,10 @@ class AtomicColumnLattice:
                                       /np.linalg.norm(self.a2)])
         
         theta_ref = np.degrees(
-            np.arccos(self.trans_mat[0,:] 
-                      @ self.trans_mat[1,:].T
-                      /(np.linalg.norm(self.trans_mat[0,:]) 
-                        * np.linalg.norm(self.trans_mat[1,:].T))))
+            np.arccos(self.dir_struct_matrix[0,:] 
+                      @ self.dir_struct_matrix[1,:].T
+                      /(np.linalg.norm(self.dir_struct_matrix[0,:]) 
+                        * np.linalg.norm(self.dir_struct_matrix[1,:].T))))
 
         shear_distortion_res = np.radians(90 - theta_ref)
 
@@ -1506,8 +1503,8 @@ class AtomicColumnLattice:
             raise Exception('"self.use_LoG_fitting" must be a bool')
         
         group_residuals = [get_group_residuals(
-            args, self.at_cols_uncropped.loc[args[5], 
-                                             'x_fit':'bkgd_int'].to_numpy(),
+            args, self.at_cols_uncropped.loc[args[5], 'x_fit':'bkgd_int'
+                                             ].to_numpy(dtype=float),
             self.buffer, self.image.shape) 
             for args in self.args_packed]
         
@@ -1621,7 +1618,7 @@ class AtomicColumnLattice:
                          - (np.array(self.image.shape, ndmin=2)-1)/2), axis=1)
         '''Find the origin-shifted rotation matrix for transforming atomic
             column position data'''
-        trans_mat = np.array([[np.cos(angle), np.sin(angle), 0],
+        dir_struct_matrix = np.array([[np.cos(angle), np.sin(angle), 0],
                           [-np.sin(angle), np.cos(angle), 0],
                           [0, 0, 1]])
         tau = np.array([[1, 0, (self.image.shape[1]-1)/2],
@@ -1630,35 +1627,39 @@ class AtomicColumnLattice:
         tau_ = np.array([[1, 0, -(self.image.shape[1]-1)/2],
                          [0, 1, -(self.image.shape[0]-1)/2],
                          [0, 0, 1]])
-        trans_mat = tau @ trans_mat @ tau_
+        dir_struct_matrix = tau @ dir_struct_matrix @ tau_
         
         xy = np.array(
-            np.append(rot_.at_cols.loc[:, 'x_fit':'y_fit'].to_numpy(),
+            np.append(rot_.at_cols.loc[:, 'x_fit':'y_fit'
+                                       ].to_numpy(dtype=float),
                       np.ones((rot_.at_cols.shape[0],1)), axis=1)).T
         
-        rot_.at_cols.loc[:, 'x_fit':'y_fit'] = ((trans_mat @ xy).T[:, :2] 
-                                                + trans)
+        rot_.at_cols.loc[:, 'x_fit':'y_fit'] = (
+            (dir_struct_matrix @ xy).T[:, :2] + trans)
         
-        xy_pix = np.append(rot_.at_cols.loc[:, 'x_ref':'y_ref'].to_numpy(),
+        xy_pix = np.append(rot_.at_cols.loc[:, 'x_ref':'y_ref'
+                                            ].to_numpy(dtype=float),
                            np.ones((rot_.at_cols.shape[0],1)), axis=1).T
         
-        rot_.at_cols.loc[:, 'x_ref':'y_ref'] = ((trans_mat @ xy_pix).T[:, :2] 
-                                                + trans)
+        rot_.at_cols.loc[:, 'x_ref':'y_ref'] = (
+            (dir_struct_matrix @ xy_pix).T[:, :2] + trans)
         
         [rot_.x0, rot_.y0] = list((np.array([rot_.x0, rot_.y0, 1], ndmin=2) 
-                                  @ trans_mat.T)[0,0:2] + trans[0,:])
+                                  @ dir_struct_matrix.T)[0,0:2] + trans[0,:])
         
         '''Transform data'''
-        rot_.trans_mat = rot_.trans_mat @ trans_mat[0:2, 0:2].T
-        rot_.a1 = rot_.trans_mat[0, :]
-        rot_.a2 = rot_.trans_mat[1, :]
+        rot_.dir_struct_matrix = (rot_.dir_struct_matrix 
+                                  @ dir_struct_matrix[0:2, 0:2].T)
+        rot_.a1 = rot_.dir_struct_matrix[0, :]
+        rot_.a2 = rot_.dir_struct_matrix[1, :]
         '''***Logic sequence to make basis vectors ~right, ~up'''
         
-        rot_.a1_star = (np.linalg.inv(rot_.trans_mat).T)[0, :]
-        rot_.a2_star = (np.linalg.inv(rot_.trans_mat).T)[1, :]
+        rot_.a1_star = (np.linalg.inv(rot_.dir_struct_matrix).T)[0, :]
+        rot_.a2_star = (np.linalg.inv(rot_.dir_struct_matrix).T)[1, :]
         rot_.at_cols.theta += np.degrees(angle)
-        rot_.at_cols.theta -= np.trunc(rot_.at_cols.theta.to_numpy().astype(
-            'float') / 90) * 180
+        rot_.at_cols.theta -= np.trunc(
+            rot_.at_cols.theta.to_numpy(dtype=float).astype('float') 
+            / 90) * 180
         rot_.angle = angle
         
         return rot_
@@ -1740,8 +1741,8 @@ class AtomicColumnLattice:
         
         if outlier_disp_cutoff != None:
             filtered = filtered[np.linalg.norm(
-                filtered.loc[:, 'x_fit':'y_fit'].to_numpy()
-                - filtered.loc[:, 'x_ref':'y_ref'].to_numpy(),
+                filtered.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
+                - filtered.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float),
                 axis=1)
                 < outlier_disp_cutoff].copy()
         
@@ -1886,16 +1887,16 @@ class AtomicColumnLattice:
             outlier_disp_cutoff /= self.pixel_size * 100
             
         filtered = self.at_cols[np.linalg.norm(
-            self.at_cols.loc[:, 'x_fit':'y_fit'].to_numpy()
-            - self.at_cols.loc[:, 'x_ref':'y_ref'].to_numpy(),
+            self.at_cols.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
+            - self.at_cols.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float),
             axis=1)
             < outlier_disp_cutoff].copy()
        
         if max_colorwheel_range_pm == None:
             filtered = filtered[filtered.loc[:, filter_by]
                                     .isin(sites_to_plot)]
-            dxy = (filtered.loc[:,'x_fit':'y_fit'].to_numpy()
-                   - filtered.loc[:,'x_ref':'y_ref'].to_numpy())
+            dxy = (filtered.loc[:,'x_fit':'y_fit'].to_numpy(dtype=float)
+                   - filtered.loc[:,'x_ref':'y_ref'].to_numpy(dtype=float))
             mags = np.linalg.norm(dxy, axis=1) * self.pixel_size * 100
             avg = np.mean(mags)
             std = np.std(mags)
@@ -1972,8 +1973,8 @@ class AtomicColumnLattice:
                                     path_effects.Normal()])
             
             hsv = np.ones((sub_latt.shape[0], 3))
-            dxy = (sub_latt.loc[:,'x_fit':'y_fit'].to_numpy()
-                   - sub_latt.loc[:,'x_ref':'y_ref'].to_numpy())
+            dxy = (sub_latt.loc[:,'x_fit':'y_fit'].to_numpy(dtype=float)
+                   - sub_latt.loc[:,'x_ref':'y_ref'].to_numpy(dtype=float))
             
             disp_pm = (np.linalg.norm(dxy, axis=1) * self.pixel_size * 100)
             normed = disp_pm / max_colorwheel_range_pm
@@ -1990,18 +1991,21 @@ class AtomicColumnLattice:
             rgb = colors.hsv_to_rgb(hsv)
             
             if plot_fit_points:
-                axs[ax].scatter(sub_latt.loc[:,'x_fit'], sub_latt.loc[:,'y_fit'],
-                            color='blue', s=1)
+                axs[ax].scatter(sub_latt.loc[:,'x_fit'], 
+                                sub_latt.loc[:,'y_fit'],
+                                color='blue', s=1)
             if plot_ref_points: 
-                axs[ax].scatter(sub_latt.loc[:,'x_ref'], sub_latt.loc[:,'y_ref'],
-                            color='red', s=1)
-            cb = axs[ax].quiver(sub_latt.loc[:,'x_fit'], sub_latt.loc[:,'y_fit'], 
-                            dxy[:, 0], dxy[:, 1],
-                            color=rgb,
-                            angles='xy', scale_units='xy', 
-                            scale=0.1/arrow_scale_factor,
-                            headlength=10, headwidth=5, headaxislength=10,
-                            edgecolor='white', linewidths=0.5)
+                axs[ax].scatter(sub_latt.loc[:,'x_ref'], 
+                                sub_latt.loc[:,'y_ref'],
+                                color='red', s=1)
+            cb = axs[ax].quiver(sub_latt.loc[:,'x_fit'], 
+                                sub_latt.loc[:,'y_fit'], 
+                                dxy[:, 0], dxy[:, 1],
+                                color=rgb,
+                                angles='xy', scale_units='xy', 
+                                scale=0.1/arrow_scale_factor,
+                                headlength=10, headwidth=5, headaxislength=10,
+                                edgecolor='white', linewidths=0.5)
         
         def colour_wheel(samples=1024, clip_circle=True):
             xx, yy = np.meshgrid(
