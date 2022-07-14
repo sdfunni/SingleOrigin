@@ -35,7 +35,6 @@ from ncempy.io.emdVelox import emdVeloxReader
 
 from skimage.segmentation import watershed
 from skimage.measure import (moments, moments_central)
-# import cv2
 
 from tifffile import imwrite
 
@@ -283,7 +282,9 @@ def import_image(directory=None, display_image=True, images_from_stack=None):
     Parameters
     ----------
     directory : str or None
-        The location of the image to load or the 
+        The location of the image to load or the path to the folder containing
+        the desired image. If only a directory is given, the "Open file" 
+        dialog box will still open allowing you to select an image file.
     display_image : bool
         If True, plots image (or first image if a series is imported).
         Default: True
@@ -305,12 +306,15 @@ def import_image(directory=None, display_image=True, images_from_stack=None):
     
         
     if directory == None:
-        path, _ = qfd.getOpenFileName(caption='Select an image to load...', 
-              filter="Images (*.png *.jpg *.tif *.dm4 *.dm3 *.emd *.ser)")
+        path, _ = qfd.getOpenFileName(
+            caption='Select an image to load...', 
+            filter="Images (*.png *.jpg *.tif *.dm4 *.dm3 *.emd *.ser)")
+        print(f'path to imported image: {path}')
     
     elif directory[-4:] in ['.dm4', '.dm3', '.emd', 
                           '.ser', '.tif', '.png', '.jpg']: 
         path = directory
+        print(f'path to imported image: {path}')
         
     else:
         path, _ = qfd.getOpenFileName(

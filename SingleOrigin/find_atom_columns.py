@@ -191,7 +191,8 @@ class AtomicColumnLattice:
         self.use_LoG_fitting = False
         
     
-    def fft_get_basis_vect(self, a1_order=1, a2_order=1, sigma=5):
+    def fft_get_basis_vect(self, a1_order=1, a2_order=1, sigma=5,
+                           spot_numbers=None):
         """Measure crystal basis vectors from the image FFT.
         
         Finds peaks in the image FFT and displays for graphical picking. 
@@ -210,6 +211,12 @@ class AtomicColumnLattice:
         sigma : int or float
             The Laplacian of Gaussian sigma value to use for sharpening of the 
             FFT peaks. Usually a value between 2 and 10 will work well.
+        spot_numbers : 2-tuple of ints or None
+            Labeled spot numbers of the FFT peaks found using the 
+            fft_get_peaks() method. Must be in the order (a1_star, a2_star). 
+            This method allows selection of FFT peaks without requiring 
+            graphical picking and is useful for Jupyter notebooks when it is 
+            preferred to plot in the notebook rather than in a seperate window.
              
         Returns
         -------
@@ -223,39 +230,45 @@ class AtomicColumnLattice:
         m = min(h,w)
         U = int(m/2)
         crop_dim = 2*U
-                
-        fft_der = image_norm(-gaussian_laplace(self.fft, sigma))
-        masks, num_masks, slices, spots = watershed_segment(fft_der)
-        spots.loc[:, 'stdev'] = ndimage.standard_deviation(fft_der, masks, 
-                                            index=np.arange(1, num_masks+1))
-        spots_ = spots[(spots.loc[:, 'stdev'] > 0.003)].reset_index(drop=True)
-        xy = spots_.loc[:,'x':'y'].to_numpy(dtype=float)
-        
         origin = np.array([U, U])
         
-        recip_vects = np.linalg.norm(xy - origin, axis=1)
-        min_recip_vect = np.min(recip_vects[recip_vects>0])
-        window = min(min_recip_vect*10, U)
+        if spot_numbers == None:
+            
+            fft_der = image_norm(-gaussian_laplace(self.fft, sigma))
+            masks, num_masks, slices, spots = watershed_segment(fft_der)
+            spots.loc[:, 'stdev'] = ndimage.standard_deviation(
+                fft_der, masks, index=np.arange(1, num_masks+1))
+            spots_ = spots[(spots.loc[:, 'stdev'] > 0.003)
+                           ].reset_index(drop=True)
+            xy = spots_.loc[:,'x':'y'].to_numpy(dtype=float)
+            
+            recip_vects = np.linalg.norm(xy - origin, axis=1)
+            min_recip_vect = np.min(recip_vects[recip_vects>0])
+            window = min(min_recip_vect*10, U)
+            
+            fig, ax = plt.subplots(figsize=(10,10))
+            plt.title('''Pick reciprocal basis vectors''',
+                      fontdict = {'color' : 'red'})
+            ax.set_ylim(bottom = U+window, top = U-window)
+            ax.set_xlim(left = U-window, right = U+window)
+            ax.imshow((self.fft)**(0.1), cmap='gray')
+            ax.scatter(xy[:,0], xy[:,1], c='red', s=8)
+            ax.scatter(origin[0], origin[1], c='white', s=16)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            
+            basis_picks_xy = np.array(plt.ginput(2, timeout=15))
+            
+            vects = np.array([xy - i for i in basis_picks_xy])
+            inds = np.argmin(np.linalg.norm(vects, axis=2), axis=1)
+            basis_picks_xy = xy[inds, :]
         
-        fig, ax = plt.subplots(figsize=(10,10))
-        plt.title('''Pick reciprocal basis vectors''',
-                  fontdict = {'color' : 'red'})
-        ax.set_ylim(bottom = U+window, top = U-window)
-        ax.set_xlim(left = U-window, right = U+window)
-        ax.imshow((self.fft)**(0.1), cmap='gray')
-        ax.scatter(xy[:,0], xy[:,1], c='red', s=8)
-        ax.scatter(origin[0], origin[1], c='white', s=16)
-        ax.set_xticks([])
-        ax.set_yticks([])
-        
-        basis_picks_xy = np.array(plt.ginput(2, timeout=15))
-        
-        vects = np.array([xy - i for i in basis_picks_xy])
-        inds = np.argmin(np.linalg.norm(vects, axis=2), axis=1)
-        basis_picks_xy = xy[inds, :]
-        
-        print('done selecting', '\n')
-        
+            print('done selecting', '\n')
+            
+        elif (len(spot_numbers) == 2) & (type(spot_numbers) == tuple):
+            xy = self.recip_latt.loc[:, 'x':'y'].to_numpy()
+            basis_picks_xy = xy[spot_numbers, :]
+            
         '''Generate reference lattice and find corresponding peak regions'''
         a1_star = (basis_picks_xy[0, :] - origin) / a1_order
         a2_star = (basis_picks_xy[1, :] - origin) / a2_order
@@ -275,9 +288,7 @@ class AtomicColumnLattice:
               'y_ref': xy_ref[:, 1],
               'x_fit': [xy[ind, 0] for ind in inds],
               'y_fit': [xy[ind, 1] for ind in inds],
-              'mask_ind': inds,
-              'stdev': [spots_.loc[:, 'stdev'][ind] 
-                        for ind in inds]}
+              'mask_ind': inds}
         
         recip_latt = pd.DataFrame(df)
 
@@ -312,6 +323,10 @@ class AtomicColumnLattice:
             recip_latt.loc[:, 'h':'k'].to_numpy(dtype=float) @ a_star + origin)
         plt.close('all')
         
+        recip_vects = np.linalg.norm(xy - origin, axis=1)
+        min_recip_vect = np.min(recip_vects[recip_vects>0])
+        window = min(min_recip_vect*10, U)
+        
         fig2, ax = plt.subplots(figsize=(10,10))
         ax.imshow((self.fft)**(0.1), cmap = 'gray')
         ax.scatter(recip_latt.loc[:, 'x_fit'].to_numpy(dtype=float), 
@@ -343,8 +358,60 @@ class AtomicColumnLattice:
                                       /np.linalg.norm(self.a2)])
         self.recip_latt = recip_latt
         
+    def fft_get_peaks(self, sigma=5):
+        """Find peaks in the image FFT.
         
-    def select_origin(self, crop_factor=4):
+        Finds peaks in the image FFT, plots and numbers peaks for selection
+        with ____().
+        
+        Parameters
+        ----------
+        sigma : int or float
+            The Laplacian of Gaussian sigma value to use for sharpening of the 
+            FFT peaks. Usually a value between 2 and 10 will work well.
+             
+        Returns
+        -------
+        None.
+            
+        """
+        
+        h, w = self.fft.shape
+        m = min(h,w)
+        U = int(m/2)
+        crop_dim = 2*U
+                
+        fft_der = image_norm(-gaussian_laplace(self.fft, sigma))
+        masks, num_masks, slices, spots = watershed_segment(fft_der)
+        spots.loc[:, 'stdev'] = ndimage.standard_deviation(fft_der, masks, 
+                                            index=np.arange(1, num_masks+1))
+        spots_ = spots[(spots.loc[:, 'stdev'] > 0.003)].reset_index(drop=True)
+        xy = spots_.loc[:,'x':'y'].to_numpy(dtype=float)
+        inds = spots_.index.tolist()
+                
+        origin = np.array([U, U])
+        
+        recip_vects = np.linalg.norm(xy - origin, axis=1)
+        min_recip_vect = np.min(recip_vects[recip_vects>0])
+        window = min(min_recip_vect*10, U)
+        
+        fig, ax = plt.subplots(figsize=(10,10))
+        plt.title('''Pick reciprocal basis vectors''',
+                  fontdict = {'color' : 'red'})
+        ax.set_ylim(bottom = U+window, top = U-window)
+        ax.set_xlim(left = U-window, right = U+window)
+        ax.imshow((self.fft)**(0.1), cmap='gray')
+        ax.scatter(xy[:,0], xy[:,1], c='red', s=8)
+        for i, label in enumerate(inds):
+            plt.annotate(label, (xy[i,0], xy[i,1]))
+        ax.scatter(origin[0], origin[1], c='white', s=16)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        
+        self.recip_latt = spots_
+        
+        
+    def select_origin(self, crop_factor=4, interactive_selection=False):
         """Select origin for the reference lattice.
         
         User chooses appropriate atomic column to establish the reference 
@@ -352,8 +419,15 @@ class AtomicColumnLattice:
         
         Parameters
         ----------
-        None.
-             
+        crop_factor : float or int
+            Crop image to h/crop_factor x w/crop_factor for selection of
+            an atom column to use for locating the reference lattice origin.
+            Default: 4.
+        interactive_selection : bool
+            Whether to enable interactive selection of an atom column by
+            graphical clicking. If False, generates the plot but does not wait
+            for mouse clicks.
+        
         Returns
         -------
         None.
@@ -381,18 +455,20 @@ class AtomicColumnLattice:
         self.unitcell_2D.loc[:, 'x_ref': 'y_ref'] = self.unitcell_2D.loc[
             :, 'u':'v'].to_numpy(dtype=float) @ self.dir_struct_matrix
         
-        uc_w = np.max(np.abs(self.dir_struct_matrix[:,0]))
-        uc_h = np.max(np.abs(self.dir_struct_matrix[:,1]))
+        x_coords = np.append(self.dir_struct_matrix[:,0], 0)
+        y_coords = np.append(self.dir_struct_matrix[:,1], 0)
+        uc_w = np.max([np.abs(x2 - x1) for x1 in x_coords for x2 in x_coords])
+        uc_h = np.max([np.abs(x2 - x1) for x1 in y_coords for x2 in y_coords])
         rect_params = [w/2-crop_view + 0.1*uc_w, 
-                       h/2+crop_view - 0.2*uc_h, 
-                       np.max(np.abs(self.dir_struct_matrix[:,0]))*1.1, 
-                       -np.max(np.abs(self.dir_struct_matrix[:,1]))*1.1]
+                       h/2+crop_view - 0.1*uc_h, 
+                       uc_w*1.2, 
+                       -uc_h*1.2]
         
         x_mean = np.mean(self.dir_struct_matrix[:,0])
         y_mean = np.mean(self.dir_struct_matrix[:,1])
         
-        x0 = rect_params[2]/2 - x_mean + rect_params[0]
-        y0 = rect_params[3]/2 - y_mean + rect_params[1]
+        x0 = rect_params[2]/2 - x_mean + rect_params[0] + uc_w*0.1
+        y0 = rect_params[3]/2 - y_mean + rect_params[1] #- uc_h*0.1
         
         site_list = list(set(self.unitcell_2D[lab]))
         site_list.sort()
@@ -409,9 +485,9 @@ class AtomicColumnLattice:
                         alpha = 1)
         ax.add_patch(box)
         
-        ax.scatter(self.unitcell_2D.loc[:,'x_ref'].to_numpy(dtype=float) + x0, 
-                    self.unitcell_2D.loc[:,'y_ref'].to_numpy(dtype=float) + y0,
-                    c=color_list, cmap='RdYlGn', s=10, zorder=10)
+        ax.scatter(self.unitcell_2D.loc[:,'x_ref'].to_numpy() + x0, 
+                   self.unitcell_2D.loc[:,'y_ref'].to_numpy() + y0,
+                   c=color_list, cmap='RdYlGn', s=10, zorder=10)
         
         ax.arrow(x0, y0, self.a1[0], self.a1[1],
                       fc='black', ec='black', width=0.1, 
@@ -427,31 +503,33 @@ class AtomicColumnLattice:
         
         cmap = plt.cm.RdYlGn
         color_index = [Circle((30, 7), 3, color=cmap(c)) 
-                       for c in np.linspace(0,1, num=len(color_code))]
+                        for c in np.linspace(0,1, num=len(color_code))]
         
         def make_legend_circle(legend, orig_handle,
-                               xdescent, ydescent,
-                               width, height, fontsize):
+                                xdescent, ydescent,
+                                width, height, fontsize):
             p = orig_handle
             return p
         ax.legend(handles = color_index,
                   labels = list(color_code.keys()),
                   handler_map={Circle : HandlerPatch(patch_func=
-                                                     make_legend_circle),},
+                                                      make_legend_circle),},
                   fontsize=20, loc='lower left', bbox_to_anchor=[1.02, 0],
                   facecolor='grey')
         
         ax.set_xticks([])
         ax.set_yticks([])
         fig.tight_layout()
-
-        pt = plt.ginput(1, timeout=30)
         
-        plt.close('all')
-        return pt[0]
+        if interactive_selection:
+            pt = plt.ginput(1, timeout=30)
+            
+            plt.close('all')
+            return pt[0]
         
     
-    def define_reference_lattice(self, LoG_sigma=None, crop_factor=4):
+    def define_reference_lattice(self, LoG_sigma=None, crop_factor=4,
+                                 origin=None):
         
         """Register reference lattice to image.
         
@@ -466,6 +544,11 @@ class AtomicColumnLattice:
             The Laplacian of Gaussian sigma value to use for peak sharpening.
             If None, calculated by: pixel_size / probe_fwhm * 0.5.
             Default None.
+        origin : 2-tuple of floats or ints
+            The approximate position of the origin atom column, previously
+            determined. If origin is given, graphical picking will not be 
+            prompted
+            Default: None.
              
         Returns
         -------
@@ -489,8 +572,13 @@ class AtomicColumnLattice:
                | (type(self.probe_fwhm) == int))):
             LoG_sigma = self.probe_fwhm / self.pixel_size * 0.5 
         
-        (x0, y0) = self.select_origin(crop_factor=crop_factor)
-
+        if origin == None:
+            (x0, y0) = self.select_origin(crop_factor=crop_factor, 
+                                          interactive_selection=True)
+            
+        elif len(origin)==2:
+            (x0, y0) = origin
+            
         print('pick coordinates:', np.around([x0, y0], decimals=2), '\n')
         
         filt = image_norm(-gaussian_laplace(self.image, LoG_sigma))
@@ -1728,7 +1816,7 @@ class AtomicColumnLattice:
                                   'linewidths' : 0.5}
         scatter_kwargs_default.update(scatter_kwargs_dict)
                                   
-        if sites_to_plot == 'all' or ['all']:
+        if (sites_to_plot == 'all') or (sites_to_plot[0] == 'all'):
             filtered = self.at_cols
             
         else:

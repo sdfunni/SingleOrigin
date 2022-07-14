@@ -71,8 +71,12 @@ class UnitCell():
     """
     
     def __init__(self, directory='', origin_shift = [0, 0, 0]):
-        cif_path, _ = qfd.getOpenFileName(caption='Select a .cif file...', 
-                                          directory=directory, filter='*.cif')
+        
+        if directory[-4:] == '.cif':
+            cif_path = directory
+        else:
+            cif_path, _ = qfd.getOpenFileName(caption='Select a .cif file...', 
+                                              directory=directory, filter='*.cif')
         cif_data = copy.deepcopy(ReadCif(cif_path))
         Crystal = cif_data.dictionary[list(cif_data.dictionary.keys()
                                                 )[0]].block
