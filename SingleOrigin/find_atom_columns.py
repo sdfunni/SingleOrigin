@@ -683,7 +683,6 @@ class AtomicColumnLattice:
             (at_cols.y == at_cols.at[origin_ind,'y'])]
         
         for lim in [init_inc * i for i in [1,2,4]]:
-            print(rf'refining to +/-{lim} unit cells')
             filtered = at_cols_orig_type[
                 (np.abs(at_cols_orig_type.u) <= lim) &
                 (np.abs(at_cols_orig_type.v) <= lim)]
@@ -748,16 +747,28 @@ class AtomicColumnLattice:
                          diff_filter='auto', grouping_filter='auto',
                          filter_by='elem', sites_to_fit='all',
                          watershed_line=True, use_LoG_fitting=False,
-                         parallelize=True):
+                         parallelize=True, force_circ_gauss_on_refit=False):
         """Algorithm for fitting 2D Gaussians to HR STEM image.
         
-        Uses Laplacian of Gaussian filter to isolate each peak by the 
-        Watershed method. Gaussian filter blurs image to group closely spaced 
-        peaks for simultaneous fitting. If simultaneous fitting is not 
-        desired, set grouping_filter = None. Requires reference lattice or
-        initial guesses for all atom columns in the image (i.e. 
-        self.at_cols_uncropped must have values in 'x_ref' and 'y_ref' 
-        columns). This can be achieved by running self.get_reference_lattice. 
+        1) Laplacian of Gaussian filter applied to image to isolate individual 
+        atom column areas. Watershed method used to generate individual mask 
+        regions. 
+        2) Gaussian filter used to blur image and create mask areas of closely  
+        spaced peaks for simultaneous fitting of the group. 
+        3) Runs fitting algorithm. First attempt for each atomic column group
+        uses the unbounded "BFSG" solver. In the event the first attempt 
+        returns physically unrealistic fitted parameter values, the bounded 
+        "L-BFSG-B" solver is used. 
+        
+        Requires reference lattice or initial guesses for all atom columns in 
+        the image (i.e. self.at_cols_uncropped must be a Pandas DataFrame with
+        values in 'x_ref' and 'y_ref' columns). This can be achieved by running 
+        self.get_reference_lattice or generating initial peak positions using
+        another peak finding algorithm and assigning the result to 
+        self.at_cols_uncropped.
+        
+        ***Other peak finding options to be implimented in the future.
+        
         Stores fitting parameters for each atom column in self.at_cols.
         
         Parameters
@@ -809,6 +820,19 @@ class AtomicColumnLattice:
             Whether to use parallel CPU processing. Will use all available
             physical cores if set to True. If False, will use serial 
             processing.
+        force_circ_gauss_on_refit : bool
+            Whether to force circular Gaussians when refitting atom columns.
+            This applies when an unbounded fitting attempt returns unphysical
+            parameter values (defined as: negative amplitude, negative 
+            background or an eccentric peak with sig_maj/sig_min >= 2) for 
+            one or more peaks in a group. In the event of unphysical parameter
+            values the peak group fitting is rerun with a bounded solver to 
+            enforce physically reasonable limits. In some instances using 
+            circular Guassians is more robust in preventing obvious atom 
+            column location errors. In general, however, atom columns may be 
+            elliptical, so using elliptical Guassians should be preferred.
+            Default: False
+            
             
         Returns
         -------
@@ -942,7 +966,7 @@ class AtomicColumnLattice:
         """If the difference between detected peak position and reference 
         position is greater than half the probe_fwhm, the reference is taken
         as the initial guess."""
-        mask = (np.min(norms, axis=1) < self.probe_fwhm/self.pixel_size*0.5
+        mask = (np.min(norms, axis=1) < self.probe_fwhm/self.pixel_size*0.3
                 ).reshape((-1, 1))
         mask = np.concatenate((mask, mask), axis=1)
         xy_peak = np.where(mask, xy_peak, xy_ref)
@@ -1031,21 +1055,53 @@ class AtomicColumnLattice:
                 if num == 1:
                     [x0, y0] = (xy_peak - xy_start).flatten()
                     _, _, _, theta, sig_1, sig_2 = img_ellip_param(img_msk)
+                    
+                    sig_replace = 3
+                    if sig_1<=1:
+                        print('sigma fixing')
+                        if sig_2<=1:
+                            sig_1=sig_2= sig_replace
+                        else:
+                            sig_1 = sig_replace
+                    elif sig_2<=1:
+                        sig_2 = sig_replace
+                    
+                    if sig_1/sig_2 > 3:
+                        sig_1 = sig_2
+                        theta = 0
+                        
+                    sig_rat = sig_1/sig_2
                     I0 = (np.average(img_msk[img_msk != 0])
                           - np.std(img_msk[img_msk != 0]))
                     A0 = np.max(img_msk) - I0
      
-                    p0 = np.array([x0, y0, sig_1, sig_2, np.radians(theta), 
+                    p0 = np.array([x0, y0, sig_1, sig_rat, np.radians(theta), 
                                     A0, I0])
                     
                     params = fit_gaussian2D(img_msk, p0, 
                                             use_LoG_fitting=False,
                                             method='BFGS')
+                        
+                    if ((params[:,-1] < 0) |
+                        (params[:,3] > 2) |
+                        (params[:,3] < 0.5) |
+                        (params[:,5] < 0)):
+                        
+                        bounds = [(None, None), (None, None), (1, None), 
+                                  (0.5, 2), (None, None), (0,2),
+                                  ] * num +[(0,1)]
+                        
+                        # Refit with bounds
+                        params = fit_gaussian2D(img_msk, p0, masks, 
+                                                use_LoG_fitting=False,
+                                                method='L-BFGS-B',
+                                                bounds=bounds)
+                        
                     
                     params = np.array([params[:,0] + xy_start[0],
                                        params[:,1] + xy_start[1],
                                        params[:,2],
-                                       params[:,3],
+                                       params[:,2]/params[:,3],
                                        np.degrees(params[:,4]),
                                        params[:,5],
                                        params[:,6]]).T
@@ -1056,7 +1112,7 @@ class AtomicColumnLattice:
                     y0 = x0y0[:, 1]
                     
                     sig_1 = []
-                    sig_2 = []
+                    sig_rat = []
                     theta = []
                     I0 = []
                     A0 = []
@@ -1066,14 +1122,29 @@ class AtomicColumnLattice:
                         masked_sl = img_sl * mask
                         _, _, _, theta_, sig_1_, sig_2_ = (
                             img_ellip_param(masked_sl))
+                        
+                        sig_replace = 3
+                        if sig_1_<=1:
+                            print('sigma fixing')
+                            if sig_2_<=1:
+                                sig_1_=sig_2_= sig_replace
+                            else:
+                                sig_1_ = sig_replace
+                        elif sig_2_<=1:
+                            sig_2_ = sig_replace
+                        
+                        if sig_1_/sig_2_ > 2:
+                            sig_1_ = sig_2_
+                            theta_ = 0
+                            
                         sig_1 += [sig_1_]
-                        sig_2 += [sig_2_]
+                        sig_rat += [sig_1_ / sig_2_]
                         theta += [np.radians(theta_)]
                         I0 += [(np.average(masked_sl[masked_sl != 0])
                               - np.std(masked_sl[masked_sl != 0]))]
                         A0 += [np.max(masked_sl) - I0[i]]
                     
-                    p0 = np.array([x0, y0, sig_1, sig_2, theta, A0]).T
+                    p0 = np.array([x0, y0, sig_1, sig_rat, theta, A0]).T
 
                     p0 = np.append(p0.flatten(), np.mean(I0))
 
@@ -1081,18 +1152,34 @@ class AtomicColumnLattice:
                                             use_LoG_fitting=False,
                                             method='BFGS')
                     
-                    if np.any(params[:,-1] < 0):
+                    if (np.any(params[:,-1] < 0) |
+                        np.any(params[:,3] > 2) |
+                        np.any(params[:,3] < 0.5) |
+                        np.any(params[:,5] < 0)):
+                        if force_circ_gauss_on_refit:
+                            bounds = [(None, None), (None, None), (1, None), 
+                                      (1, 1), (0, 0), (0,2),
+                                      ] * num +[(0,None)]
+                        else:
+                            bounds = [(None, None), (None, None), (1, None), 
+                                      (0.5, 2), (None, None), (0,2),
+                                      ] * num +[(0,None)]
+                        
+                        # Refit with bounds and force round Gaussian
                         params = fit_gaussian2D(img_msk, p0, masks, 
                                                 use_LoG_fitting=False,
-                                                method='L-BFGS-B')
-                    
+                                                method='L-BFGS-B',
+                                                bounds=bounds)
                     params = np.array([params[:,0] + xy_start[0],
                                         params[:,1] + xy_start[1],
                                         params[:,2],
-                                        params[:,3],
+                                        params[:,2]/params[:,3],
                                         np.degrees(params[:,4]),
                                         params[:,5],
                                         params[:,6]]).T
+                
+                # if (np.any(params[:,2]<0) | np.any(params[:,3] <0)):
+                #     print('negative sigma')
                 
                 return params
         
@@ -1135,6 +1222,7 @@ class AtomicColumnLattice:
                         masked_sl = img_sl * mask
                         _, _, _, theta_, sig_1_, sig_2_ = (
                             img_ellip_param(masked_sl))
+                        
                         sig += [(sig_1_+sig_2_)/2]
                         sig_r += [1]
                         theta += [0]
@@ -1159,7 +1247,7 @@ class AtomicColumnLattice:
                 params = np.array([params[:,0] + xy_start[0],
                                     params[:,1] + xy_start[1],
                                     params[:,2],
-                                    params[:,3],
+                                    params[:,2]/params[:,3],
                                     np.degrees(params[:,4]),
                                     params[:,5],
                                     params[:,6]]).T

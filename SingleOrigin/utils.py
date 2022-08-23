@@ -20,10 +20,11 @@ import os
 import copy
 import warnings
 import numpy as np
-from numpy.linalg import norm
+# from numpy.linalg import norm
 import pandas as pd
 from scipy import ndimage
-from scipy.ndimage.filters import (gaussian_filter, gaussian_laplace, 
+from scipy.ndimage.filters import (#gaussian_filter, 
+                                   gaussian_laplace, 
                                    maximum_filter)
 from scipy.optimize import minimize
 
@@ -454,7 +455,7 @@ def img_equ_ellip(image):
         
     ind_sort = np.argsort(eigvals)
     eigvals = np.take_along_axis(eigvals, ind_sort, 0)
-    eigvects = np.take_along_axis(eigvects, np.array([ind_sort,ind_sort]), 1)
+    eigvects = np.take_along_axis(eigvects, np.array([ind_sort,ind_sort]), 0)
     return eigvals, eigvects, x0, y0
 
 
@@ -487,7 +488,8 @@ def img_ellip_param(image):
     eccen = np.sqrt(1-eigvals[minor]/eigvals[major])
     theta = np.degrees(-np.arcsin(np.cross(np.array([1,0]),
                                            eigvects[:, major])))
-    
+    if sig_2 > sig_1:
+        print('sigmas flipped')
     return x0, y0, eccen, theta, sig_1, sig_2
 
 
@@ -562,7 +564,7 @@ def gaussian2d_ss(p0, x, y, z, masks=None):
     p0 : array_like with shape (n,7)
         n = number of peaks to fit
         Array containing the Gaussian function parameter vector(s):
-            [x0, y0, sig_1, sig_2, ang, A, I_o]
+            [x0, y0, sig_maj, sig_rat, ang, A, I_o]
     x, y : 1D array_like, must have the same shape
         The flattened arrays of x and y coordinates of image pixels
     z : 1D array_like, must have the same shape as x and y
@@ -584,15 +586,17 @@ def gaussian2d_ss(p0, x, y, z, masks=None):
         # model = np.ones(z.shape) * p0[-1]
         I0 = p0[-1]
         p0_ = p0[:-1].reshape((-1,6))
-        x0, y0, sig_1, sig_2, ang, A = np.split(p0_, 6, axis=1)
+        x0, y0, sig_maj, sig_rat, ang, A = np.split(p0_, 6, axis=1)
     else:
-        x0, y0, sig_1, sig_2, ang, A, I0 = p0
+        x0, y0, sig_maj, sig_rat, ang, A, I0 = p0
+    
+    sig_min = sig_maj/sig_rat
     
     #Sum the functions for each peak:
     model = np.sum(A*np.exp(-1/2*(((np.cos(ang) * (x - x0)
-                                     + np.sin(ang) * (y - y0)) / sig_1)**2
+                                     + np.sin(ang) * (y - y0)) / sig_maj)**2
                                    +((-np.sin(ang) * (x - x0)
-                                      + np.cos(ang) * (y - y0)) / sig_2)**2)), 
+                                      + np.cos(ang) * (y - y0)) / sig_min)**2)), 
                     axis=0) + I0
     
     #Subtract from data to get residuals:
@@ -612,7 +616,7 @@ def LoG2d_ss(p0, x, y, z, masks=None):
     p0 : array_like with shape (n,7)
         n = number of peaks to fit
         Array containing the Gaussian function parameter vector(s):
-            [x0, y0, sig_1, sig_2, ang, A, I_o]
+            [x0, y0, sig, sig_r, ang, A, I_o]
     x, y : 1D array_like, must have the same shape
         The flattened arrays of x and y coordinates of image pixels
     z : 1D array_like, must have the same shape as x and y
@@ -636,6 +640,7 @@ def LoG2d_ss(p0, x, y, z, masks=None):
         I0 = p0[-1]
         p0_ = p0[:-1].reshape((-1,6))
         x0, y0, sig, sig_r, ang, A = np.split(p0_, 6, axis=1)
+        
     else:
         x0, y0, sig, sig_r, ang, A, I0 = p0
     
@@ -651,7 +656,8 @@ def LoG2d_ss(p0, x, y, z, masks=None):
     return r_sum_sqrd
 
 
-def fit_gaussian2D(data, p0, masks=None, method='L-BFGS-B', use_LoG_fitting=False):
+def fit_gaussian2D(data, p0, masks=None, method='L-BFGS-B', bounds=None,
+                   use_LoG_fitting=False):
     """Fit a 2D Gaussain function to data.
     
     Fits a 2D, elliptical Gaussian to an image. Intensity values equal to zero 
@@ -661,9 +667,9 @@ def fit_gaussian2D(data, p0, masks=None, method='L-BFGS-B', use_LoG_fitting=Fals
     ----------
     data : ndarray
         Image containing a Gaussian peak
-    p0 : array_like with shape (6*n + 1,)
+    p0 : array_like with shape (n, 7)
         Initial guess for the n-Gaussian parameter vector where each peak
-        has 6 independent parameters (x0, y0, sig_1, sig_2, ang, A) the
+        has 6 independent parameters (x0, y0, sig_maj, sig_ratio, ang, A) the
         whole region has a constant background (I_0).
         
     masks : 2d array_like of size (n, m)
@@ -674,6 +680,13 @@ def fit_gaussian2D(data, p0, masks=None, method='L-BFGS-B', use_LoG_fitting=Fals
     method : str, the minimization solver name
         Supported solvers are: 'L-BFGS-B', 'Powell', 'trust-constr'.
         Default: 'L-BFGS-B'
+    bounds : list of two-tuples of length 7*n or None
+        The bounds for Gaussian fitting parameters. Only works with methods
+        that accept bounds (e.g. 'L-BFGS-B', but not 'BFGS'). Otherwise must
+        be set to None.
+        Each two-tuple is in the form: (upper, lower).
+        Order of bounds must be: [x0, y0, sig_maj, sig_ratio, ang, A, I_0] * n
+        Default: None
     
     use_LoG_fitting : bool
         If True, use Laplacian of Gaussian function for fitting. If False, use 
@@ -730,6 +743,8 @@ def fit_gaussian2D(data, p0, masks=None, method='L-BFGS-B', use_LoG_fitting=Fals
     with warnings.catch_warnings():
         warnings.filterwarnings('ignore', category=UserWarning, 
                                 lineno=182)
+        warnings.filterwarnings('ignore', category=RuntimeWarning, 
+                                lineno=579)
         if use_LoG_fitting:
             bounds = None
             if np.isin(method, ['L-BFGS-B', 'TNC', 'Nelder-Mead',
@@ -741,12 +756,13 @@ def fit_gaussian2D(data, p0, masks=None, method='L-BFGS-B', use_LoG_fitting=Fals
                               args=(x, y, z, masks_labeled), 
                               bounds=bounds, method=method).x
         else:
-            bounds = None
-            if np.isin(method, ['L-BFGS-B', 'TNC', 'Nelder-Mead',
-                                'trust-constr', 'SLSQP']):
-                bounds = [(None, None), (None, None), (None, None), 
-                          (None, None), (None, None), (0,None),
-                          ] * num_gauss +[(0,None)]
+            
+            # if np.isin(method, ['L-BFGS-B', 'TNC', 'Nelder-Mead',
+            #                     'trust-constr', 'SLSQP']):
+                
+            #     bounds = [(None, None), (None, None), (None, None), 
+            #               (1, 1), (0, 0), (0,None),
+            #               ] * num_gauss +[(0,None)]
             
             params = minimize(gaussian2d_ss, p0_, 
                               args=(x, y, z, masks_labeled), 
@@ -917,3 +933,96 @@ def watershed_segment(image, sigma=None, buffer=0, local_thresh_factor = 0.95,
     
     return masks, num_masks, slices, peaks
 
+def get_phase_from_com(com_xy, theta, flip=True, high_low_filter=False,
+                       filter_params={'beam_energy' : 200e3, 
+                                      'conv_semi_angle' : 18,
+                                      'pixel_size' : 0.01,
+                                      'high_pass' : 0.05, 
+                                      'low_pass' : 0.85,
+                                      'edge_smoothing' : 0.01}):
+    
+    """Reconstruct phase from center of mass shift components.
+    
+    *** Citations...
+    
+    Parameters
+    ----------
+    com_xy : ndarray of shape (h,w,2)
+        The center of mass shift component images as a stack.
+    theta : float or int
+        Rotation angle in degrees between real and reciprocal space.
+    flip : bool
+        Whether to transpose x and y axes.
+        Default: False
+    high_low_filter : bool
+        Whether to perform high and/or low pass filtering as defined in the 
+        filter_params argument.
+        Default: False
+    filter_params : dict
+        Dictionary of parameters used for calculating the high and/or low pass
+        filters:
+            {'beam_energy' : 200e3,    # electron-volts
+             'conv_semi_angle' : 18,   # mrads
+             'pixel_size' : 0.01,      # nm
+             'high_pass' : 0.05,       # fraction of aperture passband
+             'low_pass' : 0.85,        # fraction of aperture passband
+             'edge_smoothing' : 0.01}  # fraction of aperture passband
+         
+    Returns
+    -------
+    phase : 2D array with shape (h,w)
+        The reconstructed phase of the sample transmission function.
+    
+    """
+    
+    f_freq_1d_y = np.fft.fftfreq(com_xy.shape[1], 1)
+    f_freq_1d_x = np.fft.fftfreq(com_xy.shape[2], 1)
+    
+    if high_low_filter:
+        
+        lambda_ = elec_wavelength(filter_params['beam_energy']) * 1e9 # in nm
+        h,w = com_xy.shape[1:]
+        fft_pixelSize = 1 / (np.array(com_xy.shape[1:]) 
+                             * filter_params['pixel_size']) #nm^-1 
+        
+        apeture_cutoff = 2*np.sin(2 * filter_params['conv_semi_angle']
+                                  )/lambda_
+        low_pass = filter_params['low_pass']*apeture_cutoff
+        high_pass = filter_params['high_pass']*apeture_cutoff
+        
+        nx = np.fft.fftshift(np.arange(-w/2, w/2))
+        ny = np.fft.fftshift(np.arange(-h/2, h/2))
+        fft_freq_abs = np.linalg.norm(np.array(
+            np.meshgrid(nx*fft_pixelSize[1], ny*fft_pixelSize[0])), axis=0)
+        
+        lp_hp_mask = np.where(((fft_freq_abs>high_pass) & 
+                               (fft_freq_abs<low_pass)), 1, 0).astype(float)
+        
+        sigma = 3 #filter_params['edge_smoothing'] * apeture_cutoff
+        lp_hp_mask = image_norm(ndimage.filters.gaussian_filter(
+            lp_hp_mask, sigma=sigma, truncate=4*sigma))
+    
+    theta = np.radians(theta)
+    if not flip:
+        CoMx_rot = com_xy[0]*np.cos(theta) - com_xy[1]*np.sin(theta)
+        CoMy_rot = com_xy[0]*np.sin(theta) + com_xy[1]*np.cos(theta)
+    if flip:
+        CoMx_rot = com_xy[0]*np.cos(theta) + com_xy[1]*np.sin(theta)
+        CoMy_rot = com_xy[0]*np.sin(theta) - com_xy[1]*np.cos(theta)
+        
+    com_ = np.zeros(com_xy.shape)
+    com_[0] = CoMx_rot
+    com_[1] = CoMy_rot
+
+    k_p = np.array(np.meshgrid(f_freq_1d_x, f_freq_1d_y))
+    
+    _ = np.seterr(divide='ignore')
+    denominator = 1/(1j*(k_p[0] + 1j*k_p[1]))
+    denominator[0,0] = 0
+    _ = np.seterr(divide='warn')
+    
+    phase = np.real(np.fft.ifft2((
+        lp_hp_mask * (np.fft.fft2(com_[1]) 
+                      + 1j*np.fft.fft2(com_[0]))) * denominator))
+    
+    return phase

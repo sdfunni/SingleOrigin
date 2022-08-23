@@ -38,7 +38,8 @@ from SingleOrigin.utils import (metric_tensor,
                                 fit_gaussian2D,
                                 pcf_radial,
                                 detect_peaks,
-                                watershed_segment)
+                                watershed_segment,
+                                get_phase_from_com)
 
 from SingleOrigin.cell_transform import UnitCell
 

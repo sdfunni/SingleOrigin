@@ -471,7 +471,10 @@ class UnitCell():
         self.at_cols.reset_index(drop=True, inplace=True)
         return self.at_cols
     
-    def plot_unit_cell(self, label_by='elem'):
+    def plot_unit_cell(self, label_by='elem',
+                       color_dict=None, 
+                       label_dict=None,
+                       scatter_kwargs_dict={}):
         """Plots the projected unit cell for verification.
         
         Parameters
@@ -479,6 +482,20 @@ class UnitCell():
         label_by : str
             The DataFrame column to use for labeling the atom columns in the 
             plot.
+        color_dict : None or dict
+            Dict of (atom column site label:color) (key:value) pairs. Colors 
+            will be used for plotting positions and the legend. If None, a 
+            standard color scheme is created from the 'RdYlGn' colormap.
+        legend_dict : None or dict
+            Dict of string names to use for legend labels. Keys must correspond
+            to the atom column site labels to be plotted. 
+        scatter_kwargs_dict : dict
+            Dict of additional key word args to be passed to  pyplot.scatter.
+            Do not include "c" or "color" as these are specified by the 
+            color_dict argument. Default kwards specified in the function are: 
+                s=25, edgecolor='black', linewidths=0.5. These or other
+            pyplot.scattter parameters can be modified through this dictionary.
+            Default: {}
             
         Returns
         -------
@@ -486,6 +503,19 @@ class UnitCell():
             
         """
         
+        scatter_kwargs_default = {'s' : 200, 
+                                  'edgecolor' : 'black', 
+                                  'linewidths' : 0.5}
+        scatter_kwargs_default.update(scatter_kwargs_dict)
+        
+        if color_dict == None:
+            cmap = plt.cm.RdYlGn
+            num_colors = self.at_cols.loc[:, label_by].unique().shape[0]
+            color_dict = {k:cmap(v/(num_colors-1)) for v, k in 
+                          enumerate(np.sort(self.at_cols.loc[:, label_by
+                                                             ].unique()
+                                            ))}
+    
         fig,axs = plt.subplots(ncols=1,figsize=(10,10))
         axs.set_aspect(1)
         p = patches.Polygon(np.array([[0, 0],
@@ -496,28 +526,48 @@ class UnitCell():
                             fill = False, ec = 'black', lw = 0.5)
         axs.add_patch(p)
         axs.set_facecolor('grey')
-        ColList = np.sort(pd.unique(self.at_cols[label_by])).tolist()
-        cmap = plt.get_cmap('RdYlGn')
+        # ColList = np.sort(pd.unique(self.at_cols[label_by])).tolist()
+        # cmap = plt.get_cmap('RdYlGn')
         
-        color_code = {k:v for v, k in enumerate(
-            np.sort(self.at_cols.loc[:, label_by].unique()))}
-        color_list = [color_code[site] for site in 
-                      self.at_cols.loc[:, label_by]]
+        # color_code = {k:v for v, k in enumerate(
+        #     np.sort(self.at_cols.loc[:, label_by].unique()))}
+        # color_list = [color_code[site] for site in 
+        #               self.at_cols.loc[:, label_by]]
     
-        cmap = plt.cm.RdYlGn
+        # cmap = plt.cm.RdYlGn
         
-        axs.scatter(self.at_cols.loc[:, 'x'], self.at_cols.loc[:, 'y'],
-                    c=color_list, s=300, cmap=cmap, zorder=2)
+        # axs.scatter(self.at_cols.loc[:, 'x'], self.at_cols.loc[:, 'y'],
+        #             c=color_list, s=300, zorder=2)
         
-        for ind in self.at_cols.index:
-            axs.annotate(rf'${ self.at_cols.at[ind, label_by] }$',
-                          (self.at_cols['x'][ind] + 1/8, 
-                           self.at_cols['y'][ind] + 1/8), 
-                          fontsize=20)
+        for site in color_dict:
+            # if legend_dict != None:
+            #     label = legend_dict[site]
+            # else: label = site
+            sublattice = self.at_cols[self.at_cols[label_by] == site].copy()
+            axs.scatter(sublattice.loc[:, 'x'], sublattice.loc[:, 'y'], 
+                        color=color_dict[site],
+                        **scatter_kwargs_default)
+        if label_dict:
+            for ind, row in self.at_cols.iterrows():
+                label = label_dict[row[label_by]]
+                axs.annotate(label,
+                             (row['x'] + 1/8, 
+                              row['y'] + 1/8), 
+                             fontsize=20)
+        
+        else:
+            for ind, row in self.at_cols.iterrows():
+                label = rf'${ row[label_by] }$'
+                axs.annotate(label,
+                             (row['x']+ 1/8, 
+                              row['y'] + 1/8), 
+                              fontsize=20)
         axs.set_xticks([])
         axs.set_yticks([])
         axs.set_title('Projected Unit Cell', fontdict = {'fontsize' : 20,
                                                          'color' : 'red'})
+        
+        return fig
         
     def UnitCell_to_xyz(self, file_name, path='', element_label='number',
                         comment=''):
