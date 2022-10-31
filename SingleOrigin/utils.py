@@ -33,6 +33,7 @@ import imageio
 from ncempy.io.dm import dmReader 
 from ncempy.io.ser import serReader
 from ncempy.io.emdVelox import emdVeloxReader
+from ncempy.io.emd import emdReader
 
 from skimage.segmentation import watershed
 from skimage.measure import (moments, moments_central)
@@ -275,9 +276,37 @@ def elec_wavelength(V=200e3):
 
     wavelength = h/(2*m_e*e*V*(1+e*V/(2*m_e*c**2)))**.5 
     return wavelength
+
+#%%
+"""Directory and file functions"""
+def select_folder(path=None):
+    """Select a folder in dialog box and return path
+    
+    Parameters
+    ----------
+    path : str or None
+        The path to the desired folder. This option is available so this
+        function can be retained in a script when the user does not always 
+        want to deal with clicking in a dialog box. If the path is passed
+        in the function call the dialog box will not open, but the path
+        can easily be commented out to activate the interactive functionality.
+
+    Returns
+    -------
+    path : str
+        The path to the selected folder.
+        
+    """
+    if not path: 
+        print('Select folder')
+        path = qfd.getExistingDirectory()
+    
+    return path
+
 #%%
 """General image functions"""
-def import_image(directory=None, display_image=True, images_from_stack=None):
+def import_image(directory=None, display_image=True, images_from_stack=None, 
+                 emd_velox=True):
     """Select image from 'Open File' dialog box, import and (optionally) plot 
     
     Parameters
@@ -295,7 +324,10 @@ def import_image(directory=None, display_image=True, images_from_stack=None):
             Default: None: import only the first image of the stack.
             'all' : import all images as a 3d numpy array.
         images
-         
+    emd_velox : bool
+        Whether .emd files are of Velox format. If True, open .emd files 
+        assuming Velox format. Otherwise, open using Berkeley .emd reader.
+        
     Returns
     -------
     image : ndarray
@@ -329,9 +361,16 @@ def import_image(directory=None, display_image=True, images_from_stack=None):
         metadata = {key:val for key, val in dm_file.items() if key != 'data'}
         
     elif path[-3:] == 'emd':
-        emd_file = emdVeloxReader(path)
-        image = emd_file['data']
-        metadata = {key:val for key, val in emd_file.items() if key != 'data'}
+        if emd_velox:
+            emd_file = emdVeloxReader(path)
+            image = emd_file['data']
+            metadata = {key:val for key, val in emd_file.items() 
+                        if key != 'data'}
+        else:
+            emd_file = emdReader(path)
+            image = emd_file['data']
+            metadata = {key:val for key, val in emd_file.items() 
+                        if key != 'data'}
         
     elif path[-3:] == 'ser':
         ser_file = serReader(path)
@@ -454,7 +493,7 @@ def img_equ_ellip(image):
         eigvects[:,1] *= -1
         
     ind_sort = np.argsort(eigvals)
-    eigvals = np.take_along_axis(eigvals, ind_sort, 0)
+    eigvals = np.abs(np.take_along_axis(eigvals, ind_sort, 0))
     eigvects = np.take_along_axis(eigvects, np.array([ind_sort,ind_sort]), 0)
     return eigvals, eigvects, x0, y0
 
@@ -831,9 +870,11 @@ def detect_peaks(image, min_dist=4, thresh=0):
     min_dist : int or float
         The minimum distance allowed between detected peaks. Used to create
         a circular neighborhood kernel for peak detection.
+        Default: 4
     thresh : int or float
         The minimum image value that should be considered a peak. Used to 
         remove low intensity background noise peaks.
+        Default: 0
          
     Returns
     -------
@@ -843,12 +884,14 @@ def detect_peaks(image, min_dist=4, thresh=0):
     """
     
     if min_dist<1: min_dist=1
-    kern_rad = int(np.ceil(min_dist))
+    kern_rad = int(np.ceil(min_dist/2))
     size = 2*kern_rad + 1
-    neighborhood = np.array([1 if np.hypot(i-kern_rad,j-kern_rad) <= min_dist 
+    neighborhood = np.array([1 if np.hypot(i-kern_rad,j-kern_rad) 
+                             <= min_dist/2 
                              else 0 
                              for j in range(size) for i in range(size)]
                             ).reshape((size,size))
+    
     peaks = (maximum_filter(image,footprint=neighborhood)==image
              ) * (image > thresh)
     return peaks.astype(int)
@@ -861,19 +904,24 @@ def watershed_segment(image, sigma=None, buffer=0, local_thresh_factor = 0.95,
     Parameters
     ----------
     image : 2D array_like
-        The image to be segmented
+        The image to be segmented.
     sigma : int or float
-        The Laplacian of Gaussian sigma value to use for peak sharpening
+        The Laplacian of Gaussian sigma value to use for peak sharpening. If 
+        None, no filtering is applied.
+        Default: None
     buffer : int
-        The border within which peaks are ignored
+        The border within which peaks are ignored.
+        Default: 0
     local_thresh_factor : float
         Removes background from each segmented region by thresholding. 
         Threshold value determined by finding the maximum value of edge pixels
         in the segmented region and multipling this value by the 
         local_thresh_factor value. The filtered image is used for this 
-        calculation. Default 0.95.
+        calculation. 
+        Default 0.95.
     watershed_line : bool
-        Seperate segmented regions by one pixel. Default: True.
+        Seperate segmented regions by one pixel. 
+        Default: True.
     min_dist : int or float
         The minimum distance allowed between detected peaks. Used to create
         a circular neighborhood kernel for peak detection.
@@ -977,9 +1025,9 @@ def get_phase_from_com(com_xy, theta, flip=True, high_low_filter=False,
     
     f_freq_1d_y = np.fft.fftfreq(com_xy.shape[1], 1)
     f_freq_1d_x = np.fft.fftfreq(com_xy.shape[2], 1)
+    h,w = com_xy.shape[1:]
     
     if high_low_filter:
-        
         lambda_ = elec_wavelength(filter_params['beam_energy']) * 1e9 # in nm
         h,w = com_xy.shape[1:]
         fft_pixelSize = 1 / (np.array(com_xy.shape[1:]) 
@@ -1001,6 +1049,9 @@ def get_phase_from_com(com_xy, theta, flip=True, high_low_filter=False,
         sigma = 3 #filter_params['edge_smoothing'] * apeture_cutoff
         lp_hp_mask = image_norm(ndimage.filters.gaussian_filter(
             lp_hp_mask, sigma=sigma, truncate=4*sigma))
+        
+    else:
+        lp_hp_mask = np.ones((h,w))
     
     theta = np.radians(theta)
     if not flip:
@@ -1021,8 +1072,44 @@ def get_phase_from_com(com_xy, theta, flip=True, high_low_filter=False,
     denominator[0,0] = 0
     _ = np.seterr(divide='warn')
     
-    phase = np.real(np.fft.ifft2((
-        lp_hp_mask * (np.fft.fft2(com_[1]) 
-                      + 1j*np.fft.fft2(com_[0]))) * denominator))
+    
+    complex_image = np.fft.ifft2((lp_hp_mask * (np.fft.fft2(com_[1]) 
+                                             + 1j*np.fft.fft2(com_[0]))) 
+                              * denominator)
+    
+    phase = np.real(complex_image)
+    
     
     return phase
+
+def fast_rotate_90deg(image, angle):
+    
+    """Rotate images by multiples of 90 degrees. Faster than 
+    scipy.ndimage.rotate().
+    
+    Parameters
+    ----------
+    image : ndarray of shape (h,w)
+        The image.
+    angle : float or int
+        Rotation angle in degrees. Must be a multiple of 90.
+         
+    Returns
+    -------
+    rotated_image : 2D array 
+        The image rotated by the specified angle.
+    
+    """
+    
+    angle = angle % 360
+    if angle == 90:
+        image_ = np.flipud(image.T)
+    elif angle == 180:
+        image_ = np.flipud(np.fliplr(image))
+    elif angle == 270:
+        image_ = np.fliplr(image.T)
+    elif angle == 0:
+        image_ = image
+    else:
+        raise Exception('Argument "angle" must be a multiple of 90 degrees')
+    return image_

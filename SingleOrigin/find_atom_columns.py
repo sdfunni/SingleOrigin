@@ -580,11 +580,11 @@ class AtomicColumnLattice:
             (x0, y0) = origin
             
         print('pick coordinates:', np.around([x0, y0], decimals=2), '\n')
+        img_LoG = image_norm(-gaussian_laplace(self.image, LoG_sigma))
         
-        filt = image_norm(-gaussian_laplace(self.image, LoG_sigma))
-        neighborhood = np.ones((7,7))
-        local_max = np.fliplr(np.argwhere(maximum_filter(filt,
-                                    footprint=neighborhood)==filt))
+        neighborhood = np.ones((5,5))
+        local_max = np.fliplr(np.argwhere(maximum_filter(img_LoG,
+                                    footprint=neighborhood)==img_LoG))
 
         [x0, y0] = local_max[np.argmin(np.linalg.norm(local_max 
                                                     - [x0, y0], axis=1))]
@@ -660,7 +660,6 @@ class AtomicColumnLattice:
         
         '''Refine reference lattice on watershed mask CoMs'''
         print('Performing rough reference lattice refinement...')
-        img_LoG = image_norm(-gaussian_laplace(self.image, LoG_sigma))
         poss = self.unitcell_2D.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float)
         dists = np.linalg.norm(np.array([poss - pos for pos in poss]), axis=2)
         min_dist = np.amin(dists, initial=np.inf, where=dists>0)
@@ -747,7 +746,9 @@ class AtomicColumnLattice:
                          diff_filter='auto', grouping_filter='auto',
                          filter_by='elem', sites_to_fit='all',
                          watershed_line=True, use_LoG_fitting=False,
-                         parallelize=True, force_circ_gauss_on_refit=False):
+                         parallelize=True, 
+                         # force_circ_gauss_on_refit=False,
+                         use_circ_gauss=False):
         """Algorithm for fitting 2D Gaussians to HR STEM image.
         
         1) Laplacian of Gaussian filter applied to image to isolate individual 
@@ -757,7 +758,7 @@ class AtomicColumnLattice:
         spaced peaks for simultaneous fitting of the group. 
         3) Runs fitting algorithm. First attempt for each atomic column group
         uses the unbounded "BFSG" solver. In the event the first attempt 
-        returns physically unrealistic fitted parameter values, the bounded 
+        returns physically unrealistic parameter values, the bounded 
         "L-BFSG-B" solver is used. 
         
         Requires reference lattice or initial guesses for all atom columns in 
@@ -820,17 +821,26 @@ class AtomicColumnLattice:
             Whether to use parallel CPU processing. Will use all available
             physical cores if set to True. If False, will use serial 
             processing.
-        force_circ_gauss_on_refit : bool
-            Whether to force circular Gaussians when refitting atom columns.
-            This applies when an unbounded fitting attempt returns unphysical
-            parameter values (defined as: negative amplitude, negative 
-            background or an eccentric peak with sig_maj/sig_min >= 2) for 
-            one or more peaks in a group. In the event of unphysical parameter
-            values the peak group fitting is rerun with a bounded solver to 
-            enforce physically reasonable limits. In some instances using 
-            circular Guassians is more robust in preventing obvious atom 
-            column location errors. In general, however, atom columns may be 
-            elliptical, so using elliptical Guassians should be preferred.
+        # force_circ_gauss_on_refit : bool
+        #     Whether to force circular Gaussians when refitting atom columns.
+        #     This applies when an unbounded fitting attempt returns unphysical
+        #     parameter values (defined as: negative amplitude, negative 
+        #     background or an eccentric peak with sig_maj/sig_min >= 2) for 
+        #     one or more peaks in a group. In the event of unphysical parameter
+        #     values the peak group fitting is rerun with a bounded solver to 
+        #     enforce physically reasonable limits. In some instances using 
+        #     circular Guassians is more robust in preventing obvious atom 
+        #     column location errors. In general, however, atom columns may be 
+        #     elliptical, so using elliptical Guassians should be preferred.
+        #     Default: False
+        use_circ_gauss : bool
+            Whether to force circular Gaussians for initial fitting of atom 
+            columns. If True, applies all bounds to ensure physically 
+            realistic parameter values. In some instances, especially for  
+            significantly overlapping columns, using circular Guassians is 
+            more robust in preventing obvious atom column location errors. 
+            In general, however, atom columns may be elliptical, so using 
+            elliptical Guassians should be preferred.
             Default: False
             
             
@@ -930,9 +940,15 @@ class AtomicColumnLattice:
                 
         if sites_to_fit != 'all':
             at_cols = at_cols[at_cols.loc[:, filter_by].isin(sites_to_fit)]
-            
+        
+        t1 = time.time() 
+        t_elapse = t1 - t0
+        print(f'Step 1(initial checks): {int(t_elapse // 60)} min '
+              +f'{t_elapse % 60 :.{1}f} sec')
+        
         """Find minimum distance (in pixels) between atom columns for peak
         detection neighborhood"""
+        
         unit_cell_uv = self.unitcell_2D.loc[:, 'u':'v'].to_numpy(dtype=float)
         unit_cell_xy = np.concatenate(([unit_cell_uv + [i,j] 
                                         for i in range(-1, 2)
@@ -940,19 +956,34 @@ class AtomicColumnLattice:
                                       ) @ self.dir_struct_matrix
         dists = np.linalg.norm(np.array([unit_cell_xy - pos 
                                          for pos in unit_cell_xy]), axis=2)
-        min_dist = (np.amin(dists, initial=np.inf, where=dists>0) - 1) / 2
+        min_dist = (np.amin(dists, initial=np.inf, where=dists>0) - 1)
+        
+        t2 = time.time()
+        t_elapse = t2 - t1
+        print(f'Step 2(min atom dist): {int(t_elapse // 60)} min '
+              +f'{t_elapse % 60 :.{1}f} sec')
         
         """Apply Watershed segmentation to generate fitting masks"""
         fit_masks, num_fit_masks, slices_LoG, xy_peak = watershed_segment(
             img_LoG, local_thresh_factor = local_thresh_factor, 
             watershed_line=watershed_line, min_dist=min_dist)
         
+        t3 = time.time()
+        t_elapse = t3 - t2
+        print(f'Step 3(fitting masks): {int(t_elapse // 60)} min '
+              +f'{t_elapse % 60 :.{1}f} sec')
+        
         """Gaussian blur to group columns for simultaneous fitting"""
         group_masks, num_group_masks, slices_Gauss, _ = watershed_segment(
             img_gauss, local_thresh_factor = 0, watershed_line=watershed_line,
             min_dist=min_dist)
         
-        """Use local peaks in img_LoG and match to reference lattice.
+        t4 = time.time()
+        t_elapse = t4 - t3
+        print(f'Step 4(grouping masks): {int(t_elapse // 60)} min '
+              +f'{t_elapse % 60 :.{1}f} sec')
+        
+        """Match the reference lattice points to local peaks in img_LoG.
         These points will be initial position guesses for fitting"""
         xy_peak = xy_peak.loc[:, 'x':'y'].to_numpy(dtype=float)
         xy_ref = at_cols.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float)
@@ -963,6 +994,11 @@ class AtomicColumnLattice:
         xy_peak = np.array([xy_peak[ind] for ind in inds])
         slices_LoG = [slices_LoG[ind] for ind in inds]
         
+        t5 = time.time()
+        t_elapse = t5 - t4
+        print(f'Step 5(match masks to points): {int(t_elapse // 60)} min '
+              +f'{t_elapse % 60 :.{1}f} sec')
+        
         """If the difference between detected peak position and reference 
         position is greater than half the probe_fwhm, the reference is taken
         as the initial guess."""
@@ -971,6 +1007,11 @@ class AtomicColumnLattice:
         mask = np.concatenate((mask, mask), axis=1)
         xy_peak = np.where(mask, xy_peak, xy_ref)
         self.xy_peak = xy_peak
+        
+        t6 = time.time()
+        t_elapse = t6 - t5
+        print(f'Step 6(check pos errors): {int(t_elapse // 60)} min '
+              +f'{t_elapse % 60 :.{1}f} sec')
         
         """Find corresponding mask (from both LoG and Gauss filtering) for each 
         peak"""
@@ -993,7 +1034,7 @@ class AtomicColumnLattice:
                                   group_masks, 0)
         self.fit_masks = np.where(fit_masks >= 1, 1, 0)
         self.group_masks = np.where(group_masks >= 1, 1, 0)
-        
+                
         """Find sets of reference columns for each grouping mask"""
         peak_groupings = [[mask_num, 
                            np.argwhere(group_masks_to_peaks==mask_num
@@ -1011,6 +1052,11 @@ class AtomicColumnLattice:
                 
         at_cols_inds = at_cols.index.to_numpy(dtype=float)
         
+        t7 = time.time()
+        t_elapse = t7 - t6
+        print(f'Step 7(match masks and points 2): {int(t_elapse // 60)} min '
+              +f'{t_elapse % 60 :.{1}f} sec')
+        
         """Find min & max slice indices for each group of fitting masks"""
         group_fit_slices = [[slices_LoG[ind] for ind in inds] 
                                 for [_, inds]  in peak_groupings]
@@ -1024,7 +1070,13 @@ class AtomicColumnLattice:
                               np.min(group[2]) : np.max(group[3])]
                          for group in group_fit_slices]
         
+        t8 = time.time()
+        t_elapse = t8 - t7
+        print(f'Step 8(get slices): {int(t_elapse // 60)} min '
+              +f'{t_elapse % 60 :.{1}f} sec')
+        
         """Pack image slices and metadata together for the fitting routine"""
+        # print('Preparing data for fitting...')
         args_packed = [[self.image[group_slices[counter][0],
                                    group_slices[counter][1]],
                         fit_masks[group_slices[counter][0],
@@ -1078,24 +1130,43 @@ class AtomicColumnLattice:
                     p0 = np.array([x0, y0, sig_1, sig_rat, np.radians(theta), 
                                     A0, I0])
                     
-                    params = fit_gaussian2D(img_msk, p0, 
-                                            use_LoG_fitting=False,
-                                            method='BFGS')
-                        
-                    if ((params[:,-1] < 0) |
-                        (params[:,3] > 2) |
-                        (params[:,3] < 0.5) |
-                        (params[:,5] < 0)):
-                        
+                    if not use_circ_gauss:
                         bounds = [(None, None), (None, None), (1, None), 
-                                  (0.5, 2), (None, None), (0,2),
+                                  (0.1, None), (None, None), (0,2),
                                   ] * num +[(0,1)]
                         
-                        # Refit with bounds
                         params = fit_gaussian2D(img_msk, p0, masks, 
                                                 use_LoG_fitting=False,
                                                 method='L-BFGS-B',
                                                 bounds=bounds)
+                        
+                        # params = fit_gaussian2D(img_msk, p0, 
+                        #                         use_LoG_fitting=False,
+                        #                         method='BFGS')
+                    
+                    elif use_circ_gauss:
+                        bounds = [(None, None), (None, None), (1, None), 
+                                  (1, 1), (0, 0), (0,2),
+                                  ] * num +[(0,1)]
+                        params = fit_gaussian2D(img_msk, p0, masks, 
+                                                use_LoG_fitting=False,
+                                                method='L-BFGS-B',
+                                                bounds=bounds)
+                    
+                    # if ((params[:,-1] < 0) |
+                    #     (params[:,3] > 2) |
+                    #     (params[:,3] < 0.5) |
+                    #     (params[:,5] < 0)):
+                        
+                    #     bounds = [(None, None), (None, None), (1, None), 
+                    #               (0.5, 2), (None, None), (0,2),
+                    #               ] * num +[(0,1)]
+                        
+                    #     # Refit with bounds
+                    #     params = fit_gaussian2D(img_msk, p0, masks, 
+                    #                             use_LoG_fitting=False,
+                    #                             method='L-BFGS-B',
+                    #                             bounds=bounds)
                         
                     
                     params = np.array([params[:,0] + xy_start[0],
@@ -1147,29 +1218,49 @@ class AtomicColumnLattice:
                     p0 = np.array([x0, y0, sig_1, sig_rat, theta, A0]).T
 
                     p0 = np.append(p0.flatten(), np.mean(I0))
-
-                    params = fit_gaussian2D(img_msk, p0, masks, 
-                                            use_LoG_fitting=False,
-                                            method='BFGS')
                     
-                    if (np.any(params[:,-1] < 0) |
-                        np.any(params[:,3] > 2) |
-                        np.any(params[:,3] < 0.5) |
-                        np.any(params[:,5] < 0)):
-                        if force_circ_gauss_on_refit:
-                            bounds = [(None, None), (None, None), (1, None), 
-                                      (1, 1), (0, 0), (0,2),
-                                      ] * num +[(0,None)]
-                        else:
-                            bounds = [(None, None), (None, None), (1, None), 
-                                      (0.5, 2), (None, None), (0,2),
-                                      ] * num +[(0,None)]
-                        
-                        # Refit with bounds and force round Gaussian
+                    if not use_circ_gauss:
+                        bounds = [(None, None), (None, None), (1, None), 
+                                  (0.1, None), (None, None), (0,2),
+                                  ] * num +[(0,None)]
                         params = fit_gaussian2D(img_msk, p0, masks, 
                                                 use_LoG_fitting=False,
                                                 method='L-BFGS-B',
                                                 bounds=bounds)
+                        # params = fit_gaussian2D(img_msk, p0, masks, 
+                        #                         use_LoG_fitting=False,
+                        #                         method='BFGS')
+                        
+                    elif use_circ_gauss:
+                        bounds = [(None, None), (None, None), (1, None), 
+                                  (1, 1), (0, 0), (0,2),
+                                  ] * num +[(0,None)]
+                        params = fit_gaussian2D(img_msk, p0, masks, 
+                                                use_LoG_fitting=False,
+                                                method='L-BFGS-B',
+                                                bounds=bounds)
+                    else:
+                        raise Exception("Argument 'use_circ_gauss' " \
+                                        "must be a bool")
+                        
+                    # if (np.any(params[:,-1] < 0) |
+                    #     np.any(params[:,3] > 2) |
+                    #     np.any(params[:,3] < 0.5) |
+                    #     np.any(params[:,5] < 0)):
+                    #     if force_circ_gauss_on_refit:
+                    #         bounds = [(None, None), (None, None), (1, None), 
+                    #                   (1, 1), (0, 0), (0,2),
+                    #                   ] * num +[(0,None)]
+                    #     else:
+                    #         bounds = [(None, None), (None, None), (1, None), 
+                    #                   (0.5, 2), (None, None), (0,2),
+                    #                   ] * num +[(0,None)]
+                        
+                        # Refit with bounds and force round Gaussian
+                        # params = fit_gaussian2D(img_msk, p0, masks, 
+                        #                         use_LoG_fitting=False,
+                        #                         method='L-BFGS-B',
+                        #                         bounds=bounds)
                     params = np.array([params[:,0] + xy_start[0],
                                         params[:,1] + xy_start[1],
                                         params[:,2],
@@ -1184,6 +1275,17 @@ class AtomicColumnLattice:
                 return params
         
         elif use_LoG_fitting==True:
+            print("LoG fitting is depricated. It should only be used for "
+                  + "charge density images (a.k.a. dDPC). However, without "
+                  + "full probe deconvolution, dDPC images may incorporate "
+                  + "contrast without an obvious and direct physical "
+                  + "relationship to the object. It is recommended to use the "
+                  + "phase image retrieved from the DPC data (a.k.a iDPC). "
+                  + "In the event the fitting result from the phase is not "
+                  + "acceptable, the user should set 'use_circ_gauss' to True "
+                  + "as it is more robust in avoiding position determination "
+                  + "errors in the presence of significant column intensity "
+                  + "overlap.")
             # Use LoG fitting
             def fit_column(args):
                 [img_sl, mask_sl, log_mask_num, xy_start, xy_peak, inds, 
@@ -1551,8 +1653,8 @@ class AtomicColumnLattice:
         print('')
         print('Residual distortion of reference lattice basis vectors' 
               + ' from .cif:')
-        print(f'Scalar component: {scale_distortion_res * 100 :.{2}f} %')
-        print(f'Shear component: {shear_distortion_res :.{5}f} (radians)')
+        print(f'Scalar component: {scale_distortion_res * 100 :.{4}f} %')
+        print(f'Shear component: {shear_distortion_res :.{6}f} (radians)')
         print(f'Estimated Pixel Size: {pix_size * 100 :.{3}f} (pm)')
         
     
@@ -1846,7 +1948,6 @@ class AtomicColumnLattice:
                                    xlim=None, ylim=None, scalebar_len_nm=2,
                                    color_dict=None, legend_dict=None,
                                    scatter_kwargs_dict={}):
-        '''TODO: add kwargs for plt.scatter'''
         """Plot fitted or reference atom colum positions.
         
         Parameters
@@ -1949,11 +2050,14 @@ class AtomicColumnLattice:
                                (filtered['v'] // 1 == 0)]
         
         if color_dict == None:
-            cmap = plt.cm.RdYlGn
-            num_colors = unitcell.loc[:, filter_by].unique().shape[0]
-            color_dict = {k:cmap(v/(num_colors-1)) for v, k in 
-                          enumerate(np.sort(unitcell.loc[:, filter_by].unique()
-                                            ))}
+            elems = np.sort(unitcell.loc[:, filter_by].unique())
+            num_colors = elems.shape[0]
+            if num_colors==1:
+                color_dict = {elems[0] : 'red'}
+            else:
+                cmap = plt.cm.RdYlGn
+                color_dict = {k:cmap(v/(num_colors-1)) for v, k in 
+                              enumerate(elems)}
     
         for site in color_dict:
             if legend_dict != None:

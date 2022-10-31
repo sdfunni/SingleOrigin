@@ -16,7 +16,7 @@
     along with this program.  If not, see https://www.gnu.org/licenses"""
 
 
-__version__ = "2.1.2"
+__version__ = "2.1.3"
 
 from SingleOrigin.utils import (metric_tensor,
                                 bond_length,
@@ -27,6 +27,7 @@ from SingleOrigin.utils import (metric_tensor,
                                 IntPlAng,
                                 TwoTheta,
                                 elec_wavelength,
+				select_folder,
                                 import_image,
                                 image_norm,
                                 write_image_array_to_tif,
@@ -39,7 +40,8 @@ from SingleOrigin.utils import (metric_tensor,
                                 pcf_radial,
                                 detect_peaks,
                                 watershed_segment,
-                                get_phase_from_com)
+                                get_phase_from_com,
+				fast_rotate_90deg)
 
 from SingleOrigin.cell_transform import UnitCell
 
