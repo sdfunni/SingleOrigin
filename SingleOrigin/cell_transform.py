@@ -474,7 +474,8 @@ class UnitCell():
     def plot_unit_cell(self, label_by='elem',
                        color_dict=None, 
                        label_dict=None,
-                       scatter_kwargs_dict={}):
+                       scatter_kwargs_dict={},
+                       return_fig=False):
         """Plots the projected unit cell for verification.
         
         Parameters
@@ -496,6 +497,11 @@ class UnitCell():
                 s=25, edgecolor='black', linewidths=0.5. These or other
             pyplot.scattter parameters can be modified through this dictionary.
             Default: {}
+        return_fig : bool
+            Whether to return the figure object to allow manipulation within
+            a script. If True and result is not passed to a variable, plot
+            will print to the console. If this is not desired, set to False.
+            Default: False
             
         Returns
         -------
@@ -508,13 +514,17 @@ class UnitCell():
                                   'linewidths' : 0.5}
         scatter_kwargs_default.update(scatter_kwargs_dict)
         
-        if color_dict == None:
+        col_type_list = self.at_cols.loc[:, label_by].unique()
+        num_colors = self.at_cols.loc[:, label_by].unique().shape[0]
+        cmap = plt.cm.RdYlGn
+        
+        if color_dict == None and col_type_list.shape[0] > 1:
             cmap = plt.cm.RdYlGn
-            num_colors = self.at_cols.loc[:, label_by].unique().shape[0]
             color_dict = {k:cmap(v/(num_colors-1)) for v, k in 
                           enumerate(np.sort(self.at_cols.loc[:, label_by
                                                              ].unique()
                                             ))}
+        else: color_dict = {col_type_list[0] : cmap(0)}
     
         fig,axs = plt.subplots(ncols=1,figsize=(10,10))
         axs.set_aspect(1)
@@ -567,7 +577,7 @@ class UnitCell():
         axs.set_title('Projected Unit Cell', fontdict = {'fontsize' : 20,
                                                          'color' : 'red'})
         
-        return fig
+        if return_fig: return fig
         
     def UnitCell_to_xyz(self, file_name, path='', element_label='number',
                         comment=''):

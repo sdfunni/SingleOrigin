@@ -39,13 +39,17 @@ from scipy.optimize import minimize
 from scipy import ndimage, fftpack
 from scipy.ndimage.filters import (gaussian_filter, gaussian_laplace, 
                                    maximum_filter)
+from scipy.ndimage.morphology import binary_fill_holes, binary_erosion
+
+from skimage.draw import polygon2mask
 
 import psutil
 from joblib import Parallel, delayed
 from tqdm import tqdm
 
 from SingleOrigin.utils import (image_norm, img_ellip_param, gaussian_2d,
-                                LoG_2d, fit_gaussian2D, watershed_segment)        
+                                LoG_2d, fit_gaussian2D, watershed_segment,
+                                std_local)        
 #%%
 class AtomicColumnLattice:
     """Object class for quantification of atomic columns in HR STEM images.
@@ -148,13 +152,13 @@ class AtomicColumnLattice:
         
         h, w = image.shape
         m = min(h,w)
-        U = min(1000, int(m/2))
+        U = int(m/2)
         crop_dim = 2*U
         image_square = image[int(h/2)-U : int(h/2)+U,
                           int(w/2)-U : int(w/2)+U]
         
-        hann = np.outer(np.hanning(crop_dim),np.hanning(crop_dim))
-        fft = fftpack.fft2(image_square*hann)
+        # hann = np.outer(np.hanning(crop_dim),np.hanning(crop_dim))
+        fft = fftpack.fft2(image_square)#*hann)
         fft = (abs(fftpack.fftshift(fft)))
         fft = image_norm(fft)
         self.fft = fft
@@ -238,13 +242,14 @@ class AtomicColumnLattice:
             masks, num_masks, slices, spots = watershed_segment(fft_der)
             spots.loc[:, 'stdev'] = ndimage.standard_deviation(
                 fft_der, masks, index=np.arange(1, num_masks+1))
-            spots_ = spots[(spots.loc[:, 'stdev'] > 0.003)
+            spots_ = spots[(spots.loc[:, 'stdev'] > 0.002)
                            ].reset_index(drop=True)
             xy = spots_.loc[:,'x':'y'].to_numpy(dtype=float)
             
             recip_vects = np.linalg.norm(xy - origin, axis=1)
-            min_recip_vect = np.min(recip_vects[recip_vects>0])
-            window = min(min_recip_vect*10, U)
+            # min_recip_vect = np.min(recip_vects[recip_vects>0])
+            max_recip_vect = np.max(recip_vects)
+            window = min(max_recip_vect*1.5, U)
             
             fig, ax = plt.subplots(figsize=(10,10))
             plt.title('''Pick reciprocal basis vectors''',
@@ -411,7 +416,7 @@ class AtomicColumnLattice:
         self.recip_latt = spots_
         
         
-    def select_origin(self, crop_factor=4, interactive_selection=False):
+    def select_origin(self, zoom_factor=4, interactive_selection=False):
         """Select origin for the reference lattice.
         
         User chooses appropriate atomic column to establish the reference 
@@ -419,8 +424,8 @@ class AtomicColumnLattice:
         
         Parameters
         ----------
-        crop_factor : float or int
-            Crop image to h/crop_factor x w/crop_factor for selection of
+        zoom_factor : float or int
+            Crop image to h/zoom_factor x w/zoom_factor for selection of
             an atom column to use for locating the reference lattice origin.
             Default: 4.
         interactive_selection : bool
@@ -441,7 +446,7 @@ class AtomicColumnLattice:
         
         [h, w] = [self.h, self.w]
         
-        crop_view = (np.max(np.abs(self.dir_struct_matrix)) * crop_factor)
+        crop_view = (np.max(np.abs(self.dir_struct_matrix)) * zoom_factor)
         fig, ax = plt.subplots(figsize=(10,10))
         message=('Pick an atom column of the reference atom column type'
                  +' (white outlined position)')
@@ -527,8 +532,80 @@ class AtomicColumnLattice:
             plt.close('all')
             return pt[0]
         
-    
-    def define_reference_lattice(self, LoG_sigma=None, crop_factor=4,
+    def get_region_mask_std(self, r=4, sigma=8, thresh=0.5, fill_holes=True,
+                            buffer=10):
+        """Get mask for specific region of image based on local standard
+        deviation.
+        
+        Create a mask for a desired image region where the local standard
+        deviation is above a threshold. The mask is saved in the 
+        AtomColumnLattice object and used during reference lattice generation 
+        to limnit the extent of the lattice. Useful if vacuum, off-axis grains
+        or padded edges are in the image frame. 
+        
+        Parameters
+        ----------
+        r : int
+            Kernel radius. STD is calculated in a square kernel of size 
+            2*r + 1.
+            Default: 4.
+        sigma : float
+            Gaussian blur to be added to std image prior to thresholding.
+            Default: 8.
+        thresh : float
+            Thresholding level for binarizing the result into a mask.
+            Default: 0.5.
+        fill_holes : bool
+            If true, interior holes in the mask are filled. 
+            Default: True 
+        buffer : int
+            Number of pixels to erode from the edges of the mask. Prevents
+            retention of reference lattice points that are outside the actual
+            lattice region.
+            Default: 10.
+        
+        Returns
+        -------
+        None.
+            
+        """
+        image_std = image_norm(gaussian_filter(std_local(self.image, r), 
+                                                  sigma=sigma))
+        self.mask = np.where(image_std>thresh, 1, 0)
+        if fill_holes:
+            self.mask = binary_fill_holes(self.mask)
+        self.mask = binary_erosion(self.mask, iterations=buffer)
+        
+    def get_region_mask_polygon(self, vertices, buffer=0):
+        """Get mask for a polygon-shaped region of an image.
+        
+        Create a mask for a desired image region from polygon vertices. The 
+        mask is saved in the AtomColumnLattice object and used during 
+        reference lattice generation to limnit the extent of the lattice.
+        Useful for images with interfaces, multiple grains, etc.
+        
+        Parameters
+        ----------
+        vertices : ndarray
+            Array of shape (n,2). Each row is the [x,y] coordinate for the 
+            respective vertice. Vertices must be in clockwise order.  
+        buffer : int
+            Number of pixels to erode from the edges of the mask. Prevents
+            retention of reference lattice points that are outside the actual
+            lattice region.
+            Default: 0.
+        
+        Returns
+        -------
+        None.
+            
+        """
+        
+        self.mask = polygon2mask(self.image.shape, vertices)
+        self.mask = binary_erosion(self.mask, iterations=buffer)
+        
+        
+    def define_reference_lattice(self, LoG_sigma=None, zoom_factor=4,
                                  origin=None):
         
         """Register reference lattice to image.
@@ -544,19 +621,27 @@ class AtomicColumnLattice:
             The Laplacian of Gaussian sigma value to use for peak sharpening.
             If None, calculated by: pixel_size / probe_fwhm * 0.5.
             Default None.
+        zoom_factor : float or int
+            Crop image to h/zoom_factor x w/zoom_factor for selection of
+            an atom column to use for locating the reference lattice origin.
+            Default: 4.
         origin : 2-tuple of floats or ints
             The approximate position of the origin atom column, previously
             determined. If origin is given, graphical picking will not be 
             prompted
             Default: None.
-             
+        mask : ndarray of bool or None
+             Array of the same shape as self.image. True (or 1) where image is
+             of the desired lattice, False (or 0) otherwise. If None, no mask
+             is used. 
+             Default: None.
+        
         Returns
         -------
         None.
             
         """
         
-               
         if 'LatticeSite' in list(self.unitcell_2D.columns):
             lab = 'LatticeSite'
         else:
@@ -573,7 +658,7 @@ class AtomicColumnLattice:
             LoG_sigma = self.probe_fwhm / self.pixel_size * 0.5 
         
         if origin == None:
-            (x0, y0) = self.select_origin(crop_factor=crop_factor, 
+            (x0, y0) = self.select_origin(zoom_factor=zoom_factor, 
                                           interactive_selection=True)
             
         elif len(origin)==2:
@@ -638,10 +723,15 @@ class AtomicColumnLattice:
                                            @ self.dir_struct_matrix 
                                            + np.array([self.x0, self.y0]))
         
-        at_cols = at_cols[((at_cols.x_ref >= 0) &
-                           (at_cols.x_ref <= w ) &
-                           (at_cols.y_ref >= 0) &
-                           (at_cols.y_ref <= h))]
+        at_cols = at_cols[((at_cols.x_ref >= 1) &
+                           (at_cols.x_ref <= w-1) &
+                           (at_cols.y_ref >= 1) &
+                           (at_cols.y_ref <= h-1))]
+        
+        if type(self.mask) != type(None):
+            at_cols = at_cols[self.mask[
+                np.around(at_cols.y_ref.to_numpy()).astype(int), 
+                np.around(at_cols.x_ref.to_numpy()).astype(int)] == 1]
         
         at_cols.reset_index(drop=True, inplace=True)
         empty = pd.DataFrame(index=np.arange(0,at_cols.shape[0]),
@@ -657,6 +747,8 @@ class AtomicColumnLattice:
         channels = np.array([ch_list[site] for site in 
                              at_cols.loc[:, lab]])
         at_cols.loc[:, 'channel'] = channels
+        
+        
         
         '''Refine reference lattice on watershed mask CoMs'''
         print('Performing rough reference lattice refinement...')
@@ -1275,17 +1367,17 @@ class AtomicColumnLattice:
                 return params
         
         elif use_LoG_fitting==True:
-            print("LoG fitting is depricated. It should only be used for "
-                  + "charge density images (a.k.a. dDPC). However, without "
-                  + "full probe deconvolution, dDPC images may incorporate "
-                  + "contrast without an obvious and direct physical "
-                  + "relationship to the object. It is recommended to use the "
-                  + "phase image retrieved from the DPC data (a.k.a iDPC). "
-                  + "In the event the fitting result from the phase is not "
-                  + "acceptable, the user should set 'use_circ_gauss' to True "
-                  + "as it is more robust in avoiding position determination "
-                  + "errors in the presence of significant column intensity "
-                  + "overlap.")
+            # print("LoG fitting is depricated. It should only be used for "
+            #       + "charge density images (a.k.a. dDPC). However, without "
+            #       + "full probe deconvolution, dDPC images may incorporate "
+            #       + "contrast without an obvious and direct physical "
+            #       + "relationship to the object. It is recommended to use the "
+            #       + "phase image retrieved from the DPC data (a.k.a iDPC). "
+            #       + "In the event the fitting result from the phase is not "
+            #       + "acceptable, the user should set 'use_circ_gauss' to True "
+            #       + "as it is more robust in avoiding position determination "
+            #       + "errors in the presence of significant column intensity "
+            #       + "overlap.")
             # Use LoG fitting
             def fit_column(args):
                 [img_sl, mask_sl, log_mask_num, xy_start, xy_peak, inds, 

@@ -27,7 +27,7 @@ from SingleOrigin.utils import (metric_tensor,
                                 IntPlAng,
                                 TwoTheta,
                                 elec_wavelength,
-				select_folder,
+                                select_folder,
                                 import_image,
                                 image_norm,
                                 write_image_array_to_tif,
@@ -40,8 +40,12 @@ from SingleOrigin.utils import (metric_tensor,
                                 pcf_radial,
                                 detect_peaks,
                                 watershed_segment,
+                                band_pass_filter,
                                 get_phase_from_com,
-				fast_rotate_90deg)
+                                fast_rotate_90deg,
+                                fft_amplitude_area,
+                                std_local,
+                                binary_find_largest_rectangle)
 
 from SingleOrigin.cell_transform import UnitCell
 

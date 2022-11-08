@@ -23,9 +23,10 @@ import numpy as np
 # from numpy.linalg import norm
 import pandas as pd
 from scipy import ndimage
-from scipy.ndimage.filters import (#gaussian_filter, 
+from scipy.ndimage.filters import (gaussian_filter, 
                                    gaussian_laplace, 
                                    maximum_filter)
+from scipy.signal import convolve2d
 from scipy.optimize import minimize
 
 from PyQt5.QtWidgets import QFileDialog as qfd
@@ -981,6 +982,67 @@ def watershed_segment(image, sigma=None, buffer=0, local_thresh_factor = 0.95,
     
     return masks, num_masks, slices, peaks
 
+def band_pass_filter(shape, high_pass=5, low_pass=None, 
+                     filter_edge_smoothing=0):
+    """Create a high and/or low pass filter.
+    
+    Parameters
+    ----------
+    shape : two-tuple
+        The image shape for which to make the mask.
+    high_pass : int or None
+        The number of reciprocal pixels below which to block with the high 
+        pass filter.
+        Default: 5
+    low_pass : int or None
+        The number of reciprocal pixels above which to block with the low pass 
+        filter.
+        Default: None
+    filter_edge_smoothing : int
+        Gaussian blur sigma used to smooth the hard edge of the band pass 
+        filter in reciprocal pixels.
+        Default 0.
+        
+    Returns
+    -------
+    masks : 2D array with same shape as image
+    num_masks : int
+        The number of masks
+    slices : List of image slices which contain each region
+    peaks : DataFrame with the coordinates and corresponding mask label for
+        each peak not outside the buffer
+        
+    """
+    
+    f_freq_1d = [np.fft.fftfreq(shape[0], 1),
+                 np.fft.fftfreq(shape[1], 1)]
+    max_dim = np.argmax(shape)
+    fft_pixel_size = np.array([f_freq_1d[0][1] - f_freq_1d[0][0],
+                               f_freq_1d[1][1] - f_freq_1d[1][0]])
+    
+    if not high_pass:
+        high_pass = 0
+    else: 
+        high_pass *= fft_pixel_size[max_dim]
+    if not low_pass:
+        low_pass = np.inf
+    else: 
+        low_pass *= fft_pixel_size[max_dim]
+    
+    fft_freq_abs = np.linalg.norm(np.array(
+        np.meshgrid(f_freq_1d[1], f_freq_1d[0])), axis=0)
+        
+    mask = np.where(((fft_freq_abs>=high_pass) & 
+                     (fft_freq_abs<=low_pass)), 1, 0).astype(float)
+    
+    if filter_edge_smoothing:
+        mask = image_norm(ndimage.filters.gaussian_filter(
+            mask, 
+            sigma=filter_edge_smoothing, 
+            truncate=4*filter_edge_smoothing))
+    
+    return mask
+
 def get_phase_from_com(com_xy, theta, flip=True, high_low_filter=False,
                        filter_params={'beam_energy' : 200e3, 
                                       'conv_semi_angle' : 18,
@@ -1030,28 +1092,26 @@ def get_phase_from_com(com_xy, theta, flip=True, high_low_filter=False,
     if high_low_filter:
         lambda_ = elec_wavelength(filter_params['beam_energy']) * 1e9 # in nm
         h,w = com_xy.shape[1:]
+        min_dim = np.argmin((h,w))
         fft_pixelSize = 1 / (np.array(com_xy.shape[1:]) 
                              * filter_params['pixel_size']) #nm^-1 
         
-        apeture_cutoff = 2*np.sin(2 * filter_params['conv_semi_angle']
+        apeture_cutoff = 2*np.sin(2 * filter_params['conv_semi_angle'] #nm^-1
                                   )/lambda_
-        low_pass = filter_params['low_pass']*apeture_cutoff
-        high_pass = filter_params['high_pass']*apeture_cutoff
+        low_pass = (filter_params['low_pass']*apeture_cutoff 
+                    / fft_pixelSize[min_dim])
+        high_pass = (filter_params['high_pass']*apeture_cutoff 
+                     / fft_pixelSize[min_dim]) # pixels
         
-        nx = np.fft.fftshift(np.arange(-w/2, w/2))
-        ny = np.fft.fftshift(np.arange(-h/2, h/2))
-        fft_freq_abs = np.linalg.norm(np.array(
-            np.meshgrid(nx*fft_pixelSize[1], ny*fft_pixelSize[0])), axis=0)
+        sigma = (filter_params['edge_smoothing'] * apeture_cutoff 
+                 / fft_pixelSize[min_dim])
         
-        lp_hp_mask = np.where(((fft_freq_abs>high_pass) & 
-                               (fft_freq_abs<low_pass)), 1, 0).astype(float)
-        
-        sigma = 3 #filter_params['edge_smoothing'] * apeture_cutoff
-        lp_hp_mask = image_norm(ndimage.filters.gaussian_filter(
-            lp_hp_mask, sigma=sigma, truncate=4*sigma))
+        mask = band_pass_filter((h,w), high_pass=high_pass, 
+                                low_pass=high_pass, 
+                                filter_edge_smoothing=sigma)
         
     else:
-        lp_hp_mask = np.ones((h,w))
+        mask = np.ones((h,w))
     
     theta = np.radians(theta)
     if not flip:
@@ -1073,8 +1133,8 @@ def get_phase_from_com(com_xy, theta, flip=True, high_low_filter=False,
     _ = np.seterr(divide='warn')
     
     
-    complex_image = np.fft.ifft2((lp_hp_mask * (np.fft.fft2(com_[1]) 
-                                             + 1j*np.fft.fft2(com_[0]))) 
+    complex_image = np.fft.ifft2((mask * (np.fft.fft2(com_[1]) 
+                                          + 1j*np.fft.fft2(com_[0]))) 
                               * denominator)
     
     phase = np.real(complex_image)
@@ -1113,3 +1173,187 @@ def fast_rotate_90deg(image, angle):
     else:
         raise Exception('Argument "angle" must be a multiple of 90 degrees')
     return image_
+
+def fft_amplitude_area(image, xy_fft, r, blur, thresh=0.5,
+                       fill_holes=True, buffer=10):
+    """Create mask based on Bragg spot filtering (via FFT) of image.
+    
+    Parameters
+    ----------
+    image : ndarray of shape (h,w)
+        The image.
+    xy_fft : ndarray 
+        The Bragg spot coordinates in the FFT. Must be shape (n,2).
+    r : int, float or list-like of ints or floats
+        The radius (or radii) of Bragg spot pass filters. If a sclar, the same
+        radius is applied to all Bragg spots. If list-like, must be of shape
+        (n,).
+    blur : int or float
+        The gaussian sigma used to blur the amplitude image.
+    thresh : float
+        The relative threshold for creating the mask from the blured amplitude
+        image.
+        Default: 0.5
+    fill_holes : bool
+        If true, interior holes in the mask are filled. 
+        Default: True 
+    buffer : int
+        Number of pixels to erode from the mask after binarization. When used 
+        as a mask for restricting atom column detection, this prevents 
+        searching too close to the edge of the area.
+        Default: 10
+         
+    Returns
+    -------
+    mask : 2D array 
+        The final amplitude mask.
+    
+    """
+    
+    if not (type(r) == int) | (type(r) == float):
+        if xy_fft.shape[0] != r.shape[0]:
+            raise Exception("If'r' is not an int or float, its length " \
+                            "must match the first dimension of xy_fft.")
+        
+    fft = np.fft.fftshift(np.fft.fft2(image))
+    mask = np.zeros(fft.shape)
+    xy = np.mgrid[:mask.shape[0], : mask.shape[1]]
+    xy = np.array([xy[1], xy[0]]).transpose((1,2,0))
+    if (type(r) == int) | (type(r) == float):
+        for xy_ in xy_fft:
+            mask += np.where(np.linalg.norm(xy - xy_, axis=2) <= r, 1, 0)
+        
+    else: 
+        for i, xy_ in enumerate(xy_fft):        
+            mask += np.where(np.linalg.norm(xy - xy_, axis=2) <= r[i], 1, 0)
+
+    image_comp = np.fft.ifft2(np.fft.fftshift(fft * mask))
+    amplitude = (np.real(image_comp)**2 + np.imag(image_comp)**2)**0.5
+    amplitude = image_norm(gaussian_filter(amplitude, sigma=blur))
+    mask = np.where(amplitude > thresh, 1, 0)
+    if fill_holes:
+        mask = ndimage.morphology.binary_fill_holes(mask)
+    mask = np.where(mask, 1, 0)
+    mask = ndimage.morphology.binary_dilation(mask, iterations=buffer)
+          
+    return mask
+
+def std_local(image, r):
+    """Get local standard deviation of an image
+    Parameters
+    ----------
+    image : ndarray of shape (h,w)
+        The image.
+    r : int
+        Kernel radius. STD is calculated in a square kernel of size 2*r + 1.
+         
+    Returns
+    -------
+    std : 2D array 
+        The image local standard deviation of the image.
+    """
+    
+    im = np.array(image, dtype=float)
+    im2 = im**2
+    ones = np.ones(im.shape)
+    
+    kernel = np.ones((2*r+1, 2*r+1))
+    s = convolve2d(im, kernel, mode="same")
+    s2 = convolve2d(im2, kernel, mode="same")
+    ns = convolve2d(ones, kernel, mode="same")
+    
+    return np.sqrt((s2 - s**2 / ns) / ns)
+
+def binary_find_largest_rectangle(array):
+    """Gets the slice object of the largest rectangle of 1s in a 2D binary 
+    array. Modified version. Original by Andrew G. Clark
+    
+    Parameters
+    ----------
+    array : ndarray of shape (h,w)
+        The binary image.
+         
+    Returns
+    -------
+    xlim : list-like of length 2
+        The x limits (columns) of the largest rectangle.
+    ylim : list-like of length 2
+        The y limits (columns) of the largest rectangle.
+    sl : numpy slice object
+        The slice object which crops the image to the largest rectangle.
+        
+    
+    The MIT License (MIT)
+
+    Copyright (c) 2020 Andrew G. Clark
+    
+    Permission is hereby granted, free of charge, to any person obtaining a 
+    copy of this software and associated documentation files (the "Software"), 
+    to deal in the Software without restriction, including without limitation 
+    the rights to use, copy, modify, merge, publish, distribute, sublicense, 
+    and/or sell copies of the Software, and to permit persons to whom the 
+    Software is furnished to do so, subject to the following conditions:
+    
+    The above copyright notice and this permission notice shall be included in 
+    all copies or substantial portions of the Software.
+    
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL 
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING 
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER 
+    DEALINGS IN THE SOFTWARE."""
+
+    #first get the sums of successive vertical pixels
+    vert_sums = (np.zeros_like(array)).astype('float')
+    vert_sums[0] = array[0]
+    for i in range(1,len(array)):
+        vert_sums[i] = (vert_sums[i-1] + array[i]) * array[i]
+
+    #declare some variables for keeping track of the largest rectangle
+    max_area = -1
+    pos_at_max_area = (0,0)
+    height_at_max_area = -1
+    x_end = 0
+
+    #go through each row of vertical sums and find the largest rectangle
+    for i in range(len(vert_sums)):
+        positions = []  # a stack
+        heights = []  # a stack
+        for j in range(len(vert_sums[i])):
+            h = vert_sums[i][j]
+            if len(positions)==0 or h > heights[-1]:
+                heights.append(h)
+                positions.append(j)
+            elif h < heights[-1]:
+                while len(heights) > 0 and h < heights[-1]:
+                    h_tmp = heights.pop(-1)
+                    pos_tmp = positions.pop(-1)
+                    area_tmp = h_tmp * (j - pos_tmp)
+                    if area_tmp > max_area:
+                        max_area = area_tmp
+                        pos_at_max_area = (pos_tmp,i) #this is the bottom left
+                        height_at_max_area = h_tmp
+                        x_end = j
+                heights.append(h)
+                positions.append(pos_tmp)
+        while len(heights) > 0:
+            h_tmp = heights.pop(-1)
+            pos_tmp = positions.pop(-1)
+            area_tmp = h_tmp * (j - pos_tmp)
+            if area_tmp > max_area:
+                max_area = area_tmp
+                pos_at_max_area = (pos_tmp,i) #this is the bottom left
+                height_at_max_area = h_tmp
+                x_end = j
+
+    top_left = (int(pos_at_max_area[0]),int(pos_at_max_area[1] 
+                                            - height_at_max_area) + 1)
+    width = int(x_end - pos_at_max_area[0])
+    height = int(height_at_max_area - 1)
+    xlim = [top_left[0], top_left[0] + width]
+    ylim = [top_left[1], top_left[1] + height]
+    sl = np.s_[ylim[0]:ylim[1], xlim[0]:xlim[1]]
+
+    return xlim, ylim, sl
