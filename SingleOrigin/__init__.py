@@ -45,8 +45,10 @@ from SingleOrigin.utils import (metric_tensor,
                                 fast_rotate_90deg,
                                 fft_amplitude_area,
                                 std_local,
-                                binary_find_largest_rectangle)
+                                binary_find_largest_rectangle,
+                                fft_equxy)
 
 from SingleOrigin.cell_transform import UnitCell
 
-from SingleOrigin.find_atom_columns import AtomicColumnLattice
+from SingleOrigin.find_atom_columns import (HRImage,
+                                            AtomicColumnLattice)

@@ -23,9 +23,9 @@ import numpy as np
 # from numpy.linalg import norm
 import pandas as pd
 from scipy import ndimage
-from scipy.ndimage.filters import (gaussian_filter, 
-                                   gaussian_laplace, 
-                                   maximum_filter)
+from scipy.ndimage import (gaussian_filter, 
+                           gaussian_laplace, 
+                           maximum_filter)
 from scipy.signal import convolve2d
 from scipy.optimize import minimize
 
@@ -43,6 +43,26 @@ from tifffile import imwrite
 
 from matplotlib import pyplot as plt
 
+#%%
+"""Error message string(s)"""
+no_mask_error = ("Float division by zero during moment estimation. No image "
+                 + "intensity present to calculate moment. If raised during " 
+                 + "Guassian fitting of atom columns, this means that no " 
+                 + "pixel region was found for fitting of at least one atom " 
+                 + "column. This situation may result from: \n 1) Too high a " 
+                 + "'local_thresh_factor' value resulting in no pixels " 
+                 + "remaining for some atom columns. Check 'self.fit_masks' " 
+                 + "to see if some atom columns do not have mask regions. \n " 
+                 + "2) Due to mask regions splitting an atom column as a " 
+                 + "result of too small or too large a value used for " 
+                 + "'grouping_filter' or 'diff_filter'. Check " 
+                 + "'self.group_masks' and 'self.fit_masks' to see if this " 
+                 + "may be occuring. Too small a 'fitting_filter' value may " 
+                 + "cause noise peaks to be detected, splitting an atom " 
+                 + "column. Too large a value for either filter may cause low " 
+                 + "intensity peaks to be ignored by the watershed algorithm. " 
+                 + "\n Masks may also be checked with the 'show_masks()' " 
+                 + "method.'")
 #%%
 """General Crystallographic computations"""
 def metric_tensor(a, b, c, alpha, beta, gamma):
@@ -482,11 +502,19 @@ def img_equ_ellip(image):
     M = moments(image, order=1)
     mu = moments_central(image, order=2)
     
-    [x0, y0] = [M[1,0]/M[0,0], M[0,1]/M[0,0]]
-    [u20, u11, u02] = [mu[2,0]/M[0,0], mu[1,1]/M[0,0], mu[0,2]/M[0,0]]
-    cov = np.array([[u20, u11],
-                    [u11, u02]])
-    eigvals, eigvects = np.linalg.eig(cov)
+    try:
+        [x0, y0] = [M[1,0]/M[0,0], M[0,1]/M[0,0]]
+        [u20, u11, u02] = [mu[2,0]/M[0,0], mu[1,1]/M[0,0], mu[0,2]/M[0,0]]
+        cov = np.array([[u20, u11],
+                        [u11, u02]])
+        
+    except ZeroDivisionError as err:
+        raise ZeroDivisionError(no_mask_error) from err
+
+    try:
+        eigvals, eigvects = np.linalg.eig(cov)
+    except np.linalg.LinAlgError as err:
+        raise ArithmeticError(no_mask_error) from err
     
     if eigvects[0,0]<0:
         eigvects[:,0] *= -1
@@ -884,11 +912,11 @@ def detect_peaks(image, min_dist=4, thresh=0):
         
     """
     
+    kern_rad = int(np.floor(min_dist/2) * 0.75)
     if min_dist<1: min_dist=1
-    kern_rad = int(np.ceil(min_dist/2))
     size = 2*kern_rad + 1
     neighborhood = np.array([1 if np.hypot(i-kern_rad,j-kern_rad) 
-                             <= min_dist/2 
+                             <= kern_rad
                              else 0 
                              for j in range(size) for i in range(size)]
                             ).reshape((size,size))
@@ -945,7 +973,7 @@ def watershed_segment(image, sigma=None, buffer=0, local_thresh_factor = 0.95,
     if type(sigma) in (int, float, tuple):
         img_der = image_norm(-gaussian_laplace(img_der, sigma))
         
-    local_max, _ = ndimage.label(detect_peaks(image, min_dist=min_dist))
+    local_max, _ = ndimage.label(detect_peaks(img_der, min_dist=min_dist))
     
     masks = watershed(-img_der,local_max, watershed_line=watershed_line)
     slices = ndimage.find_objects(masks)
@@ -1357,3 +1385,29 @@ def binary_find_largest_rectangle(array):
     sl = np.s_[ylim[0]:ylim[1], xlim[0]:xlim[1]]
 
     return xlim, ylim, sl
+
+def fft_equxy(image, hanning_window=False):
+    """Gets FFT with equal x & y pixel sizes
+    image : 2D array
+        The image.
+    hanning_window : bool
+        Whether to apply a hanning window to the image before taking the FFT.
+        Default: False
+    
+    """
+    
+    h, w = image.shape
+    m = (min(h,w) //2) * 2
+    U = int(m/2)
+    image_square = image[int(h/2)-U : int(h/2)+U,
+                                   int(w/2)-U : int(w/2)+U]
+    if hanning_window:
+        hann = np.outer(np.hanning(m),np.hanning(m))
+        image_square *= hann
+    fft = np.fft.fft2(image_square)#*hann)
+    fft = (abs(np.fft.fftshift(fft)))
+    fft = image_norm(fft)
+    
+    return fft
+    
+    
