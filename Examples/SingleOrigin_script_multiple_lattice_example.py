@@ -49,6 +49,8 @@ vertices = np.array([[785, 0],
                      [780, bsmo.h]])
 
 # %%
+bsmo.get_region_mask_std(r=10, sigma=10, thresh=0.2)
+# %%
 bsmo.get_region_mask_polygon(vertices=vertices,
                              buffer=0, invert=False, show_poly=True)
 

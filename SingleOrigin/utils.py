@@ -921,7 +921,7 @@ def fit_gaussian_circ(data, p0, masks=None, method='BFGS', bounds=None):
                             axis=1)
 
     # Add dummy columns for sigma ratio and rotation angle:
-    params = np.insert(params, 3, np.array([1,0]*num_gauss).reshape(-1,2).T, 
+    params = np.insert(params, 3, np.array([1, 0]*num_gauss).reshape(-1, 2).T,
                        axis=1)
 
     return params
@@ -1374,8 +1374,10 @@ def std_local(image, r):
     s = convolve2d(im, kernel, mode="same")
     s2 = convolve2d(im2, kernel, mode="same")
     ns = convolve2d(ones, kernel, mode="same")
+    var = (s2/ns - (s/ns)**2)
+    var = np.where(var < 0, 0, var)
 
-    return np.sqrt((s2 - s**2 / ns) / ns)
+    return var ** 0.5
 
 
 def binary_find_largest_rectangle(array):

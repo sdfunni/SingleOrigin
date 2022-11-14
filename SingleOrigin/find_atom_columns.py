@@ -498,7 +498,7 @@ class HRImage:
         if max_colorwheel_range_pm is None:
             dxy = (combined.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
                    - combined.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float))
-            mags = np.linalg.norm(dxy, axis=1) * pixel_size *100
+            mags = np.linalg.norm(dxy, axis=1) * pixel_size * 100
             avg = np.mean(mags)
             std = np.std(mags)
             max_colorwheel_range_pm = int(np.ceil((avg + 3*std)/5) * 5)
@@ -1834,8 +1834,6 @@ class AtomicColumnLattice:
                       - np.std(img_msk[img_msk != 0]))
                 A0 = np.max(img_msk) - I0
 
-                
-
                 if use_circ_gauss:
                     if use_bounds:
                         bounds = [(None, None), (None, None),
@@ -1845,11 +1843,11 @@ class AtomicColumnLattice:
                     else:
                         bounds = None
                         method = 'BFGS'
-                    
-                    p0 = np.array([x0, y0, 
+
+                    p0 = np.array([x0, y0,
                                    np.mean([sig_1, sig_rat]),
                                    A0, I0])
-                    
+
                     params = fit_gaussian_circ(img_msk, p0, masks,
                                                method=method,
                                                bounds=bounds)
@@ -1865,7 +1863,7 @@ class AtomicColumnLattice:
 
                     p0 = np.array([x0, y0, sig_1, sig_rat,
                                    np.radians(theta), A0, I0])
-                    
+
                     params = fit_gaussian_ellip(img_msk, p0, masks,
                                                 method=method,
                                                 bounds=bounds)
@@ -1918,26 +1916,26 @@ class AtomicColumnLattice:
                 if use_circ_gauss:
                     if use_bounds:
                         bounds = [(None, None), (None, None),
-                                  (1, None),(0, 2),
+                                  (1, None), (0, 2),
                                   ] * num + [(0, 1.2)]
                         method = 'L-BFGS-B'
                     else:
                         bounds = None
                         method = 'BFGS'
 
-                    p0 = np.array([x0, y0, 
+                    p0 = np.array([x0, y0,
                                    np.mean([sig_1, sig_rat], axis=0),
                                    A0]).T
                     p0 = np.append(p0.flatten(), np.mean(I0))
-                    
+
                     params = fit_gaussian_circ(img_msk, p0, masks,
                                                method=method,
                                                bounds=bounds)
 
                 else:
                     if use_bounds:
-                        bounds = [(None, None), (None, None), 
-                                  (1, None), (0.1, None), 
+                        bounds = [(None, None), (None, None),
+                                  (1, None), (0.1, None),
                                   (None, None), (0, 2),
                                   ] * num + [(0, 1.2)]
                         method = 'L-BFGS-B'
@@ -1946,11 +1944,11 @@ class AtomicColumnLattice:
                         method = 'BFGS'
 
                     p0 = np.array([x0, y0,
-                                   sig_1, sig_rat, 
+                                   sig_1, sig_rat,
                                    theta, A0]).T
 
                     p0 = np.append(p0.flatten(), np.mean(I0))
-                    
+
                     params = fit_gaussian_ellip(img_msk, p0, masks,
                                                 method=method,
                                                 bounds=bounds)
