@@ -52,9 +52,14 @@ import psutil
 from joblib import Parallel, delayed
 from tqdm import tqdm
 
-from SingleOrigin.utils import (image_norm, img_ellip_param, gaussian_2d,
-                                fit_gaussian2D, watershed_segment,
-                                std_local, fft_equxy)
+from SingleOrigin.utils import (image_norm,
+                                img_ellip_param,
+                                gaussian_2d,
+                                fit_gaussian_ellip,
+                                fit_gaussian_circ,
+                                watershed_segment,
+                                std_local,
+                                fft_equxy)
 # %%
 
 
@@ -493,7 +498,7 @@ class HRImage:
         if max_colorwheel_range_pm is None:
             dxy = (combined.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
                    - combined.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float))
-            mags = np.linalg.norm(dxy, axis=1) * pixel_size
+            mags = np.linalg.norm(dxy, axis=1) * pixel_size *100
             avg = np.mean(mags)
             std = np.std(mags)
             max_colorwheel_range_pm = int(np.ceil((avg + 3*std)/5) * 5)
@@ -578,7 +583,7 @@ class HRImage:
             dxy = (sub_latt.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
                    - sub_latt.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float))
 
-            disp_pm = (np.linalg.norm(dxy, axis=1) * pixel_size)
+            disp_pm = (np.linalg.norm(dxy, axis=1) * pixel_size * 100)
             normed = disp_pm / max_colorwheel_range_pm
             print(rf'Displacement statistics for {site}:',
                   f'average: {np.mean(disp_pm)  :.{2}f} (pm)',
@@ -1284,7 +1289,8 @@ class AtomicColumnLattice:
             if self.region_mask is not None:
                 window_center = np.array(center_of_mass(self.region_mask)
                                          ).astype(int)
-
+            else:
+                window_center = np.array([self.h, self.w]) / 2
             (x0, y0) = self.select_origin(window_size=window_size,
                                           window_center=window_center,
                                           interactive_selection=True)
@@ -1469,7 +1475,8 @@ class AtomicColumnLattice:
                          filter_by='elem', sites_to_fit='all',
                          watershed_line=True, use_LoG_fitting=False,
                          parallelize=True,
-                         use_circ_gauss=False):
+                         use_circ_gauss=False,
+                         use_bounds=False):
         """Algorithm for fitting 2D Gaussians to HR STEM image.
 
         1) Laplacian of Gaussian filter applied to image to isolate individual
@@ -1528,16 +1535,6 @@ class AtomicColumnLattice:
             Default 'all'
         watershed_line : bool
             Seperate segmented regions by one pixel. Default: True.
-        use_LoG_fitting : bool
-            Whether to use a Laplacian of Gaussian (LoG) function instead of a
-            standard 2D Gaussian function for peak fitting. LoG fitting should
-            ONLY be used for dDPC images. All other image types, including
-            HAADF, ADF, BF, ABF and iDPC should be fitted with a standard 2D
-            Gaussian. The LoG funciton is round and so does not give peak
-            shape information. Additionally, its paramters cannot be
-            integrated to calculate the peak volume. Only interpretable
-            parameters are the peak position.
-            Defalut: False.
         parallelize : bool
             Whether to use parallel CPU processing. Will use all available
             physical cores if set to True. If False, will use serial
@@ -1551,7 +1548,13 @@ class AtomicColumnLattice:
             In general, however, atom columns may be elliptical, so using
             elliptical Guassians should be preferred.
             Default: False
-
+        use_bounds : bool
+            Whether to apply bounds to minimization algorithm. This may be
+            needed if unphysical results are obtained (e.g. negative
+            background, negative amplitude, highly elliptical fits, etc.).
+            The bounded version of the minimization is slower than the
+            unbounded.
+            Default: False
 
         Returns
         -------
@@ -1784,7 +1787,6 @@ class AtomicColumnLattice:
               + f'{t_elapse % 60 :.{1}f} sec')
 
         """Pack image slices and metadata together for the fitting routine"""
-        # print('Preparing data for fitting...')
         args_packed = [[self.image[group_slices[counter][0],
                                    group_slices[counter][1]],
                         fit_masks[group_slices[counter][0],
@@ -1832,27 +1834,41 @@ class AtomicColumnLattice:
                       - np.std(img_msk[img_msk != 0]))
                 A0 = np.max(img_msk) - I0
 
-                p0 = np.array([x0, y0, sig_1, sig_rat, np.radians(theta),
-                               A0, I0])
+                
 
-                if not use_circ_gauss:
-                    bounds = [(None, None), (None, None), (1, None),
-                              (0.1, None), (None, None), (0, 2),
-                              ] * num + [(0, 1)]
+                if use_circ_gauss:
+                    if use_bounds:
+                        bounds = [(None, None), (None, None),
+                                  (1, None), (0, 2),
+                                  ] * num + [(0, 1.2)]
+                        method = 'L-BFGS-B'
+                    else:
+                        bounds = None
+                        method = 'BFGS'
+                    
+                    p0 = np.array([x0, y0, 
+                                   np.mean([sig_1, sig_rat]),
+                                   A0, I0])
+                    
+                    params = fit_gaussian_circ(img_msk, p0, masks,
+                                               method=method,
+                                               bounds=bounds)
 
-                    params = fit_gaussian2D(img_msk, p0, masks,
-                                            use_LoG_fitting=False,
-                                            method='L-BFGS-B',
-                                            bounds=bounds)
+                else:
+                    if use_bounds:
+                        bounds = [(None, None), (None, None), (1, None),
+                                  (0.1, None), (None, None), (0, 2),
+                                  ] * num + [(0, 1.2)]
+                    else:
+                        bounds = None
+                        method = 'BFGS'
 
-                elif use_circ_gauss:
-                    bounds = [(None, None), (None, None), (1, None),
-                              (1, 1), (0, 0), (0, 2),
-                              ] * num + [(0, 1)]
-                    params = fit_gaussian2D(img_msk, p0, masks,
-                                            use_LoG_fitting=False,
-                                            method='L-BFGS-B',
-                                            bounds=bounds)
+                    p0 = np.array([x0, y0, sig_1, sig_rat,
+                                   np.radians(theta), A0, I0])
+                    
+                    params = fit_gaussian_ellip(img_msk, p0, masks,
+                                                method=method,
+                                                bounds=bounds)
 
                 params = np.array([params[:, 0] + xy_start[0],
                                    params[:, 1] + xy_start[1],
@@ -1899,30 +1915,45 @@ class AtomicColumnLattice:
                             - np.std(masked_sl[masked_sl != 0]))]
                     A0 += [np.max(masked_sl) - I0[i]]
 
-                p0 = np.array([x0, y0, sig_1, sig_rat, theta, A0]).T
+                if use_circ_gauss:
+                    if use_bounds:
+                        bounds = [(None, None), (None, None),
+                                  (1, None),(0, 2),
+                                  ] * num + [(0, 1.2)]
+                        method = 'L-BFGS-B'
+                    else:
+                        bounds = None
+                        method = 'BFGS'
 
-                p0 = np.append(p0.flatten(), np.mean(I0))
+                    p0 = np.array([x0, y0, 
+                                   np.mean([sig_1, sig_rat], axis=0),
+                                   A0]).T
+                    p0 = np.append(p0.flatten(), np.mean(I0))
+                    
+                    params = fit_gaussian_circ(img_msk, p0, masks,
+                                               method=method,
+                                               bounds=bounds)
 
-                if not use_circ_gauss:
-                    bounds = [(None, None), (None, None), (1, None),
-                              (0.1, None), (None, None), (0, 2),
-                              ] * num + [(0, None)]
-                    params = fit_gaussian2D(img_msk, p0, masks,
-                                            use_LoG_fitting=False,
-                                            method='L-BFGS-B',
-                                            bounds=bounds)
-
-                elif use_circ_gauss:
-                    bounds = [(None, None), (None, None), (1, None),
-                              (1, 1), (0, 0), (0, 2),
-                              ] * num + [(0, None)]
-                    params = fit_gaussian2D(img_msk, p0, masks,
-                                            use_LoG_fitting=False,
-                                            method='L-BFGS-B',
-                                            bounds=bounds)
                 else:
-                    raise Exception("Argument 'use_circ_gauss' "
-                                    "must be a bool")
+                    if use_bounds:
+                        bounds = [(None, None), (None, None), 
+                                  (1, None), (0.1, None), 
+                                  (None, None), (0, 2),
+                                  ] * num + [(0, 1.2)]
+                        method = 'L-BFGS-B'
+                    else:
+                        bounds = None
+                        method = 'BFGS'
+
+                    p0 = np.array([x0, y0,
+                                   sig_1, sig_rat, 
+                                   theta, A0]).T
+
+                    p0 = np.append(p0.flatten(), np.mean(I0))
+                    
+                    params = fit_gaussian_ellip(img_msk, p0, masks,
+                                                method=method,
+                                                bounds=bounds)
 
                 params = np.array([params[:, 0] + xy_start[0],
                                    params[:, 1] + xy_start[1],

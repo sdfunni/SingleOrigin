@@ -84,7 +84,7 @@ dso.fit_atom_columns(buffer=20, local_thresh_factor=0.5,
                      use_circ_gauss=True,
                      parallelize=True)
 
-# %%
+# %% REFINE THE REFERENCE LATTICE BASED ON THE FITTED POSITIONS
 dso.refine_reference_lattice(filter_by='elem', sites_to_use='Dy',
                              outlier_disp_cutoff=30)
 
