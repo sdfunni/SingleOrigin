@@ -342,13 +342,13 @@ def select_folder(path=None):
 """General image functions"""
 
 
-def import_image(directory=None, display_image=True, images_from_stack=None,
-                 emd_velox=True):
+def load_image(path=None, display_image=True,
+               images_from_stack=None, emd_velox=True):
     """Select image from 'Open File' dialog box, import and (optionally) plot
 
     Parameters
     ----------
-    directory : str or None
+    path : str or None
         The location of the image to load or the path to the folder containing
         the desired image. If only a directory is given, the "Open file"
         dialog box will still open allowing you to select an image file.
@@ -374,21 +374,21 @@ def import_image(directory=None, display_image=True, images_from_stack=None,
 
     """
 
-    if directory is None:
+    if path is None:
         path, _ = qfd.getOpenFileName(
             caption='Select an image to load...',
             filter="Images (*.png *.jpg *.tif *.dm4 *.dm3 *.emd *.ser)")
         print(f'path to imported image: {path}')
 
-    elif directory[-4:] in ['.dm4', '.dm3', '.emd',
-                            '.ser', '.tif', '.png', '.jpg']:
-        path = directory
-        print(f'path to imported image: {path}')
+    elif path[-4:] in ['.dm4', '.dm3', '.emd', '.ser', '.tif', '.png', '.jpg']:
+        # path = path
+        # print(f'path to imported image: {path}')
+        pass
 
     else:
         path, _ = qfd.getOpenFileName(
             caption='Select an image to load...',
-            directory=directory,
+            directory=path,
             filter="Images (*.png *.jpg *.tif *.dm4 *.dm3 *.emd *.ser)")
 
     if path[-3:] in ['dm4', 'dm3']:
