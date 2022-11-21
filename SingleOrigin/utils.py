@@ -20,7 +20,7 @@ import os
 import copy
 import warnings
 import numpy as np
-# from numpy.linalg import norm
+from numpy.linalg import norm
 import pandas as pd
 from scipy import ndimage
 from scipy.ndimage import (gaussian_filter,
@@ -817,11 +817,11 @@ def fit_gaussian_ellip(data, p0, masks=None, method='BFGS', bounds=None):
 
     p0_ = np.append(p0_.flatten(), I0)
 
-    # with warnings.catch_warnings():
-    #     warnings.filterwarnings('ignore', category=UserWarning,
-    #                             lineno=182)
-    #     warnings.filterwarnings('ignore', category=RuntimeWarning,
-    #                             lineno=579)
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', category=UserWarning,
+                                lineno=182)
+        warnings.filterwarnings('ignore', category=RuntimeWarning,
+                                lineno=579)
     params = minimize(gaussian_ellip_ss, p0_,
                       args=(x, y, z, masks_labeled),
                       bounds=bounds, method=method).x
@@ -1141,7 +1141,7 @@ def band_pass_filter(shape, high_pass=5, low_pass=None,
     else:
         low_pass *= fft_pixel_size[max_dim]
 
-    fft_freq_abs = np.linalg.norm(np.array(
+    fft_freq_abs = norm(np.array(
         np.meshgrid(f_freq_1d[1], f_freq_1d[0])), axis=0)
 
     mask = np.where(((fft_freq_abs >= high_pass) &
@@ -1332,11 +1332,11 @@ def fft_amplitude_area(image, xy_fft, r, blur, thresh=0.5,
     xy = np.array([xy[1], xy[0]]).transpose((1, 2, 0))
     if (type(r) == int) | (type(r) == float):
         for xy_ in xy_fft:
-            mask += np.where(np.linalg.norm(xy - xy_, axis=2) <= r, 1, 0)
+            mask += np.where(norm(xy - xy_, axis=2) <= r, 1, 0)
 
     else:
         for i, xy_ in enumerate(xy_fft):
-            mask += np.where(np.linalg.norm(xy - xy_, axis=2) <= r[i], 1, 0)
+            mask += np.where(norm(xy - xy_, axis=2) <= r[i], 1, 0)
 
     image_complex = np.fft.ifft2(np.fft.fftshift(fft * mask))
     amplitude = (np.real(np.real(image_complex))**2

@@ -20,6 +20,7 @@ import copy
 import time
 
 import numpy as np
+from numpy.linalg import norm
 import pandas as pd
 
 import matplotlib.pyplot as plt
@@ -91,7 +92,6 @@ class HRImage:
         self.h, self.w = self.image.shape
         self.pixel_size_cal = pixel_size_cal
         self.latt_dict = {}
-        # self.fft = fft_equxy(image)
 
     def add_lattice(self, name, unitcell, probe_fwhm=0.8,
                     origin_atom_column=None):
@@ -350,7 +350,7 @@ class HRImage:
             if ((outlier_disp_cutoff is not None) &
                     (outlier_disp_cutoff is not np.inf)):
 
-                filtered = filtered[np.linalg.norm(
+                filtered = filtered[norm(
                     filtered.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
                     - filtered.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float),
                     axis=1)
@@ -488,7 +488,7 @@ class HRImage:
         if ((outlier_disp_cutoff is not None) &
                 (outlier_disp_cutoff is not np.inf)):
 
-            combined = combined[np.linalg.norm(
+            combined = combined[norm(
                 combined.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
                 - combined.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float),
                 axis=1)
@@ -498,7 +498,7 @@ class HRImage:
         if max_colorwheel_range_pm is None:
             dxy = (combined.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
                    - combined.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float))
-            mags = np.linalg.norm(dxy, axis=1) * pixel_size * 100
+            mags = norm(dxy, axis=1) * pixel_size * 100
             avg = np.mean(mags)
             std = np.std(mags)
             max_colorwheel_range_pm = int(np.ceil((avg + 3*std)/5) * 5)
@@ -583,7 +583,7 @@ class HRImage:
             dxy = (sub_latt.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
                    - sub_latt.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float))
 
-            disp_pm = (np.linalg.norm(dxy, axis=1) * pixel_size * 100)
+            disp_pm = (norm(dxy, axis=1) * pixel_size * 100)
             normed = disp_pm / max_colorwheel_range_pm
             print(rf'Displacement statistics for {site}:',
                   f'average: {np.mean(disp_pm)  :.{2}f} (pm)',
@@ -776,7 +776,7 @@ class AtomicColumnLattice:
         self.at_cols_uncropped = pd.DataFrame()
         self.x0, self.y0 = np.nan, np.nan
         self.fit_masks = np.zeros(image.shape)
-        self.region_mask = None
+        self.region_mask = np.ones(image.shape)
         self.a1, self.a2 = None, None
         self.a1_star, self.a2_star = None, None
         self.dir_struct_matrix = None
@@ -784,7 +784,7 @@ class AtomicColumnLattice:
         self.residuals = None
 
         if origin_atom_column is None:
-            origin_atom_column = np.argmin(np.linalg.norm(
+            origin_atom_column = np.argmin(norm(
                 self.unitcell_2D.loc[:, 'x':'y'].to_numpy(dtype=float),
                 axis=1))
         self.origin_atom_column = origin_atom_column
@@ -843,7 +843,7 @@ class AtomicColumnLattice:
                            ].reset_index(drop=True)
             xy = spots_.loc[:, 'x':'y'].to_numpy(dtype=float)
 
-            recip_vects = np.linalg.norm(xy - origin, axis=1)
+            recip_vects = norm(xy - origin, axis=1)
             max_recip_vect = np.max(recip_vects)
             window = min(max_recip_vect*1.5, U)
 
@@ -861,7 +861,7 @@ class AtomicColumnLattice:
             basis_picks_xy = np.array(plt.ginput(2, timeout=15))
 
             vects = np.array([xy - i for i in basis_picks_xy])
-            inds = np.argmin(np.linalg.norm(vects, axis=2), axis=1)
+            inds = np.argmin(norm(vects, axis=2), axis=1)
             basis_picks_xy = xy[inds, :]
 
             print('done selecting', '\n')
@@ -881,7 +881,7 @@ class AtomicColumnLattice:
         xy_ref = recip_latt_indices @ a_star + origin
 
         vects = np.array([xy - xy_ for xy_ in xy_ref])
-        inds = np.argmin(np.linalg.norm(vects, axis=2), axis=1)
+        inds = np.argmin(norm(vects, axis=2), axis=1)
 
         df = {'h': recip_latt_indices[:, 0],
               'k': recip_latt_indices[:, 1],
@@ -893,10 +893,10 @@ class AtomicColumnLattice:
 
         recip_latt = pd.DataFrame(df)
 
-        recip_latt = recip_latt[np.linalg.norm(
+        recip_latt = recip_latt[norm(
             recip_latt.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
             - recip_latt.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float), axis=1)
-            < 0.25*np.min(np.linalg.norm(a_star, axis=1))
+            < 0.25*np.min(norm(a_star, axis=1))
         ].reset_index(drop=True)
 
         def disp_vect_sum_squares(p0, M_star, xy, origin):
@@ -924,7 +924,7 @@ class AtomicColumnLattice:
             recip_latt.loc[:, 'h':'k'].to_numpy(dtype=float) @ a_star + origin)
         plt.close('all')
 
-        recip_vects = np.linalg.norm(xy - origin, axis=1)
+        recip_vects = norm(xy - origin, axis=1)
         min_recip_vect = np.min(recip_vects[recip_vects > 0])
         window = min(min_recip_vect*10, U)
 
@@ -953,10 +953,10 @@ class AtomicColumnLattice:
         self.a2 = dir_struct_matrix[1, :]
         self.dir_struct_matrix = dir_struct_matrix
         self.basis_offset_pix = self.basis_offset_frac @ self.dir_struct_matrix
-        self.pixel_size_est = np.average([np.linalg.norm(self.a_2d[0, :])
-                                          / np.linalg.norm(self.a1),
-                                          np.linalg.norm(self.a_2d[1, :])
-                                          / np.linalg.norm(self.a2)])
+        self.pixel_size_est = np.average([norm(self.a_2d[0, :])
+                                          / norm(self.a1),
+                                          norm(self.a_2d[1, :])
+                                          / norm(self.a2)])
         self.recip_latt = recip_latt
 
     def fft_get_peaks(self, sigma=5):
@@ -991,7 +991,7 @@ class AtomicColumnLattice:
 
         origin = np.array([U, U])
 
-        recip_vects = np.linalg.norm(xy - origin, axis=1)
+        recip_vects = norm(xy - origin, axis=1)
         min_recip_vect = np.min(recip_vects[recip_vects > 0])
         window = min(min_recip_vect*10, U)
 
@@ -1270,10 +1270,10 @@ class AtomicColumnLattice:
         else:
             lab = 'elem'
 
-        self.pixel_size_est = np.average([np.linalg.norm(self.a_2d[0, :])
-                                          / np.linalg.norm(self.a1),
-                                          np.linalg.norm(self.a_2d[1, :])
-                                          / np.linalg.norm(self.a2)])
+        self.pixel_size_est = np.average([norm(self.a_2d[0, :])
+                                          / norm(self.a1),
+                                          norm(self.a_2d[1, :])
+                                          / norm(self.a2)])
 
         if ((LoG_sigma is None)
             & ((type(self.probe_fwhm) == float)
@@ -1284,8 +1284,8 @@ class AtomicColumnLattice:
             self.region_mask = mask
 
         if origin is None:
-            window_size = np.max([np.linalg.norm(self.a1),
-                                  np.linalg.norm(self.a2)]) * zoom_factor
+            window_size = np.max([norm(self.a1),
+                                  norm(self.a2)]) * zoom_factor
             if self.region_mask is not None:
                 window_center = np.array(center_of_mass(self.region_mask)
                                          ).astype(int)
@@ -1305,8 +1305,8 @@ class AtomicColumnLattice:
         local_max = np.fliplr(np.argwhere(
             maximum_filter(img_LoG, footprint=neighborhood) == img_LoG))
 
-        [x0, y0] = local_max[np.argmin(np.linalg.norm(local_max
-                                                      - [x0, y0], axis=1))]
+        [x0, y0] = local_max[np.argmin(norm(local_max
+                                            - [x0, y0], axis=1))]
 
         print('detected peak coordinates:', [x0, y0], '\n')
 
@@ -1323,8 +1323,8 @@ class AtomicColumnLattice:
         print('Creating reference lattice...')
 
         def vect_angle(a, b):
-            theta = np.arccos(a @ b.T/(np.linalg.norm(a)
-                                       * np.linalg.norm(b)))
+            theta = np.arccos(a @ b.T/(norm(a)
+                                       * norm(b)))
             return theta
 
         d = [np.array([-x0, -y0]),
@@ -1337,10 +1337,10 @@ class AtomicColumnLattice:
         a2p = np.argmin([(vect_angle(a2, d[i])) for i, _ in enumerate(d)])
         a2n = np.argmin([(vect_angle(-a2, d[i])) for i, _ in enumerate(d)])
 
-        a1_start = int(np.linalg.norm(d[a1n])**2 / (a1 @ d[a1n].T)) - 1
-        a1_stop = int(np.linalg.norm(d[a1p])**2 / (a1 @ d[a1p].T)) + 2
-        a2_start = int(np.linalg.norm(d[a2n])**2 / (a2 @ d[a2n].T)) - 1
-        a2_stop = int(np.linalg.norm(d[a2p])**2 / (a2 @ d[a2p].T)) + 2
+        a1_start = int(norm(d[a1n])**2 / (a1 @ d[a1n].T)) - 1
+        a1_stop = int(norm(d[a1p])**2 / (a1 @ d[a1p].T)) + 2
+        a2_start = int(norm(d[a2n])**2 / (a2 @ d[a2n].T)) - 1
+        a2_stop = int(norm(d[a2p])**2 / (a2 @ d[a2p].T)) + 2
 
         latt_cells = np.array([[i, j] for i in range(a1_start, a1_stop)
                                for j in range(a2_start, a2_stop)
@@ -1388,8 +1388,8 @@ class AtomicColumnLattice:
         pos_xy = at_cols[(np.abs(at_cols.u) <= 1) &
                          (np.abs(at_cols.v) <= 1)
                          ].loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float)
-        dists = np.linalg.norm(np.array([pos_xy - pos for pos in pos_xy]),
-                               axis=2).flatten()
+        dists = norm(np.array([pos_xy - pos for pos in pos_xy]),
+                     axis=2).flatten()
         min_dist = np.min(np.array([dist for dist in dists if dist != 0]))
 
         masks, num_masks, slices, peaks = watershed_segment(
@@ -1420,7 +1420,7 @@ class AtomicColumnLattice:
 
             vects = np.array([coords - xy for xy in xy_ref])
 
-            inds = np.argmin(np.linalg.norm(vects, axis=2), axis=1)
+            inds = np.argmin(norm(vects, axis=2), axis=1)
             xy = np.array([coords[ind] for ind in inds])
 
             def disp_vect_sum_squares(p0, M, xy):
@@ -1428,8 +1428,8 @@ class AtomicColumnLattice:
                 dir_struct_matrix = p0[:4].reshape((2, 2))
                 origin = p0[4:]
 
-                R = np.linalg.norm(xy - M @ dir_struct_matrix - origin,
-                                   axis=1)
+                R = norm(xy - M @ dir_struct_matrix - origin,
+                         axis=1)
                 sum_sq = (R @ R.T).item()
                 return sum_sq
 
@@ -1463,10 +1463,12 @@ class AtomicColumnLattice:
             + np.array([self.x0, self.y0])
         )
 
-        at_cols = at_cols[((at_cols.x_ref >= 5) &
-                           (at_cols.x_ref <= w - 5) &
-                           (at_cols.y_ref >= 5) &
-                           (at_cols.y_ref <= h - 5))]
+        region_mask_buffer = binary_erosion(self.region_mask,
+                                            iterations=5)
+        if self.region_mask is not None:
+            at_cols = at_cols[region_mask_buffer[
+                np.around(at_cols.y_ref.to_numpy()).astype(int),
+                np.around(at_cols.x_ref.to_numpy()).astype(int)] == 1]
 
         self.at_cols_uncropped = copy.deepcopy(at_cols)
 
@@ -1666,8 +1668,8 @@ class AtomicColumnLattice:
                                         for i in range(-1, 2)
                                         for j in range(-1, 2)])
                                       ) @ self.dir_struct_matrix
-        dists = np.linalg.norm(np.array([unit_cell_xy - pos
-                                         for pos in unit_cell_xy]), axis=2)
+        dists = norm(np.array([unit_cell_xy - pos
+                               for pos in unit_cell_xy]), axis=2)
         min_dist = (np.amin(dists, initial=np.inf, where=dists > 0) - 1)
 
         t2 = time.time()
@@ -1700,7 +1702,7 @@ class AtomicColumnLattice:
         xy_peak = xy_peak.loc[:, 'x':'y'].to_numpy(dtype=float)
         xy_ref = at_cols.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float)
 
-        norms = np.array([np.linalg.norm(xy_peak - xy, axis=1)
+        norms = np.array([norm(xy_peak - xy, axis=1)
                           for xy in xy_ref])
         inds = np.argmin(norms, axis=1)
         xy_peak = np.array([xy_peak[ind] for ind in inds])
@@ -2039,11 +2041,17 @@ class AtomicColumnLattice:
         self.at_cols_uncropped.update(at_cols)
         self.at_cols_uncropped = self.at_cols_uncropped.infer_objects()
         self.at_cols = self.at_cols_uncropped.dropna(axis=0)
-        self.at_cols = self.at_cols[((self.at_cols.x_ref >= buffer) &
-                                     (self.at_cols.x_ref <= self.w - buffer) &
-                                     (self.at_cols.y_ref >= buffer) &
-                                     (self.at_cols.y_ref <= self.h - buffer))
-                                    ].copy()
+        region_mask_buffer = binary_erosion(self.region_mask,
+                                            iterations=buffer)
+        self.at_cols = self.at_cols[region_mask_buffer[
+            np.around(self.at_cols.y_ref.to_numpy()).astype(int),
+            np.around(self.at_cols.x_ref.to_numpy()).astype(int)] == 1]
+
+        # self.at_cols = self.at_cols[((self.at_cols.x_ref >= buffer) &
+        #                              (self.at_cols.x_ref <= self.w - buffer) &
+        #                              (self.at_cols.y_ref >= buffer) &
+        #                              (self.at_cols.y_ref <= self.h - buffer))
+        #                             ].copy()
 
     def show_masks(self, mask_to_show='fitting', display_masked_image=True):
         """View the fitting or grouping masks. Useful for troubleshooting
@@ -2142,7 +2150,7 @@ class AtomicColumnLattice:
         else:
             outlier_disp_cutoff /= self.pixel_size_est * 100
 
-        filtered = filtered[np.linalg.norm(
+        filtered = filtered[norm(
             filtered.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
             - filtered.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float),
             axis=1)
@@ -2180,28 +2188,28 @@ class AtomicColumnLattice:
             self.at_cols.loc[:, 'u':'v'].to_numpy(dtype=float)
             @ self.dir_struct_matrix + np.array([self.x0, self.y0]))
 
-        self.pixel_size_est = np.average([np.linalg.norm(self.a_2d[0, :])
-                                          / np.linalg.norm(self.a1),
-                                          np.linalg.norm(self.a_2d[1, :])
-                                          / np.linalg.norm(self.a2)])
+        self.pixel_size_est = np.average([norm(self.a_2d[0, :])
+                                          / norm(self.a1),
+                                          norm(self.a_2d[1, :])
+                                          / norm(self.a2)])
 
         theta_ref = np.degrees(
             np.arccos(self.dir_struct_matrix[0, :]
                       @ self.dir_struct_matrix[1, :].T
-                      / (np.linalg.norm(self.dir_struct_matrix[0, :])
-                         * np.linalg.norm(self.dir_struct_matrix[1, :].T))))
+                      / (norm(self.dir_struct_matrix[0, :])
+                         * norm(self.dir_struct_matrix[1, :].T))))
 
         shear_distortion_res = np.radians(90 - theta_ref)
 
-        scale_distortion_res = 1 - ((np.linalg.norm(self.a1)
-                                     * np.linalg.norm(self.a_2d[1, :])) /
-                                    (np.linalg.norm(self.a2)
-                                     * np.linalg.norm(self.a_2d[0, :])))
+        scale_distortion_res = 1 - ((norm(self.a1)
+                                     * norm(self.a_2d[1, :])) /
+                                    (norm(self.a2)
+                                     * norm(self.a_2d[0, :])))
 
-        pix_size = np.average([np.linalg.norm(self.a_2d[0, :])
-                               / np.linalg.norm(self.a1),
-                               np.linalg.norm(self.a_2d[1, :])
-                               / np.linalg.norm(self.a2)])
+        pix_size = np.average([norm(self.a_2d[0, :])
+                               / norm(self.a1),
+                               norm(self.a_2d[1, :])
+                               / norm(self.a2)])
 
         print('')
         print('Residual distortion of reference lattice basis vectors'
@@ -2265,7 +2273,6 @@ class AtomicColumnLattice:
             for i, mask_num in enumerate(mask_nums):
                 n = np.count_nonzero(masks == mask_num)
                 r_i = r[masks == mask_num]
-                # data_i = data[masks == mask_num]
                 RSS_norm += [np.sum(r_i**2) / n]
 
                 if ((params[i, 0] <= buffer) |

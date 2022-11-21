@@ -7,12 +7,17 @@ import copy
 in SingleOrigin. That is, fitting more than one lattice to a single image."""
 # %% SET UP TWO CRYSTAL STRUCTURES FOR FILM AND SUBSTRATE
 
-za = [1, 1, 0]  # Zone Axis direction
-a2 = [-1, 1, 0]  # Apparent horizontal axis in projection
+za = [1, 2, 0]  # Zone Axis direction
+a2 = [2, -1, 0]  # Apparent horizontal axis in projection
 a3 = [0, 0, 1]  # Most vertical axis in projection
 
 # !!! Load the STO.cif file here.
 uc = so.UnitCell()
+uc.transform_basis(za, a2, a3)
+uc.project_uc_2d(proj_axis=0, ignore_elements=['O'], unique_proj_cell=False)
+uc.plot_unit_cell()
+# %%
+
 
 # Then we modify it for the right elements in each lattice.
 uc_bsmo = copy.deepcopy(uc)

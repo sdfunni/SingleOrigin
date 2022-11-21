@@ -20,11 +20,15 @@ import warnings
 import copy
 from PyQt5.QtWidgets import QFileDialog as qfd
 import numpy as np
+from numpy.linalg import norm, inv
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from CifFile import ReadCif
 import pandas as pd
-from SingleOrigin.utils import (metric_tensor, bond_length, bond_angle)
+from SingleOrigin.utils import (metric_tensor,
+                                bond_length,
+                                bond_angle,
+                                IntPlSpc)
 
 # %%
 
@@ -181,18 +185,15 @@ class UnitCell():
         g = metric_tensor(self.a, self.b, self.c,
                           self.alpha, self.beta, self.gamma)
 
-        g_star = np.linalg.inv(g)
+        g_star = inv(g)
+
+        # Calculate the direct structure matrix
         V = np.sqrt(np.linalg.det(g))
         self.a_3d = np.array([
-            [g[0, 0]**0.5,
-             g[1, 0] / g[0, 0]**0.5,
-             g[2, 0] / g[0, 0]**0.5],
-            [0,
-             V * (g_star[2, 2] / g[0, 0])**0.5,
+            [g[0, 0]**0.5, g[1, 0] / g[0, 0]**0.5, g[2, 0] / g[0, 0]**0.5],
+            [0, V * (g_star[2, 2] / g[0, 0])**0.5,
              -V * g_star[2, 1] / (g_star[2, 2] * g[0, 0])**0.5],
-            [0,
-             0,
-             g_star[2, 2]**-0.5]])
+            [0, 0, g_star[2, 2]**-0.5]])
 
         atoms.insert(atoms.shape[1], 'x', 0)
         atoms.insert(atoms.shape[1], 'y', 0)
@@ -241,10 +242,10 @@ class UnitCell():
               'gamma: ', np.around(gamma_, decimals=4), '\n')
         g = metric_tensor(a1_mag, a2_mag, a3_mag, alpha_, beta_, gamma_)
 
-        g_star = np.linalg.inv(g)
+        g_star = inv(g)
 
         V = np.sqrt(np.linalg.det(g))
-        self.a_3d = np.array([
+        self.a_3d_ = np.array([
             [g[0, 0]**0.5,
              g[1, 0] / g[0, 0]**0.5,
              g[2, 0] / g[0, 0]**0.5],
@@ -255,9 +256,9 @@ class UnitCell():
              0,
              g_star[2, 2]**-0.5]])
 
-        latt_cells = np.array([[i, j, k] for i in range(-3, 4)
-                               for j in range(-3, 4)
-                               for k in range(-3, 4)])
+        latt_cells = np.array([[i, j, k] for i in range(-10, 11)
+                               for j in range(-10, 11)
+                               for k in range(-10, 11)])
 
         latt_cells_ = np.array([row for row in latt_cells
                                for i in range(self.atoms.shape[0])])
@@ -266,9 +267,13 @@ class UnitCell():
 
         atoms = pd.concat([self.atoms] * latt_cells.shape[0])
         atoms.reset_index(drop=True, inplace=True)
-        atoms.loc[:, 'u':'w'] = (atoms.loc[:, 'u':'w'].to_numpy()
-                                 + latt_cells_) @ np.linalg.inv(alpha_t)
-        atoms.loc[:, 'u':'w'] = np.around(atoms.loc[:, 'u':'w'], decimals=5)
+        uvw = (atoms.loc[:, 'u':'w'].to_numpy() + latt_cells_) @ inv(alpha_t)
+
+        '''Fix rounding errors to ensure atoms are not cut off or included
+         erroneously'''
+        uvw = np.where(np.isclose(0, uvw), 0, uvw)
+        uvw = np.where(np.isclose(1, uvw), 1, uvw)
+        atoms.loc[:, 'u':'w'] = uvw
 
         '''Reduce to new unit cell'''
         atoms = atoms[((atoms.u >= 0) & (atoms.u < 1) &
@@ -277,35 +282,38 @@ class UnitCell():
 
         '''Transform coordinates to Cartesian using the structure matrix'''
 
-        atoms.loc[:, 'x':'z'] = atoms.loc[:, 'u':'w'].to_numpy() @ self.a_3d.T
+        atoms.loc[:, 'x':'z'] = atoms.loc[:, 'u':'w'].to_numpy() @ self.a_3d_.T
         atoms.reset_index(drop=True, inplace=True)
         self.atoms = atoms
-        self.g = g
-        self.g_star = g_star
+        self.g_ = g
+        self.g_star_ = g_star
         self.alpha_t = alpha_t
 
-        self.a = a1_mag
-        self.b = a2_mag
-        self.c = a3_mag
-        self.alpha = alpha_
-        self.beta = beta_
-        self.gamma = gamma_
+        self.a_ = a1_mag
+        self.b_ = a2_mag
+        self.c_ = a3_mag
+        self.alpha_ = alpha_
+        self.beta_ = beta_
+        self.gamma_ = gamma_
 
-    def project_uc_2d(self, proj_axis=0, ignore_elements=[],
-                      unique_proj_cell=True):
+    def project_zone_axis(self, za, a1, a2,
+                          ignore_elements=[],
+                          unique_proj_cell=True):
         """Project the unit cell along a certain basis vector direction.
 
         Generates a 2D projected unit cell, assigning the result to the
         class attribute 'at_cols'. The projected basis vector matrix is
         assigned to 'a_2d'.
 
+Project the unit cell along along a zone axis.
+
         Parameters
         ----------
-        proj_axis : int
-            The basis vector along which to project the unit cell. 0, 1, or 2.
-            Value corresponds to the current basis vector definitions,
-            i.e. a1, a2, and a3.
-            Default: 0.
+        za, a1, a2 : array-like shape (3,)
+            The zone axis and image basis vectors. 'a1' and 'a2' must be
+            directions that correspond to planes that obey the zone law for the
+            specified zone axis. 'za'->'a1'->'a2' must also obey the right
+            hand rule in that order.
         ignore_elements : list of strings
             The element labels of the atoms that should be dropped before
             projecting the unit cell. For example, light elements such as
@@ -326,24 +334,24 @@ class UnitCell():
 
         """
 
+        self.transform_basis(za, a1, a2)
+
         for ignore_element in ignore_elements:
             self.atoms = self.atoms[self.atoms.elem != ignore_element]
-
-        self.alpha_t = self.alpha_t[[(proj_axis + i) % 3 for i in range(3)], :]
 
         at_cols = self.atoms.copy()
 
         if 'Debye_Waller' in at_cols.columns:
             at_cols.drop(['Debye_Waller'], axis=1, inplace=True)
 
-        a_2d = np.delete(self.a_3d, proj_axis, axis=0)
-        a_2d = np.delete(a_2d, proj_axis, axis=1)
+        a_2d = np.delete(self.a_3d_, 0, axis=0)
+        a_2d = np.delete(a_2d, 0, axis=1)
         cart_ax = ['x', 'y', 'z']
         cryst_ax = ['u', 'v', 'w']
-        at_cols = at_cols.drop([cart_ax[proj_axis],
-                                cryst_ax[proj_axis]], axis=1)
+        at_cols = at_cols.drop([cart_ax[0],
+                                cryst_ax[0]], axis=1)
 
-        cryst_ax.pop(proj_axis)
+        cryst_ax.pop(0)
         elem = [''.join(item) for item in at_cols.loc[:, 'elem']]
         x = list(at_cols.loc[:, cryst_ax[0]])
         y = list(at_cols.loc[:, cryst_ax[1]])
@@ -372,23 +380,42 @@ class UnitCell():
         at_cols.rename(columns={k: v for (k, v) in zip(cart_ax, ['x', 'y'])},
                        inplace=True)
 
-        if unique_proj_cell is True:
-            a1_ = self.alpha_t[1, :]
-            a2_ = self.alpha_t[2, :]
+        if unique_proj_cell:
+            a1_ = self.a_3d_[1, :]
+            a2_ = self.a_3d_[2, :]
+            g1_spacing = IntPlSpc(a1, self.g)
+            g2_spacing = IntPlSpc(a2, self.g)
 
-            # Find frequency of planes along each basis vector
-            a1_mult = (np.min(np.abs(a1_)[np.abs(a1_) > 0])
-                       * np.sum(np.abs(a1_)))
-            a2_mult = (np.min(np.abs(a2_)[np.abs(a2_) > 0])
-                       * np.sum(np.abs(a2_)))
+            g1 = a1 @ self.g_star
+            g1_ = g1 @ inv(self.alpha_t)
+            g1_real_unit = g1_ / norm(g1_)
+            g2 = a2 @ self.g_star
+            g2_ = g2 @ inv(self.alpha_t)
+            g2_real_unit = g2_ / norm(g2_)
+            g1_real = g1_spacing * g1_real_unit
+            g2_real = g2_spacing * g2_real_unit
+
+            # Find spacing of planes along each basis vector
+            a1_mult = (np.around(g1_real @ a1_.T / g1_spacing**2))
+            a2_mult = (np.around(g2_real @ a2_.T / g2_spacing**2))
+            a_mult = np.array([a1_mult, a2_mult])
+
+            if (np.max(a_mult) % np.min(a_mult) == 0):
+                min_mult = np.min(a_mult)
+                a_mult = a_mult/min_mult
 
             # Convert fractional coordinates to new basis magnitudes
-            at_cols.loc[:, 'u':'v'] *= np.array([a1_mult, a2_mult])
+            uv = at_cols.loc[:, 'u':'v'].to_numpy() * a_mult
+            # Fix rounding errors to prevent missing or extra atom columns
+            uv = np.where(np.isclose(0, uv), 0, uv)
+            uv = np.where(np.isclose(1, uv), 1, uv)
+            at_cols.loc[:, 'u':'v'] = uv
 
             at_cols = at_cols[((at_cols.u >= 0) & (at_cols.u < 1) &
                                (at_cols.v >= 0) & (at_cols.v < 1))]
-            a_2d *= np.array([[1 / a1_mult, 1 / a2_mult]]).T
+            a_2d /= a_mult.T
 
+        at_cols.loc[:, 'x':'y'] = (at_cols.loc[:, 'u':'v'].to_numpy() @ a_2d.T)
         at_cols = at_cols.sort_values(by=['elem', 'u', 'v'])
         at_cols.reset_index(drop=True, inplace=True)
 
@@ -418,10 +445,8 @@ class UnitCell():
         prox_rows = []
         for i, row_i in self.at_cols.iterrows():
             for j, row_j in self.at_cols.iterrows():
-                dist = np.linalg.norm((np.array([row_i.at['x'],
-                                                 row_i.at['y']])
-                                      - np.array([row_j.at['x'],
-                                                  row_j.at['y']])))
+                dist = norm((np.array([row_i.at['x'], row_i.at['y']])
+                             - np.array([row_j.at['x'], row_j.at['y']])))
 
                 if i == j:
                     break
