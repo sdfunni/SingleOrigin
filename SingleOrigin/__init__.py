@@ -16,7 +16,7 @@
     along with this program.  If not, see https://www.gnu.org/licenses"""
 
 
-__version__ = "2.1.4"
+__version__ = "2.2.0"
 
 from SingleOrigin.utils import (metric_tensor,
                                 bond_length,
@@ -28,15 +28,16 @@ from SingleOrigin.utils import (metric_tensor,
                                 TwoTheta,
                                 elec_wavelength,
                                 select_folder,
-                                import_image,
+                                load_image,
                                 image_norm,
                                 write_image_array_to_tif,
                                 img_equ_ellip,
                                 img_ellip_param,
                                 gaussian_2d,
-                                LoG_2d,
-                                gaussian2d_ss,
-                                fit_gaussian2D,
+                                gaussian_circ_ss,
+                                gaussian_ellip_ss,
+                                fit_gaussian_ellip,
+                                fit_gaussian_circ,
                                 pcf_radial,
                                 detect_peaks,
                                 watershed_segment,
@@ -45,8 +46,10 @@ from SingleOrigin.utils import (metric_tensor,
                                 fast_rotate_90deg,
                                 fft_amplitude_area,
                                 std_local,
-                                binary_find_largest_rectangle)
+                                binary_find_largest_rectangle,
+                                fft_equxy)
 
 from SingleOrigin.cell_transform import UnitCell
 
-from SingleOrigin.find_atom_columns import AtomicColumnLattice
+from SingleOrigin.find_atom_columns import (HRImage,
+                                            AtomicColumnLattice)
