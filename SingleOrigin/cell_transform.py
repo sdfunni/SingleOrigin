@@ -100,7 +100,7 @@ class UnitCell():
 
     combine_prox_cols(
         toler=0.1
-        ): 
+        ):
         Combines atom columns if closer than the toler.
 
     plot_unit_cell(

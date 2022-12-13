@@ -455,9 +455,16 @@ class HRImage:
 
         if (type(outlier_disp_cutoff) == float or
                 type(outlier_disp_cutoff) == int):
-            outlier_disp_cutoff /= pixel_size
+            outlier_disp_cutoff /= pixel_size * 100
 
-        fig, axs = plt.subplots(ncols=1, figsize=figsize, tight_layout=True)
+        fig, axs = plt.subplots(
+            ncols=1,
+            figsize=figsize,
+            tight_layout=True,
+            sharex=True,
+            sharey=True,
+        )
+
         if plot_masked_image is True:
             fit_masks = np.sum(np.array([lattice.fit_masks
                                          for lattice in
@@ -556,7 +563,9 @@ class HRImage:
             loc='lower left',
             bbox_to_anchor=[1.02, 0],
             facecolor='grey',
-            fontsize=16)
+            fontsize=16,
+            markerscale=3,
+        )
 
         if scalebar_len_nm:
             scalebar = ScaleBar(
@@ -657,10 +666,11 @@ class HRImage:
             pixel_size = np.mean(
                 [latt.pixel_size_est for latt in self.latt_dict.values()]
             )
+            print(pixel_size)
         if outlier_disp_cutoff is None:
             outlier_disp_cutoff = np.inf
         else:
-            outlier_disp_cutoff /= pixel_size
+            outlier_disp_cutoff /= pixel_size * 100
 
         if x_lim is None:
             x_lim = [0, self.w]
@@ -747,7 +757,15 @@ class HRImage:
         for ax, site in enumerate(sites_to_plot):
             row = ax // ncols
             col = ax % ncols
-            axs += [fig.add_subplot(gs[row, col])]
+            if ax > 0:
+                axs += [fig.add_subplot(
+                    gs[row, col],
+                    sharex=axs[0],
+                    sharey=axs[0]
+                )]
+            else:
+                axs += [fig.add_subplot(gs[row, col])]
+
             axs[ax].imshow(self.image, cmap='gray')
 
             axs[ax].set_xlim(x_lim[0], x_lim[1])
@@ -1579,9 +1597,19 @@ class AtomicColumnLattice:
             )
 
         if show_mask:
-            plt.figure()
-            plt.imshow(self.image)
-            plt.imshow(self.region_mask, alpha=0.8, cmap='Reds')
+            plt.figure(0)
+            plt.imshow(
+                self.image,
+                cmap='gist_gray'
+            )
+
+            plt.imshow(
+                self.region_mask,
+                alpha=0.2,
+                cmap='Reds'
+            )
+
+            plt.title('Region to analize:', fontsize=16)
 
     def get_region_mask_polygon(
             self,
@@ -1634,19 +1662,21 @@ class AtomicColumnLattice:
 
         """
 
-        if vertices is not None:
-            vertices = np.fliplr(np.array(vertices))
-        else:
+        # if vertices is not None:
+        #     vertices = np.fliplr(np.array(vertices))
+        if vertices is None:
             fig, ax = plt.subplots(figsize=(8, 10))
             ax.imshow(self.image, cmap='gist_gray')
             ax.set_xticks([])
             ax.set_yticks([])
+
             ax.set_title(
                 'Left click to add vertices.\n' +
                 'Right click or backspace key to remove last.\n' +
                 'Center click or enter key to complete.\n' +
                 'Must select in clockwise order.'
             )
+
             vertices = plt.ginput(
                 n=-1,
                 timeout=0,
@@ -1655,6 +1685,7 @@ class AtomicColumnLattice:
                 mouse_pop=MouseButton.RIGHT,
                 mouse_stop=MouseButton.MIDDLE
             )
+
             plt.close()
             vertices = np.fliplr(np.array(vertices))
 
@@ -1664,19 +1695,20 @@ class AtomicColumnLattice:
                 self.region_mask,
                 iterations=buffer
             )
+
         if invert:
             self.region_mask = np.where(self.region_mask == 1, 0, 1)
         if show_poly:
             fig, ax = plt.subplots()
             ax.imshow(self.image, cmap='gist_gray')
-            poly = Polygon(
-                np.fliplr(np.array(vertices)),
-                fc='red',
-                ec='black',
-                lw=1,
-                alpha=0.1
+
+            plt.imshow(
+                self.region_mask,
+                alpha=0.2,
+                cmap='Reds'
             )
-            ax.add_patch(poly)
+
+            ax.set_title('Region to analize:', fontsize=16)
         if return_vertices:
             return vertices
 
@@ -2044,7 +2076,7 @@ class AtomicColumnLattice:
             Default: 'all'
 
         watershed_line : bool
-            Seperate segmented regions by one pixel. 
+            Seperate segmented regions by one pixel.
             Default: True.
 
         parallelize : bool
@@ -2694,10 +2726,15 @@ class AtomicColumnLattice:
         self.at_cols_uncropped.update(at_cols)
         self.at_cols_uncropped = self.at_cols_uncropped.infer_objects()
         self.at_cols = self.at_cols_uncropped.dropna(axis=0)
-        region_mask_buffer = binary_erosion(
-            self.region_mask,
-            iterations=buffer
-        )
+
+        if buffer:
+            region_mask_buffer = binary_erosion(
+                self.region_mask,
+                iterations=buffer
+            )
+
+        else:
+            region_mask_buffer = self.region_mask
 
         self.at_cols = self.at_cols[region_mask_buffer[
             np.around(self.at_cols.y_ref.to_numpy()).astype(int),

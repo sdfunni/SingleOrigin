@@ -380,7 +380,8 @@ def load_image(
         path=None,
         display_image=True,
         images_from_stack=None,
-        emd_velox=True
+        emd_velox=True,
+        return_path=False
 ):
     """Select image from 'Open File' dialog box, import and (optionally) plot
 
@@ -484,7 +485,10 @@ def load_image(
         axs.set_xticks([])
         axs.set_yticks([])
 
-    return image, metadata
+    if return_path:
+        return image, metadata, path
+    else:
+        return image, metadata
 
 
 def image_norm(image):

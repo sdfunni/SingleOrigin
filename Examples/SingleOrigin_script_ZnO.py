@@ -1,114 +1,100 @@
-from SingleOrigin import *
+import SingleOrigin as so
+import numpy as np
 
-#%%
-"""Location of image data"""
+# %%
+"""Location of .cif & image data"""
 
-path = 'STEM_Images/ZnO_dDPC.tif'
+cif = 'ZnO.cif'
+path = 'ZnO_dDPC.tif'
 
-#%%
-"""Structure import from .cif and project"""
+# %% SET UP THE PROJECTED UNIT CELL
 
-cif_path = 'ZnO_mp-2133_symmetrized.cif'
+"""Project the unit cell along along a zone axis. 'a1' and 'a2' must be
+directions that correspond to planes that obey the zone law for 'za'.
+'za' -> 'a1' -> 'a2' must also obey the right hand rule in that order. """
 
-za = [1,1,0]          #Zone Axis direction
-a2 = [-1,1,0]         #Apparent horizontal axis in projection
-a3 = [0,0,1]          #Most vertical axis in projection
-#%%
-"""Find 3D coordinates of unit cell, metric tensor and 3D direct 
-stucture matrix (a_3d)"""
-uc = UnitCell(cif_path)
+za = [1, 1, 0]   # Zone Axis direction
+a1 = [1, -1, 0]  # First projected image lattice vector
+a2 = [0, 0, 1]   # Second projected image lattice vector
 
-uc.transform_basis(za, a2, a3)
 
-"""Project Unit Cell to 2D and combine coincident/proximate columns"""
-uc.project_uc_2d(proj_axis = 0, ignore_elements = [], unique_proj_cell=True) 
+uc = so.UnitCell(cif)
+uc.project_zone_axis(
+    za, a1, a2,
+    ignore_elements=[],
+    unique_proj_cell=True,
+)
 
-uc.combine_prox_cols(toler = 1e-2)
-
+uc.combine_prox_cols(toler=1e-2)
 uc.plot_unit_cell()
 
-#%%
-"""Import experimental image and normalize to 0-1"""
-image = import_image(path, display_image=True)
+# %% LOAD THE IMAGE
+# file_name = '09-07-2022_19.13.22_HAADFdrift_corr_HAADF_GRD.tif'
+image, metadata = so.load_image(
+    path=path,
+    display_image=True,
+)
 
-#%%
-"""Initialize AtomicColumnLattice object"""
+# %% SET UP THE REFERENCE LATTICE AND GET IMAGE REGION TO ANALIZE
 
-acl = AtomicColumnLattice(image, uc, resolution=0.8)#, 
-                          # xlim=[200,-200], ylim=[200,-200])
+hrimage = so.HRImage(image)
 
-"""Get real space basis vectors using the FFT
-if some FFT peaks are weak or absent (such as forbidden reflections), 
-specify the order of the first peak that is clearly visible"""
+zno = hrimage.add_lattice(
+    'zno',
+    uc,
+    probe_fwhm=0.8,
+    origin_atom_column=None,
+)
 
-acl.fft_get_basis_vect(a1_order=1, a2_order=2, sigma=1.5)
+zno.fft_get_basis_vect(
+    a1_order=1,
+    a2_order=2,
+    sigma=3
+)
 
-#%%
-"""Generate a mathematical lattice from the basis vectors and unit cell 
-    projection."""
+# zno.get_region_mask_std(buffer=0)
+zno.region_mask = np.ones(image.shape)
 
-acl.define_reference_lattice()
+# %% REGISTER THE REFERENCE LATTICE
 
-#%%
-"""Fit atom columns at reference lattice points
--Automatically decides what filters to use based on resolution (input above) 
-and pixel size (determined from basis vectors lengths compared to .cif lattice 
-parameters
--If fitting is extremely slow due to simultaneous fitting, set 
-"Gauss_sigma=None". Be careful to results (including residuals) to verify 
-accuracy."""
+zno.define_reference_lattice()
 
-acl.fit_atom_columns(buffer=10, local_thresh_factor=0.95, grouping_filter='auto',
-                     diff_filter='auto')
+# %% FIT THE ATOM COLUMNS
+'''Here we use circular 2D Gaussians because this is zno'''
 
- #%%
-"""Use the fitted atomic column positions to refine the basis vectors and 
-    origin. 
-    -It is best to choose a well defined sublattice with minimal 
-    displacements. """
-    
-acl.refine_reference_lattice('elem', 'Zn', outliers=20)
+zno.fit_atom_columns(
+    buffer=20,
+    local_thresh_factor=0.5,
+    peak_grouping_filter='auto',
+    peak_sharpening_filter='auto',
+    parallelize=True,
+    use_circ_gauss=False,
+)
 
-#%%
-"""Check image residuals after fitting"""
-"""Plots image residuals after fitting according to the following:
-    1) subtracts fitted gaussians from image intensity.
-    2) then applies masks used for fitting.
-    3) background intensity values from the gaussian fits are not subtracted.
-    Should look for small and relatively flat 
-    """
+# %% REFINE THE REFERENCE LATTICE
 
-acl.plot_fitting_residuals()
+zno.refine_reference_lattice()
 
-#%%
-"""Plot Column positions with color indexing"""
-acl.plot_atom_column_positions(filter_by='elem', sites_to_fit='all',
-                               fit_or_ref='fit', outliers=100,
-                               plot_masked_image=True)
+# %% PLOT THE FITTED POSITIONS
 
-#%%
-"""Plot displacements from reference lattice"""
-acl.plot_disp_vects(filter_by='elem', sites_to_plot='all', titles=None,
-                        x_crop=[0, acl.w], y_crop=[acl.h, 0],
-                        scalebar=True, scalebar_len_nm=2,
-                        outliers=30, max_colorwheel_range_pm=None,
-                        plot_fit_points=False, plot_ref_points=False)
+hrimage.plot_atom_column_positions(
+    filter_by='elem',
+    sites_to_plot='all',
+    fit_or_ref='fit',
+    plot_masked_image=False
+)
 
-#%%
-"""Rotate the image and data to align a desired basis vector to horizontal
-    or vertical"""
+# %% CHECK THE RESIDUALS
 
-acl_rot = acl.rotate_image_and_data(align_basis='a1', align_dir='horizontal')
+fig = zno.get_fitting_residuals()
 
-acl_rot.plot_atom_column_positions(filter_by='elem', sites_to_fit='all',
-                                   fit_or_ref='fit', outliers=30,
-                                   plot_masked_image=False)
+# %% PLOT DISPLACEMENT VECTORS FROM (IDEAL) REFERENCE LATTICE POSITIONS
 
-#%%
-"""Plot displacements from reference lattice"""
-acl_rot.plot_disp_vects(filter_by='elem', sites_to_plot='all', titles=None,
-                        x_crop=[0, acl_rot.w], y_crop=[acl_rot.h, 0],
-                        scalebar=True, scalebar_len_nm=2,
-                        max_colorwheel_range_pm=None,
-                        plot_fit_points=False, plot_ref_points=False)
-    
+fig, axs = hrimage.plot_disp_vects(
+    filter_by='elem',
+    sites_to_plot='all',
+    scalebar_len_nm=2,
+    max_colorwheel_range_pm=25,
+    arrow_scale_factor=1,
+    outlier_disp_cutoff=None,
+)
