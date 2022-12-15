@@ -1173,7 +1173,7 @@ class AtomicColumnLattice:
             recip_latt.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
             - recip_latt.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float),
             axis=1
-        ) < 0.25*np.min(norm(a_star, axis=1))
+        ) < 0.1*np.min(norm(a_star, axis=1))
         ].reset_index(drop=True)
 
         def disp_vect_sum_squares(p0, M_star, xy, origin):
@@ -1346,6 +1346,187 @@ class AtomicColumnLattice:
             inds = spots_.index.tolist()
             for i, label in enumerate(inds):
                 plt.annotate(label, (xy[i, 0], xy[i, 1]))
+
+    def get_region_mask_std(
+            self,
+            r=4,
+            sigma=8,
+            thresh=0.5,
+            fill_holes=True,
+            buffer=10,
+            show_mask=True
+    ):
+        """Get mask for specific region of image based on local standard
+        deviation.
+
+        Create a mask for a desired image region where the local standard
+        deviation is above a threshold. The mask is saved in the
+        AtomColumnLattice object and used during reference lattice generation
+        to limnit the extent of the lattice. Useful if vacuum, off-axis grains
+        or padded edges are in the image frame.
+
+        Parameters
+        ----------
+        r : int
+            Kernel radius. STD is calculated in a square kernel of size
+            2*r + 1.
+            Default: 4.
+
+        sigma : float
+            Gaussian blur to be added to std image prior to thresholding.
+            Default: 8.
+
+        thresh : float
+            Thresholding level for binarizing the result into a mask.
+            Default: 0.5.
+
+        fill_holes : bool
+            If true, interior holes in the mask are filled.
+            Default: True
+
+        buffer : int
+            Number of pixels to erode from the edges of the mask. Prevents
+            retention of reference lattice points that are outside the actual
+            lattice region.
+            Default: 10.
+
+        show_mask : bool
+            Whether to plot the mask for verification.
+            Default: True
+
+        Returns
+        -------
+        None.
+
+        """
+        image_std = image_norm(gaussian_filter(
+            std_local(self.image, r),
+            sigma=sigma)
+        )
+        self.region_mask = np.where(image_std > thresh, 1, 0)
+        if fill_holes:
+            self.region_mask = binary_fill_holes(self.region_mask)
+        if buffer:
+            self.region_mask = binary_erosion(
+                self.region_mask,
+                iterations=buffer
+            )
+
+        if show_mask:
+            plt.figure(0)
+            plt.imshow(
+                self.image,
+                cmap='gist_gray'
+            )
+
+            plt.imshow(
+                self.region_mask,
+                alpha=0.2,
+                cmap='Reds'
+            )
+
+            plt.title('Region to analize:', fontsize=16)
+
+    def get_region_mask_polygon(
+            self,
+            vertices=None,
+            buffer=0,
+            invert=False,
+            show_poly=True,
+            return_vertices=False
+    ):
+        """Get mask for a polygon-shaped region of an image.
+
+        Create a mask for a desired image region from polygon vertices. The
+        mask is saved in the AtomColumnLattice object and used during
+        reference lattice generation to limnit the extent of the lattice.
+        Useful for images with interfaces, multiple grains, etc.
+
+        Parameters
+        ----------
+        vertices : ndarray or None
+            Array of shape (n,2). Each row is the [x,y] coordinate for the
+            respective vertice. Vertices must be in clockwise order. If None,
+            polygon will be created by graphical picking.
+            Default: None.
+
+        buffer : int
+            Number of pixels to erode from the edges of the mask. Prevents
+            retention of reference lattice points that are outside the actual
+            lattice region.
+            Default: 0.
+
+        invert : bool
+            Whether to invert the mask. If False, the area inside the polygon
+            is the selected area. If True, the area outside the polygon is
+            selected instead.
+            Default: False
+
+        show_poly : bool
+            Whether to plot the polygon overlaid on the image for confirmation.
+            Default: True
+
+        return_vertices : bool
+            Whether to return the list of vertices. Useful if the same set of
+            manually selected vertices will be applied to a second lattice or
+            image.
+            Default: False
+
+        Returns
+        -------
+        vertices or None.
+
+        """
+
+        # if vertices is not None:
+        #     vertices = np.fliplr(np.array(vertices))
+        if vertices is None:
+            fig, ax = plt.subplots(figsize=(8, 10))
+            ax.imshow(self.image, cmap='gist_gray')
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+            ax.set_title(
+                'Left click to add vertices.\n' +
+                'Right click or backspace key to remove last.\n' +
+                'Center click or enter key to complete.\n' +
+                'Must select in clockwise order.'
+            )
+
+            vertices = plt.ginput(
+                n=-1,
+                timeout=0,
+                show_clicks=True,
+                mouse_add=MouseButton.LEFT,
+                mouse_pop=MouseButton.RIGHT,
+                mouse_stop=MouseButton.MIDDLE
+            )
+
+            plt.close()
+            vertices = np.fliplr(np.array(vertices))
+
+        self.region_mask = polygon2mask(self.image.shape, vertices)
+        if buffer:
+            self.region_mask = binary_erosion(
+                self.region_mask,
+                iterations=buffer
+            )
+
+        if invert:
+            self.region_mask = np.where(self.region_mask == 1, 0, 1)
+        if show_poly:
+            fig, ax = plt.subplots()
+            ax.imshow(self.image, cmap='gist_gray')
+
+            plt.imshow(
+                self.region_mask,
+                alpha=0.2,
+                cmap='Reds'
+            )
+
+            ax.set_title('Region to analize:', fontsize=16)
+        if return_vertices:
+            return vertices
 
     def select_origin(
             self,
@@ -1529,195 +1710,45 @@ class AtomicColumnLattice:
         if interactive_selection:
             pt = plt.ginput(1, timeout=30)
             plt.close('all')
+            ax.scatter(pt[0][0], pt[0][1], marker='+', c='red')
             return pt[0]
 
-    def get_region_mask_std(
-            self,
-            r=4,
-            sigma=8,
-            thresh=0.5,
-            fill_holes=True,
-            buffer=10,
-            show_mask=True
-    ):
-        """Get mask for specific region of image based on local standard
-        deviation.
-
-        Create a mask for a desired image region where the local standard
-        deviation is above a threshold. The mask is saved in the
-        AtomColumnLattice object and used during reference lattice generation
-        to limnit the extent of the lattice. Useful if vacuum, off-axis grains
-        or padded edges are in the image frame.
+    def get_min_atom_col_dist(self):
+        """Find the minimum expected distance between atom columns in the image
+        based on the projected structure parameters and pixel size.
 
         Parameters
         ----------
-        r : int
-            Kernel radius. STD is calculated in a square kernel of size
-            2*r + 1.
-            Default: 4.
-
-        sigma : float
-            Gaussian blur to be added to std image prior to thresholding.
-            Default: 8.
-
-        thresh : float
-            Thresholding level for binarizing the result into a mask.
-            Default: 0.5.
-
-        fill_holes : bool
-            If true, interior holes in the mask are filled.
-            Default: True
-
-        buffer : int
-            Number of pixels to erode from the edges of the mask. Prevents
-            retention of reference lattice points that are outside the actual
-            lattice region.
-            Default: 10.
-
-        show_mask : bool
-            Whether to plot the mask for verification.
-            Default: True
-
-        Returns
-        -------
         None.
 
-        """
-        image_std = image_norm(gaussian_filter(
-            std_local(self.image, r),
-            sigma=sigma)
-        )
-        self.region_mask = np.where(image_std > thresh, 1, 0)
-        if fill_holes:
-            self.region_mask = binary_fill_holes(self.region_mask)
-        if buffer:
-            self.region_mask = binary_erosion(
-                self.region_mask,
-                iterations=buffer
-            )
-
-        if show_mask:
-            plt.figure(0)
-            plt.imshow(
-                self.image,
-                cmap='gist_gray'
-            )
-
-            plt.imshow(
-                self.region_mask,
-                alpha=0.2,
-                cmap='Reds'
-            )
-
-            plt.title('Region to analize:', fontsize=16)
-
-    def get_region_mask_polygon(
-            self,
-            vertices=None,
-            buffer=0,
-            invert=False,
-            show_poly=True,
-            return_vertices=False
-    ):
-        """Get mask for a polygon-shaped region of an image.
-
-        Create a mask for a desired image region from polygon vertices. The
-        mask is saved in the AtomColumnLattice object and used during
-        reference lattice generation to limnit the extent of the lattice.
-        Useful for images with interfaces, multiple grains, etc.
-
-        Parameters
-        ----------
-        vertices : ndarray or None
-            Array of shape (n,2). Each row is the [x,y] coordinate for the
-            respective vertice. Vertices must be in clockwise order. If None,
-            polygon will be created by graphical picking.
-            Default: None.
-
-        buffer : int
-            Number of pixels to erode from the edges of the mask. Prevents
-            retention of reference lattice points that are outside the actual
-            lattice region.
-            Default: 0.
-
-        invert : bool
-            Whether to invert the mask. If False, the area inside the polygon
-            is the selected area. If True, the area outside the polygon is
-            selected instead.
-            Default: False
-
-        show_poly : bool
-            Whether to plot the polygon overlaid on the image for confirmation.
-            Default: True
-
-        return_vertices : bool
-            Whether to return the list of vertices. Useful if the same set of
-            manually selected vertices will be applied to a second lattice or
-            image.
-            Default: False
-
         Returns
         -------
-        vertices or None.
+        min_dist : float
+            The minimum image distance between atom columns in the porojected
+            structure.
 
         """
+        unit_cell_uv = self.unitcell_2D.loc[:, 'u':'v'].to_numpy(dtype=float)
+        unit_cell_xy = np.concatenate(
+            ([unit_cell_uv + [i, j]
+              for i in range(-1, 2)
+              for j in range(-1, 2)])
+        ) @ self.dir_struct_matrix
+        dists = norm(np.array(
+            [unit_cell_xy - pos for pos in unit_cell_xy]),
+            axis=2
+        )
+        min_dist = (np.amin(dists, initial=np.inf, where=dists > 0) - 1)
 
-        # if vertices is not None:
-        #     vertices = np.fliplr(np.array(vertices))
-        if vertices is None:
-            fig, ax = plt.subplots(figsize=(8, 10))
-            ax.imshow(self.image, cmap='gist_gray')
-            ax.set_xticks([])
-            ax.set_yticks([])
-
-            ax.set_title(
-                'Left click to add vertices.\n' +
-                'Right click or backspace key to remove last.\n' +
-                'Center click or enter key to complete.\n' +
-                'Must select in clockwise order.'
-            )
-
-            vertices = plt.ginput(
-                n=-1,
-                timeout=0,
-                show_clicks=True,
-                mouse_add=MouseButton.LEFT,
-                mouse_pop=MouseButton.RIGHT,
-                mouse_stop=MouseButton.MIDDLE
-            )
-
-            plt.close()
-            vertices = np.fliplr(np.array(vertices))
-
-        self.region_mask = polygon2mask(self.image.shape, vertices)
-        if buffer:
-            self.region_mask = binary_erosion(
-                self.region_mask,
-                iterations=buffer
-            )
-
-        if invert:
-            self.region_mask = np.where(self.region_mask == 1, 0, 1)
-        if show_poly:
-            fig, ax = plt.subplots()
-            ax.imshow(self.image, cmap='gist_gray')
-
-            plt.imshow(
-                self.region_mask,
-                alpha=0.2,
-                cmap='Reds'
-            )
-
-            ax.set_title('Region to analize:', fontsize=16)
-        if return_vertices:
-            return vertices
+        return min_dist
 
     def define_reference_lattice(
             self,
             LoG_sigma=None,
             zoom_factor=10,
             origin=None,
-            mask=None
+            mask=None,
+            plot_ref_lattice=True
     ):
         """Register reference lattice to image.
 
@@ -1751,17 +1782,16 @@ class AtomicColumnLattice:
              of the desired lattice, False (or 0) otherwise. If None, no mask
              is used.
              Default: None.
+         plot_ref_lattice : bool
+             Whether to plot the reference lattice after registration. For
+             verification of proper alignment. This can help avoid wasted time
+             running the fitting step if alignment was not accurate.
 
         Returns
         -------
         None.
 
         """
-
-        if 'LatticeSite' in list(self.unitcell_2D.columns):
-            lab = 'LatticeSite'
-        else:
-            lab = 'elem'
 
         self.pixel_size_est = np.average(
             [norm(self.a_2d[0, :]) / norm(self.a1),
@@ -1771,7 +1801,7 @@ class AtomicColumnLattice:
         if ((LoG_sigma is None)
             & ((type(self.probe_fwhm) == float)
                | (type(self.probe_fwhm) == int))):
-            LoG_sigma = self.probe_fwhm / self.pixel_size_est * 0.3
+            LoG_sigma = self.probe_fwhm / self.pixel_size_est * 0.5
 
         if mask is not None:
             self.region_mask = mask
@@ -1796,8 +1826,12 @@ class AtomicColumnLattice:
             (x0, y0) = origin
 
         print('pick coordinates:', np.around([x0, y0], decimals=2), '\n')
+
         img_LoG = image_norm(-gaussian_laplace(self.image, LoG_sigma))
-        xy_peaks = np.argwhere(detect_peaks(img_LoG, min_dist=LoG_sigma) > 0)
+        min_dist = self.get_min_atom_col_dist()
+        xy_peaks = np.fliplr(np.argwhere(
+            detect_peaks(img_LoG, min_dist=min_dist) > 0
+        ))
 
         [x0, y0] = xy_peaks[np.argmin(norm(xy_peaks - [x0, y0], axis=1))]
 
@@ -1864,12 +1898,14 @@ class AtomicColumnLattice:
             (at_cols.y_ref <= h-1)
         )]
 
-        if self.region_mask is not None:
-            at_cols = at_cols[self.region_mask[
-                np.around(at_cols.y_ref.to_numpy()).astype(int),
-                np.around(at_cols.x_ref.to_numpy()).astype(int)
-            ] == 1
-            ]
+        if self.region_mask is None:
+            self.region_mask = np.ones((self.h, self.w))
+
+        at_cols = at_cols[self.region_mask[
+            np.around(at_cols.y_ref.to_numpy()).astype(int),
+            np.around(at_cols.x_ref.to_numpy()).astype(int)
+        ] == 1
+        ]
 
         at_cols.reset_index(drop=True, inplace=True)
         empty = pd.DataFrame(
@@ -1881,33 +1917,11 @@ class AtomicColumnLattice:
         at_cols = pd.concat([at_cols, empty], axis=1)
         self.at_cols = pd.DataFrame(columns=at_cols.columns)
 
-        ch_list = np.sort(at_cols.loc[:, lab].unique()).tolist()
-        ch_list = {k: v for v, k in enumerate(ch_list)}
-        channels = np.array([
-            ch_list[site] for site in at_cols.loc[:, lab]
-        ])
-        at_cols.loc[:, 'channel'] = channels
+        '''Refine reference lattice on imgLoG peaks'''
 
-        '''Refine reference lattice on watershed mask CoMs'''
         print('Performing rough reference lattice refinement...')
-        pos_xy = at_cols[
-            (np.abs(at_cols.u) <= 1) &
-            (np.abs(at_cols.v) <= 1)
-        ].loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float)
-        dists = norm(np.array(
-            [pos_xy - pos for pos in pos_xy]
-        ), axis=2).flatten()
-        min_dist = np.min(
-            np.array([dist for dist in dists if dist != 0])
-        ) * 0.75
 
-        masks, num_masks, slices, peaks = watershed_segment(
-            img_LoG,
-            buffer=0,
-            min_dist=min_dist
-        )
-
-        coords = peaks.loc[:, 'x':'y'].to_numpy(dtype=float)
+        coords = xy_peaks
 
         init_inc = int(np.min(np.max(np.abs(at_cols.loc[:, 'u':'v']),
                                      axis=0))/10)
@@ -1923,21 +1937,41 @@ class AtomicColumnLattice:
         at_cols_orig_type = at_cols[
             (at_cols.x == at_cols.at[origin_ind, 'x']) &
             (at_cols.y == at_cols.at[origin_ind, 'y'])
-        ]
+        ].copy()
 
-        for lim in [init_inc * i for i in [1, 3, 9]]:
+        if self.region_mask is not None:
+            at_cols_orig_type = at_cols_orig_type[self.region_mask[
+                np.around(at_cols_orig_type.y_ref.to_numpy()).astype(int),
+                np.around(at_cols_orig_type.x_ref.to_numpy()).astype(int)
+            ] == 1]
+
+        t = [time.time()]
+
+        for i in [1, 3, 9]:
+            lim = i * init_inc
+
+            print(f'Refinement iteration {i}: {lim} unit cells...')
+
+            if lim > init_inc:
+                at_cols_orig_type.loc[:, 'x_ref':'y_ref'] = (
+                    at_cols_orig_type.loc[:, 'u':'v'].to_numpy(dtype=float)
+                    @ self.dir_struct_matrix
+                    + np.array([self.x0, self.y0])
+                )
+
             filtered = at_cols_orig_type[
                 (np.abs(at_cols_orig_type.u) <= lim) &
                 (np.abs(at_cols_orig_type.v) <= lim)
-            ]
+            ].copy()
 
             M = filtered.loc[:, 'u':'v'].to_numpy(dtype=float)
             xy_ref = filtered.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float)
 
-            vects = np.array([coords - xy for xy in xy_ref])
+            inds = np.array(
+                [np.argmin(norm(xy_peaks - xy, axis=1)) for xy in xy_ref]
+            )
 
-            inds = np.argmin(norm(vects, axis=2), axis=1)
-            xy = np.array([coords[ind] for ind in inds])
+            xy = np.array([xy_peaks[ind] for ind in inds])
 
             def disp_vect_sum_squares(p0, M, xy):
 
@@ -1967,18 +2001,9 @@ class AtomicColumnLattice:
             self.x0 = params[4]
             self.y0 = params[5]
 
-            at_cols.loc[:, 'x_ref':'y_ref'] = (
-                at_cols.loc[:, 'u':'v'].to_numpy(dtype=float)
-                @ self.dir_struct_matrix
-                + np.array([self.x0, self.y0])
-            )
-
-            at_cols = at_cols[
-                ((at_cols.x_ref >= 5) &
-                 (at_cols.x_ref <= w - 5) &
-                 (at_cols.y_ref >= 5) &
-                 (at_cols.y_ref <= h - 5))
-            ]
+            t += [time.time()]
+            print(f'{int((t[-1]-t[-2]) // 60)} min '
+                  + f'{(t[-1]-t[-2]) % 60 :.{2}f} sec')
 
         at_cols.loc[:, 'x_ref':'y_ref'] = (
             at_cols.loc[:, 'u':'v'].to_numpy(dtype=float)
@@ -1998,6 +2023,69 @@ class AtomicColumnLattice:
             ] == 1]
 
         self.at_cols_uncropped = copy.deepcopy(at_cols)
+
+        plt.close('all')
+
+        fig, ax = plt.subplots()
+        ax.imshow(self.image, cmap='gray')
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+        elems = np.sort(np.unique(
+            [self.unitcell_2D.loc[:, 'elem'].unique()]
+        ))
+
+        num_colors = elems.shape[0]
+        if num_colors == 1:
+            color_dict = {elems[0]: 'red'}
+        else:
+            cmap = plt.cm.RdYlGn
+            color_dict = {k: cmap(v/(num_colors-1)) for v, k in
+                          enumerate(elems)}
+
+        scatter_kwargs_default = {
+            's': 5,
+            'edgecolor': 'black',
+            'linewidths': 0.5,
+        }
+
+        for elem in elems:
+
+            sublattice = self.at_cols_uncropped[
+                self.at_cols_uncropped['elem'] == elem
+            ].copy()
+            ax.scatter(
+                sublattice.loc[:, 'x_ref'],
+                sublattice.loc[:, 'y_ref'],
+                color=color_dict[elem],
+                label=elem,
+                **scatter_kwargs_default
+            )
+
+        ax.arrow(
+            self.x0,
+            self.y0,
+            self.a1[0],
+            self.a1[1],
+            fc='red',
+            ec='red',
+            width=0.1,
+            length_includes_head=True,
+            head_width=2,
+            head_length=3
+        )
+        ax.arrow(
+            self.x0,
+            self.y0,
+            self.a2[0],
+            self.a2[1],
+            fc='green',
+            ec='green',
+            width=0.1,
+            length_includes_head=True,
+            head_width=2,
+            head_length=3
+        )
 
     def fit_atom_columns(
             self,
@@ -2254,18 +2342,7 @@ class AtomicColumnLattice:
         """Find minimum distance (in pixels) between atom columns for peak
         detection neighborhood"""
 
-        unit_cell_uv = self.unitcell_2D.loc[:, 'u':'v'].to_numpy(dtype=float)
-        unit_cell_xy = np.concatenate(
-            ([unit_cell_uv + [i, j]
-              for i in range(-1, 2)
-              for j in range(-1, 2)])
-        ) @ self.dir_struct_matrix
-        dists = norm(np.array(
-            [unit_cell_xy - pos for pos in unit_cell_xy]),
-            axis=2
-        )
-        min_dist = (np.amin(dists, initial=np.inf, where=dists > 0) - 1)
-
+        min_dist = self.get_min_atom_col_dist()
         t += [time.time()]
         print(f'Step 1(Preparation...): {int((t[-1]-t[-2]) // 60)} min '
               + f'{(t[-1]-t[-2]) % 60 :.{2}f} sec')
