@@ -2010,7 +2010,8 @@ class AtomicColumnLattice:
             watershed_line=True,
             parallelize=True,
             use_circ_gauss=False,
-            use_bounds=False
+            use_bounds=False,
+            use_background_param=True
     ):
         """Algorithm for fitting 2D Gaussians to HR STEM image.
 
@@ -2103,6 +2104,12 @@ class AtomicColumnLattice:
             unbounded.
             Default: False
 
+        use_background_param : bool
+            Whether to use the background parameter when fitting each atom
+            column or group of columns. If False, background value is forced
+            to be 0. 
+            Default: True
+
         Returns
         -------
         None.
@@ -2117,6 +2124,8 @@ class AtomicColumnLattice:
         self.buffer = buffer
         use_Guass_for_LoG = False
         use_LoG_for_Gauss = False
+        if not use_background_param:
+            use_bounds = True
 
         if self.at_cols.shape[0] == 0:
             at_cols = self.at_cols_uncropped.copy()
@@ -2471,9 +2480,13 @@ class AtomicColumnLattice:
                             (None, None),
                             (None, None),
                             (1, None),
-                            (0, 2),
-                        ] * num + [(0, 1.2)]
+                            (0, 1.2),
+                        ] * num + [(0, None)]
                         method = 'L-BFGS-B'
+
+                        if not use_background_param:
+                            bounds[-1] = (0, 0)
+
                     else:
                         bounds = None
                         method = 'BFGS'
@@ -2498,8 +2511,12 @@ class AtomicColumnLattice:
                             (1, None),
                             (1, None),
                             (None, None),
-                            (0, 2),
-                        ] * num + [(0, 1.2)]
+                            (0, 1.2),
+                        ] * num + [(0, None)]
+                        method = 'L-BFGS-B'
+
+                        if not use_background_param:
+                            bounds[-1] = (0, 0)
 
                     else:
                         bounds = None
@@ -2569,10 +2586,14 @@ class AtomicColumnLattice:
                             (None, None),
                             (None, None),
                             (1, None),
-                            (0, 2),
-                        ] * num + [(0, 1.2)]
+                            (0, 1.2),
+                        ] * num + [(0, None)]
 
                         method = 'L-BFGS-B'
+
+                        if not use_background_param:
+                            bounds[-1] = (0, 0)
+
                     else:
                         bounds = None
                         method = 'BFGS'
@@ -2599,10 +2620,14 @@ class AtomicColumnLattice:
                             (1, None),
                             (1, None),
                             (None, None),
-                            (0, 2),
-                        ] * num + [(0, 1.2)]
+                            (0, 1.2),
+                        ] * num + [(0, None)]
 
                         method = 'L-BFGS-B'
+
+                        if not use_background_param:
+                            bounds[-1] = (0, 0)
+
                     else:
                         bounds = None
                         method = 'BFGS'
