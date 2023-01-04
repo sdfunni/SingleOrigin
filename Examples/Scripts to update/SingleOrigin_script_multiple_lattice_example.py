@@ -7,15 +7,13 @@ import copy
 in SingleOrigin. That is, fitting more than one lattice to a single image."""
 # %% SET UP TWO CRYSTAL STRUCTURES FOR FILM AND SUBSTRATE
 
-za = [1, 2, 0]  # Zone Axis direction
-a2 = [2, -1, 0]  # Apparent horizontal axis in projection
-a3 = [0, 0, 1]  # Most vertical axis in projection
+za = [1, 1, 0]  # Zone Axis direction
+a1 = [1, -1, 0]  # Apparent horizontal axis in projection
+a2 = [0, 0, 1]  # Most vertical axis in projection
 
-# !!! Load the STO.cif file here.
-uc = so.UnitCell()
-uc.transform_basis(za, a2, a3)
-uc.project_uc_2d(proj_axis=0, ignore_elements=['O'], unique_proj_cell=False)
-uc.plot_unit_cell()
+uc = so.UnitCell('CIFS/STO.cif')
+# uc.project_zone_axis(za, a1, a2, ignore_elements=['O'], unique_proj_cell=True)
+# uc.plot_unit_cell()
 # %%
 
 
@@ -25,18 +23,20 @@ uc_bsmo.atoms.replace(['Sr', 'Ti'], ['Ba/Sr', 'Mn'], inplace=True)
 uc_dso = copy.deepcopy(uc)
 uc_dso.atoms.replace(['Sr', 'Ti'], ['Dy', 'Sc'], inplace=True)
 
-uc_bsmo.transform_basis(za, a2, a3)
-uc_dso.transform_basis(za, a2, a3)
+uc_bsmo.project_zone_axis(
+    za, a1, a2, ignore_elements=['O'], unique_proj_cell=True
+)
 
-uc_bsmo.project_uc_2d(proj_axis=0, ignore_elements=['O'])
-uc_dso.project_uc_2d(proj_axis=0, ignore_elements=['O'])
+uc_dso.project_zone_axis(
+    za, a1, a2, ignore_elements=['O'], unique_proj_cell=True
+)
 
 uc_bsmo.combine_prox_cols(toler=1e-2)
 uc_dso.combine_prox_cols(toler=1e-2)
-uc_dso.plot_unit_cell()
+uc_bsmo.plot_unit_cell()
 
 # %% LOAD THE IMAGE
-image, metadata = so.import_image(display_image=True)
+image, metadata = so.load_image(display_image=True)
 
 # %% INITIATE HRIMAGE OBJECT
 
@@ -48,27 +48,34 @@ bsmo.fft_get_basis_vect(a1_order=1, a2_order=1, sigma=4)
 
 # %% MASK AREA TO FIT ATOM COLUMNS
 
-vertices = np.array([[785, 0],
-                     [bsmo.w, 0],
-                     [bsmo.w, bsmo.h],
-                     [780, bsmo.h]])
+vertices = np.array(
+    [[785, 0],
+     [bsmo.w, 0],
+     [bsmo.w, bsmo.h],
+     [780, bsmo.h]]
+)
 
 # %%
-bsmo.get_region_mask_std(r=10, sigma=10, thresh=0.2)
-# %%
+"""
+Get the region mask. Use vertices manually entered in the previous cell or
+set 'vertices=None' to manually click points in the plot to make the polygon
+region. 
+"""
 bsmo.get_region_mask_polygon(vertices=vertices,
                              buffer=0, invert=False, show_poly=True)
 
-plt.figure()
-plt.imshow(bsmo.region_mask)
 # %% PICK ORIGIN ATOM COLUMN
 bsmo.define_reference_lattice()
 
 # %% FIT PEAKS
-bsmo.fit_atom_columns(buffer=20, local_thresh_factor=0.5,
-                      grouping_filter='auto', diff_filter='auto',
-                      use_circ_gauss=True,
-                      parallelize=True)
+bsmo.fit_atom_columns(
+    buffer=0,
+    local_thresh_factor=0.7,
+    peak_grouping_filter='auto',
+    peak_sharpening_filter=5,
+    use_circ_gauss=True,
+    parallelize=True
+)
 
 # %%
 bsmo.refine_reference_lattice(filter_by='elem', sites_to_use='Ba/Sr',
@@ -86,25 +93,36 @@ dso.get_region_mask_polygon(vertices=vertices,
 dso.define_reference_lattice()
 
 # %% FIT PEAKS
-dso.fit_atom_columns(buffer=20, local_thresh_factor=0.5,
-                     grouping_filter='auto', diff_filter='auto',
-                     use_circ_gauss=True,
-                     parallelize=True)
+dso.fit_atom_columns(
+    buffer=0,
+    local_thresh_factor=0.5,
+    peak_grouping_filter='auto',
+    peak_sharpening_filter='auto',
+    use_circ_gauss=True,
+    parallelize=True
+)
 
 # %% REFINE THE REFERENCE LATTICE BASED ON THE FITTED POSITIONS
-dso.refine_reference_lattice(filter_by='elem', sites_to_use='Dy',
-                             outlier_disp_cutoff=30)
+dso.refine_reference_lattice(
+    filter_by='elem',
+    sites_to_use='Dy',
+    outlier_disp_cutoff=30
+)
 
 # %%
 """Plot Column positions
 NOTE: Plotting funcions are methods of the HRImage class"""
 
-fig, ax = hrimage.plot_atom_column_positions(filter_by='elem',
-                                             sites_to_plot='all',
-                                             fit_or_ref='fit',
-                                             outlier_disp_cutoff=50,
-                                             plot_masked_image=True,
-                                             scatter_kwargs_dict={'s': 10})
+fig, ax = hrimage.plot_atom_column_positions(
+    filter_by='elem',
+    sites_to_plot='all',
+    fit_or_ref='fit',
+    outlier_disp_cutoff=None,
+    plot_masked_image=True,
+    scatter_kwargs_dict={'s': 10},
+    xlim=[0, hrimage.w],
+    ylim=[0, hrimage.w],
+)
 
 
 # %%

@@ -392,7 +392,7 @@ class UnitCell():
             a1,
             a2,
             ignore_elements=[],
-            unique_proj_cell=True
+            reduce_proj_cell=True
     ):
         """Project the unit cell along a certain basis vector direction.
 
@@ -415,12 +415,14 @@ class UnitCell():
             the projection.
             Default: []
 
-        unique_proj_cell : bool
-            Whether to reduce projected unit cell to minimum required. For
-            example, [110] zone axis silicon has [-110] axis in plane, but
-            only the projected cell bounded by the 1/2 [-110] & [001] basis
-            vectors is needed as the two halves of the cell are identical once
-            projected.
+        reduce_proj_cell : bool
+            Whether to reduce projected unit cell to minimum required for 2D
+            tiling. For example, [110] zone axis silicon has [-110] axis in
+            plane, but only the projected cell bounded by the 1/2 [-110] &
+            [001] basis vectors is needed as the two halves of the cell are
+            identical once projected. This may not work properly for some
+            unusual structures or choices of basis. Choose the simplest basis
+            or set to False if desired behavior is not achieved.
             Default: True.
 
         Returns
@@ -439,16 +441,13 @@ class UnitCell():
         if 'Debye_Waller' in at_cols.columns:
             at_cols.drop(['Debye_Waller'], axis=1, inplace=True)
 
-        a_2d = np.delete(self.a_3d_, 0, axis=0)
-        a_2d = np.delete(a_2d, 0, axis=1)
-        cart_ax = ['x', 'y', 'z']
-        cryst_ax = ['u', 'v', 'w']
-        at_cols = at_cols.drop([cart_ax[0], cryst_ax[0]], axis=1)
+        a_2d = self.a_3d_[1:, 1:]
 
-        cryst_ax.pop(0)
+        at_cols = at_cols.drop(['x', 'u'], axis=1)
+
         elem = [''.join(item) for item in at_cols.loc[:, 'elem']]
-        x = list(at_cols.loc[:, cryst_ax[0]])
-        y = list(at_cols.loc[:, cryst_ax[1]])
+        x = list(at_cols.loc[:, 'v'])
+        y = list(at_cols.loc[:, 'w'])
 
         (_, index, counts) = np.unique(
             np.array(list(zip(x, y, elem))),
@@ -467,30 +466,19 @@ class UnitCell():
 
         at_cols = at_cols.reset_index(drop=True)
 
-        cryst_ax = list(set(cryst_ax).intersection(
-            set(at_cols.columns.to_list())
-        ))
-
-        cryst_ax.sort()
-
         at_cols.rename(
-            columns={k: v for (k, v) in zip(cryst_ax, ['u', 'v'])},
+            columns={'v': 'u', 'w': 'v'},
             inplace=True
         )
 
-        cart_ax = list(set(cart_ax).intersection(
-            set(at_cols.columns.to_list())
-        ))
-
-        cart_ax.sort()
         at_cols.rename(
-            columns={k: v for (k, v) in zip(cart_ax, ['x', 'y'])},
+            columns={'y': 'x', 'z': 'y'},
             inplace=True
         )
 
-        if unique_proj_cell:
-            a1_ = self.a_3d_[1, :]
-            a2_ = self.a_3d_[2, :]
+        if reduce_proj_cell:
+            a1_ = self.a_3d_[:, 1]
+            a2_ = self.a_3d_[:, 2]
             g1_spacing = IntPlSpc(a1, self.g)
             g2_spacing = IntPlSpc(a2, self.g)
 
@@ -504,19 +492,20 @@ class UnitCell():
             g2_real = g2_spacing * g2_real_unit
 
             # Find spacing of planes along each basis vector
-            a1_mult = (np.around(g1_real @ a1_.T / g1_spacing**2))
-            a2_mult = (np.around(g2_real @ a2_.T / g2_spacing**2))
-            a_mult = np.array([a1_mult, a2_mult])
+            a1_mult = ((g1_real @ a1_.T / g1_spacing**2))
+            a2_mult = ((g2_real @ a2_.T / g2_spacing**2))
 
-            if (np.max(a_mult) % np.min(a_mult) == 0):
-                min_mult = np.min(a_mult)
-                a_mult = a_mult/min_mult
+            a_mult = np.around(np.array([a1_mult, a2_mult]))
 
             # Convert fractional coordinates to new basis
             uv = at_cols.loc[:, 'u':'v'].to_numpy() * a_mult
+
             # Fix rounding errors to prevent missing or extra atom columns
-            uv = np.where(np.isclose(0, uv), 0, uv)
-            uv = np.where(np.isclose(1, uv), 1, uv)
+            for int_val in range(np.max(a_mult).astype(int)):
+                uv = np.where(np.isclose(int_val, uv), int_val, uv)
+            for val in uv.flatten():
+                uv = np.where(np.isclose(val, uv), val, uv)
+
             at_cols.loc[:, 'u':'v'] = uv
 
             at_cols = at_cols[
@@ -524,9 +513,23 @@ class UnitCell():
                  (at_cols.v >= 0) & (at_cols.v < 1))
             ]
 
+            # Check that reduction results in correct unit cell
+            uv_reduced = at_cols.loc[:, 'u':'v'].to_numpy()
+            reduced_uniq = np.unique(uv_reduced, axis=0)
+            uv = uv % 1
+            for val in reduced_uniq.flatten():
+                uv = np.where(np.isclose(val, uv), val, uv)
+
+            full_uniq = np.unique(uv, axis=0)
+            if reduced_uniq.shape[0] != full_uniq.shape[0]:
+                raise Exception(
+                    "Unit cell cannot be reduced. Try again with "
+                    + "'reduced_proj_cell=False'"
+                )
+
             a_2d /= a_mult.T
 
-        at_cols.loc[:, 'x':'y'] = (at_cols.loc[:, 'u':'v'].to_numpy() @ a_2d.T)
+        at_cols.loc[:, 'x':'y'] = at_cols.loc[:, 'u':'v'].to_numpy() @ a_2d.T
         at_cols = at_cols.sort_values(by=['elem', 'u', 'v'])
         at_cols.reset_index(drop=True, inplace=True)
 
@@ -701,7 +704,13 @@ class UnitCell():
         else:
             color_dict = {col_type_list[0]: cmap(0)}
 
-        fig, axs = plt.subplots(ncols=1, figsize=(10, 10))
+        x_rng = np.max(self.a_2d[0, :]) - np.min(self.a_2d[0, :])
+        y_rng = np.max(self.a_2d[1, :]) - np.min(self.a_2d[1, :])
+        xy_ratio = np.array([x_rng, y_rng])
+
+        figsize = tuple(xy_ratio/np.max(xy_ratio) * 8)
+
+        fig, axs = plt.subplots(ncols=1, figsize=figsize)
         axs.set_aspect(1)
         p = patches.Polygon(
             np.array(

@@ -465,18 +465,25 @@ def load_image(
         image = imageio.volread(path)
         metadata = image.meta
 
+    h, w = image.shape[-2:]
+
     if images_from_stack is None and len(image.shape) == 3:
         image = image[0, :, :]
+
     elif images_from_stack == 'all':
         pass
     elif (type(images_from_stack) == list
           or type(images_from_stack) == int):
         image = image[images_from_stack, :, :]
 
+    # Make image dimensions even length
+
     if len(image.shape) == 2:
+        image = image[:int((h//2)*2), :int((w//2)*2)]
         image = image_norm(image)
         image_ = image
     if len(image.shape) == 3:
+        image = image[:, :int((h//2)*2), :int((w//2)*2)]
         image = np.array([image_norm(im) for im in image])
         image_ = image[0, :, :]
     if display_image is True:
@@ -855,10 +862,11 @@ def fit_gaussian_ellip(
     data : ndarray
         Image containing a Gaussian peak
 
-    p0 : array_like with shape (n, 7)
+    p0 : array_like with shape (n*6 + 1,)
         Initial guess for the n-Gaussian parameter vector where each peak
         has 6 independent parameters (x0, y0, sig_maj, sig_ratio, ang, A) the
-        whole region has a constant background (I_0).
+        whole region has a constant background (I_0) which is the last item in
+        the array.
 
     masks : 2d array_like of size (n, m)
         n = number of peaks to fit

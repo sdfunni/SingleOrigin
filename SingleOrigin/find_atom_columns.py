@@ -353,8 +353,8 @@ class HRImage:
             fit_or_ref='fit',
             outlier_disp_cutoff=None,
             plot_masked_image=False,
-            xlim=None,
-            ylim=None,
+            x_lim=None,
+            y_lim=None,
             scalebar_len_nm=2,
             color_dict=None,
             legend_dict=None,
@@ -476,10 +476,10 @@ class HRImage:
         axs.set_xticks([])
         axs.set_yticks([])
 
-        if xlim:
-            axs.set_xlim(xlim)
-        if ylim:
-            axs.set_ylim(ylim)
+        if x_lim:
+            axs.set_xlim(x_lim)
+        if y_lim:
+            axs.set_ylim(y_lim)
 
         if color_dict is None:
             elems = np.sort(np.unique(np.concatenate(
@@ -533,30 +533,32 @@ class HRImage:
                     label=label,
                     **scatter_kwargs_default
                 )
-
+                
+            arrow_scale = np.min([norm(lattice.a1), norm(lattice.a2)]) / 20
+            
             axs.arrow(
                 lattice.x0,
                 lattice.y0,
                 lattice.a1[0],
                 lattice.a1[1],
-                fc='red',
-                ec='red',
-                width=0.1,
+                fc='white',
+                ec='black',
+                width=arrow_scale,
                 length_includes_head=True,
-                head_width=2,
-                head_length=3
+                head_width=arrow_scale * 3,
+                head_length=arrow_scale * 5
             )
             axs.arrow(
                 lattice.x0,
                 lattice.y0,
                 lattice.a2[0],
                 lattice.a2[1],
-                fc='green',
-                ec='green',
-                width=0.1,
+                fc='white',
+                ec='black',
+                width=arrow_scale,
                 length_includes_head=True,
-                head_width=2,
-                head_length=3
+                head_width=arrow_scale * 3,
+                head_length=arrow_scale * 5
             )
 
         axs.legend(
@@ -666,7 +668,7 @@ class HRImage:
             pixel_size = np.mean(
                 [latt.pixel_size_est for latt in self.latt_dict.values()]
             )
-            print(pixel_size)
+
         if outlier_disp_cutoff is None:
             outlier_disp_cutoff = np.inf
         else:
@@ -686,7 +688,6 @@ class HRImage:
         )
 
         sublatt_list = combined.loc[:, filter_by].unique().tolist()
-        print(sublatt_list)
 
         # Remove atom columns with large displacements
         if ((outlier_disp_cutoff is not None) &
@@ -710,10 +711,16 @@ class HRImage:
         # Set up Figure and gridspec
         if sites_to_plot == 'all':
             sites_to_plot = sublatt_list
+            sublatt_list.sort()
         elif type(sites_to_plot) != list:
             raise Exception('"sites_to_plot" must be either "all" or a list')
         else:
-            sites_to_plot = np.isin(sublatt_list, sites_to_plot)
+            sites_found = np.isin(sites_to_plot, sublatt_list)
+            sites_not_found = np.array(sites_to_plot)[~sites_found]
+            sites_to_plot = np.array(sites_to_plot)[sites_found]
+            if len(sites_not_found) >= 1:
+                print(f'!!! Note: Specified sites not found for plotting: \n',
+                      f'{sites_not_found} \n')
 
         n_plots = len(sites_to_plot)
 
@@ -723,28 +730,28 @@ class HRImage:
         if n_plots <= 3:
             nrows = 1
             ncols = n_plots
-            width_ratios = [3] * ncols + [1]
 
         elif n_plots <= 8:
             nrows = 2
             ncols = np.ceil(n_plots/2).astype(int)
-            width_ratios = [3] * ncols + [1]
-            print(nrows, ncols)
 
         elif n_plots <= 12:
             nrows = 3
             ncols = np.ceil(n_plots/3).astype(int)
-            width_ratios = [3] * ncols + [1]
 
         figsize = (ncols * 5 + 3, 5 * nrows + 3)
 
         fig = plt.figure(figsize=figsize)
 
+        width_ratios = [3] * ncols
+
         if n_plots % ncols == 0:
             ncols_ = ncols + 1
+            width_ratios += [1]
         else:
             ncols_ = ncols
 
+        # print(nrows, ncols_)
         gs = fig.add_gridspec(
             nrows=nrows,
             ncols=ncols_,
@@ -874,11 +881,11 @@ class HRImage:
         rgb = colour_wheel()
 
         if ncols == ncols_:
-            gs_legend = gs[-1, -1].subgridspec(3, 3)
-            legend = fig.add_subplot(gs_legend[1, 1])
+            gs_legend = gs[-1, -1].subgridspec(5, 5)
+            legend = fig.add_subplot(gs_legend[2, 2])
         else:
             gs_legend = gs[-1, -1].subgridspec(5, 5)
-            legend = fig.add_subplot(gs_legend[1, 1])
+            legend = fig.add_subplot(gs_legend[2, 1])
         legend.text(
             0.5,
             -.7,
@@ -960,9 +967,13 @@ class AtomicColumnLattice:
     unitcell_2D : DataFrame containing the projected crystallographic unit
         cell atom column positions.
 
-    a_2d : The matrix of real space basis vectors of the projected structure
+    a_2d : The direct structure matrix of the projected structure
         from  the .cif in the Cartesian reference frame with units of
-        Angstroms.
+        Angstroms. Premultiplication of position vectors in fractional
+        coordinates (u, v) by this matrix converts them into realspace
+        coordinates. Additionally, its columns are basis vectors in Cartesian
+        Angstrom coordinates: row 0 is the x-component; row 1 is the
+        y-component.
 
     x0, y0 : The image coordinates of the origin of the reference lattice
         (in pixels).
@@ -1079,11 +1090,23 @@ class AtomicColumnLattice:
             origin_atom_column, 'x':'y'].to_numpy(dtype=float)
         self.use_LoG_fitting = False
 
+    def get_est_pixel_size(self):
+        if (self.a1 is None) or (self.a2 is None):
+            raise Exception(
+                "self.a1 and self.a2 must be defined to estimate pixel size."
+                + "Get basis vectors first.")
+        pixel_size_est = np.average(
+            [norm(self.a_2d[:, 0]) / norm(self.a1),
+             norm(self.a_2d[:, 1]) / norm(self.a2)]
+        )
+        return pixel_size_est
+
     def fft_get_basis_vect(
             self,
             a1_order=1,
             a2_order=1,
             sigma=5,
+            thresh_factor=1,
             spot_numbers=None
     ):
         """Measure crystal basis vectors from the image FFT.
@@ -1106,6 +1129,11 @@ class AtomicColumnLattice:
             The Laplacian of Gaussian sigma value to use for sharpening of the
             FFT peaks. Usually a value between 2 and 10 will work well.
 
+        thresh_factor : int or float
+            Relative adjustment of the threshold level for detecting peaks.
+            Greater values will detect fewer peaks; smaller values, more.
+            Default: 1.
+
         spot_numbers : 2-tuple of ints or None
             Labeled spot numbers of the FFT peaks found using fft_get_peaks()
             method. Must be in the order (a1_star, a2_star). This method allows
@@ -1126,7 +1154,8 @@ class AtomicColumnLattice:
 
         if spot_numbers is None:
             basis_picks_xy, m, U = self.fft_get_peaks(
-                sigma=5,
+                sigma=sigma,
+                thresh_factor=thresh_factor,
                 graphical_picking=True
             )
             xy = self.recip_latt.loc[:, 'x':'y'].to_numpy()
@@ -1173,7 +1202,7 @@ class AtomicColumnLattice:
             recip_latt.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
             - recip_latt.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float),
             axis=1
-        ) < 0.1*np.min(norm(a_star, axis=1))
+        ) < 0.1*np.max(norm(a_star, axis=1))
         ].reset_index(drop=True)
 
         def disp_vect_sum_squares(p0, M_star, xy, origin):
@@ -1215,6 +1244,7 @@ class AtomicColumnLattice:
             recip_latt.loc[:, 'x_fit'].to_numpy(dtype=float),
             recip_latt.loc[:, 'y_fit'].to_numpy(dtype=float)
         )
+        
         ax.arrow(
             origin[0],
             origin[1],
@@ -1252,15 +1282,13 @@ class AtomicColumnLattice:
         self.a2 = dir_struct_matrix[1, :]
         self.dir_struct_matrix = dir_struct_matrix
         self.basis_offset_pix = self.basis_offset_frac @ self.dir_struct_matrix
-        self.pixel_size_est = np.average(
-            [norm(self.a_2d[0, :]) / norm(self.a1),
-             norm(self.a_2d[1, :]) / norm(self.a2)]
-        )
+        self.pixel_size_est = self.get_est_pixel_size()
         self.recip_latt = recip_latt
 
     def fft_get_peaks(
             self,
             sigma=5,
+            thresh_factor=1,
             graphical_picking=False
     ):
         """Find peaks in the image FFT.
@@ -1273,6 +1301,11 @@ class AtomicColumnLattice:
         sigma : int or float
             The Laplacian of Gaussian sigma value to use for sharpening of the
             FFT peaks. Usually a value between 2 and 10 will work well.
+
+        thresh_factor : int or float
+            Relative adjustment of the threshold level for detecting peaks.
+            Greater values will detect fewer peaks; smaller values, more.
+            Default: 1.
 
         graphical_picking : bool
             Whether to use graphical picking of FFT peaks. If False, FFT is
@@ -1315,7 +1348,9 @@ class AtomicColumnLattice:
             masks,
             index=np.arange(1, num_masks+1)
         )
-        spots_ = spots[(spots.loc[:, 'stdev'] > 0.003)].reset_index(drop=True)
+
+        thresh = 0.003 * thresh_factor
+        spots_ = spots[(spots.loc[:, 'stdev'] > thresh)].reset_index(drop=True)
         xy = spots_.loc[:, 'x':'y'].to_numpy(dtype=float)
 
         recip_vects = norm(xy - origin, axis=1)
@@ -1478,8 +1513,8 @@ class AtomicColumnLattice:
 
         """
 
-        # if vertices is not None:
-        #     vertices = np.fliplr(np.array(vertices))
+        if vertices is not None:
+            vertices = np.fliplr(np.array(vertices))
         if vertices is None:
             fig, ax = plt.subplots(figsize=(8, 10))
             ax.imshow(self.image, cmap='gist_gray')
@@ -1515,18 +1550,35 @@ class AtomicColumnLattice:
         if invert:
             self.region_mask = np.where(self.region_mask == 1, 0, 1)
         if show_poly:
-            fig, ax = plt.subplots()
-            ax.imshow(self.image, cmap='gist_gray')
+            self.show_region_mask()
+            # fig, ax = plt.subplots()
+            # ax.imshow(self.image, cmap='gist_gray')
 
-            plt.imshow(
-                self.region_mask,
-                alpha=0.2,
-                cmap='Reds'
-            )
+            # plt.imshow(
+            #     self.region_mask,
+            #     alpha=0.2,
+            #     cmap='Reds'
+            # )
 
-            ax.set_title('Region to analize:', fontsize=16)
+            # ax.set_title('Region to analize:', fontsize=16)
         if return_vertices:
             return vertices
+
+    def show_region_mask(self):
+        """Show the current region mask
+
+        """
+
+        fig, ax = plt.subplots()
+        ax.imshow(self.image, cmap='gist_gray')
+
+        plt.imshow(
+            self.region_mask,
+            alpha=0.2,
+            cmap='Reds'
+        )
+
+        ax.set_title('Region to analize:', fontsize=16)
 
     def select_origin(
             self,
@@ -1586,13 +1638,18 @@ class AtomicColumnLattice:
             @ self.dir_struct_matrix
         )
 
-        x_coords = np.append(self.dir_struct_matrix[:, 0], 0)
-        y_coords = np.append(self.dir_struct_matrix[:, 1], 0)
+        x_coords = list([
+            *self.dir_struct_matrix[:, 0],
+            np.sum(self.dir_struct_matrix[:, 0]).item(), 0])
+        
+        y_coords = list([
+            *self.dir_struct_matrix[:, 1],
+            np.sum(self.dir_struct_matrix[:, 1]).item(), 0])
 
         uc_w = (np.max(x_coords) - np.min(x_coords))
         uc_h = (np.max(y_coords) - np.min(y_coords))
 
-        [x0, y0] = [
+        xy0 = [
             left + uc_w*0.2 - np.min(x_coords),
             bottom - np.max(y_coords) - uc_h*0.2
         ]
@@ -1610,9 +1667,22 @@ class AtomicColumnLattice:
             box_params[2],
             box_params[3],
             edgecolor='black',
-            facecolor='grey',
+            facecolor='lightslategrey',
             alpha=1
         )
+        
+        ax.add_patch(box)
+        
+        cell_verts = np.array(
+            [xy0,
+             xy0 + self.a1,
+             xy0 + self.a1 + self.a2,
+             xy0 + self.a2]
+        )
+        
+        cell = Polygon(cell_verts, fill=False, ec='black', zorder=1)
+        ax.add_patch(cell)
+
 
         site_list = list(set(self.unitcell_2D[lab]))
         site_list.sort()
@@ -1626,11 +1696,9 @@ class AtomicColumnLattice:
             color_code[site] for site in self.unitcell_2D.loc[:, lab]
         ]
 
-        ax.add_patch(box)
-
         ax.scatter(
-            self.unitcell_2D.loc[:, 'x_ref'].to_numpy() + x0,
-            self.unitcell_2D.loc[:, 'y_ref'].to_numpy() + y0,
+            self.unitcell_2D.loc[:, 'x_ref'].to_numpy() + xy0[0],
+            self.unitcell_2D.loc[:, 'y_ref'].to_numpy() + xy0[1],
             c=color_list,
             cmap='RdYlGn',
             s=10,
@@ -1638,8 +1706,8 @@ class AtomicColumnLattice:
         )
 
         ax.arrow(
-            x0,
-            y0,
+            xy0[0],
+            xy0[1],
             self.a1[0],
             self.a1[1],
             fc='black',
@@ -1651,8 +1719,8 @@ class AtomicColumnLattice:
             zorder=8
         )
         ax.arrow(
-            x0,
-            y0,
+            xy0[0],
+            xy0[1],
             self.a2[0],
             self.a2[1],
             fc='black',
@@ -1664,11 +1732,12 @@ class AtomicColumnLattice:
             zorder=8
         )
 
-        ref_atom = self.basis_offset_pix + np.array([x0, y0])
+        ref_atom = self.basis_offset_pix + xy0
         ax.scatter(
             ref_atom[0],
             ref_atom[1],
             c='white',
+            ec='black',
             s=70,
             zorder=9
         )
@@ -1748,7 +1817,7 @@ class AtomicColumnLattice:
             zoom_factor=10,
             origin=None,
             mask=None,
-            plot_ref_lattice=True
+            plot_ref_lattice=False
     ):
         """Register reference lattice to image.
 
@@ -1793,10 +1862,7 @@ class AtomicColumnLattice:
 
         """
 
-        self.pixel_size_est = np.average(
-            [norm(self.a_2d[0, :]) / norm(self.a1),
-             norm(self.a_2d[1, :]) / norm(self.a2)]
-        )
+        self.pixel_size_est = self.get_est_pixel_size()
 
         if ((LoG_sigma is None)
             & ((type(self.probe_fwhm) == float)
@@ -1885,11 +1951,14 @@ class AtomicColumnLattice:
 
         at_cols.loc[:, 'u':'v'] += latt_cells
 
-        at_cols.loc[:, 'x_ref':'y_ref'] = (
+        xy_ref = (
             at_cols.loc[:, 'u':'v'].to_numpy(dtype=float)
             @ self.dir_struct_matrix
             + np.array([self.x0, self.y0])
         )
+
+        at_cols['x_ref'] = xy_ref[:, 0]
+        at_cols['y_ref'] = xy_ref[:, 1]
 
         at_cols = at_cols[(
             (at_cols.x_ref >= 1) &
@@ -1947,10 +2016,10 @@ class AtomicColumnLattice:
 
         t = [time.time()]
 
-        for i in [1, 3, 9]:
-            lim = i * init_inc
+        for i, mult in enumerate([1, 3, 9]):
+            lim = mult * init_inc
 
-            print(f'Refinement iteration {i}: {lim} unit cells...')
+            print(f'Refinement iteration {i+1}')
 
             if lim > init_inc:
                 at_cols_orig_type.loc[:, 'x_ref':'y_ref'] = (
@@ -2011,13 +2080,20 @@ class AtomicColumnLattice:
             + np.array([self.x0, self.y0])
         )
 
-        region_mask_buffer = binary_erosion(
-            self.region_mask,
-            iterations=5
-        )
+        at_cols = at_cols[(
+            (at_cols.x_ref >= 1) &
+            (at_cols.x_ref <= w-1) &
+            (at_cols.y_ref >= 1) &
+            (at_cols.y_ref <= h-1)
+        )]
+
+        # region_mask_buffer = binary_erosion(
+        #     self.region_mask,
+        #     iterations=5
+        # )
 
         if self.region_mask is not None:
-            at_cols = at_cols[region_mask_buffer[
+            at_cols = at_cols[self.region_mask[
                 np.around(at_cols.y_ref.to_numpy()).astype(int),
                 np.around(at_cols.x_ref.to_numpy()).astype(int)
             ] == 1]
@@ -2026,66 +2102,70 @@ class AtomicColumnLattice:
 
         plt.close('all')
 
-        fig, ax = plt.subplots()
-        ax.imshow(self.image, cmap='gray')
-        ax.set_xticks([])
-        ax.set_yticks([])
+        if plot_ref_lattice:
+            fig, ax = plt.subplots()
+            ax.imshow(self.image, cmap='gray')
+            ax.set_xticks([])
+            ax.set_yticks([])
 
-        elems = np.sort(np.unique(
-            [self.unitcell_2D.loc[:, 'elem'].unique()]
-        ))
+            elems = np.sort(np.unique(
+                [self.unitcell_2D.loc[:, 'elem'].unique()]
+            ))
 
-        num_colors = elems.shape[0]
-        if num_colors == 1:
-            color_dict = {elems[0]: 'red'}
-        else:
-            cmap = plt.cm.RdYlGn
-            color_dict = {k: cmap(v/(num_colors-1)) for v, k in
-                          enumerate(elems)}
+            num_colors = elems.shape[0]
+            if num_colors == 1:
+                color_dict = {elems[0]: 'red'}
+            else:
+                cmap = plt.cm.RdYlGn
+                color_dict = {k: cmap(v/(num_colors-1)) for v, k in
+                              enumerate(elems)}
 
-        scatter_kwargs_default = {
-            's': 5,
-            'edgecolor': 'black',
-            'linewidths': 0.5,
-        }
+            scatter_kwargs_default = {
+                's': 5,
+                'edgecolor': 'black',
+                'linewidths': 0.5,
+            }
 
-        for elem in elems:
+            for elem in elems:
 
-            sublattice = self.at_cols_uncropped[
-                self.at_cols_uncropped['elem'] == elem
-            ].copy()
-            ax.scatter(
-                sublattice.loc[:, 'x_ref'],
-                sublattice.loc[:, 'y_ref'],
-                color=color_dict[elem],
-                label=elem,
-                **scatter_kwargs_default
+                sublattice = self.at_cols_uncropped[
+                    self.at_cols_uncropped['elem'] == elem
+                ].copy()
+                ax.scatter(
+                    sublattice.loc[:, 'x_ref'],
+                    sublattice.loc[:, 'y_ref'],
+                    color=color_dict[elem],
+                    label=elem,
+                    **scatter_kwargs_default
+                )
+
+            arrow_scale = np.min([norm(self.a1), norm(self.a2)]) / 20
+            
+            ax.arrow(
+                self.x0,
+                self.y0,
+                self.a1[0],
+                self.a1[1],
+                fc='white',
+                ec='black',
+                width=arrow_scale,
+                length_includes_head=True,
+                head_width=arrow_scale * 3,
+                head_length=arrow_scale * 5
+            )
+            ax.arrow(
+                self.x0,
+                self.y0,
+                self.a2[0],
+                self.a2[1],
+                fc='white',
+                ec='black',
+                width=arrow_scale,
+                length_includes_head=True,
+                head_width=arrow_scale * 3,
+                head_length=arrow_scale * 5
             )
 
-        ax.arrow(
-            self.x0,
-            self.y0,
-            self.a1[0],
-            self.a1[1],
-            fc='red',
-            ec='red',
-            width=0.1,
-            length_includes_head=True,
-            head_width=2,
-            head_length=3
-        )
-        ax.arrow(
-            self.x0,
-            self.y0,
-            self.a2[0],
-            self.a2[1],
-            fc='green',
-            ec='green',
-            width=0.1,
-            length_includes_head=True,
-            head_width=2,
-            head_length=3
-        )
 
     def fit_atom_columns(
             self,
@@ -2099,7 +2179,8 @@ class AtomicColumnLattice:
             parallelize=True,
             use_circ_gauss=False,
             use_bounds=False,
-            use_background_param=True
+            use_background_param=True,
+            pos_bound_dist='auto'
     ):
         """Algorithm for fitting 2D Gaussians to HR STEM image.
 
@@ -2197,6 +2278,14 @@ class AtomicColumnLattice:
             column or group of columns. If False, background value is forced
             to be 0. 
             Default: True
+            
+        pos_bound_dist : 'auto' or float or None
+            The +/- distance in Angstroms used to bound the x, y position of 
+            each atom column fit from its initial guess location. If 'auto',
+            half the minimum seperation between atom columns in the reference
+            lattice is used. If 'None', position bounds are not used. 
+            Argument is only functional when 'use_bounds' is set to True. 
+            Default: 'auto'
 
         Returns
         -------
@@ -2214,6 +2303,11 @@ class AtomicColumnLattice:
         use_LoG_for_Gauss = False
         if not use_background_param:
             use_bounds = True
+
+        if self.at_cols_uncropped.shape[0] == 0:
+            raise Exception(
+                "Must define lattice before running fitting routine"
+            )
 
         if self.at_cols.shape[0] == 0:
             at_cols = self.at_cols_uncropped.copy()
@@ -2339,10 +2433,28 @@ class AtomicColumnLattice:
                 at_cols.loc[:, select_sites_by].isin(sites_to_fit)
             ]
 
+            if at_cols.shape[0] == 0:
+                raise Exception(
+                    "Filtering by 'sites_to_fit' resulted in no atom " +
+                    "columns remaining. Check arguments."
+                )
+
         """Find minimum distance (in pixels) between atom columns for peak
         detection neighborhood"""
 
         min_dist = self.get_min_atom_col_dist()
+        
+        if pos_bound_dist == 'auto':
+            pos_bound_dist = min_dist/2
+        elif pos_bound_dist is None:
+            pos_bound_dist = np.inf
+        elif np.isin(type(pos_bound_dist), [float, int]).item():
+            pos_bound_dist = pos_bound_dist / self.pixel_size_est
+        else:
+            raise Exception(
+                "'pos_bound_dist' must be 'auto', a float or None."
+                )
+        
         t += [time.time()]
         print(f'Step 1(Preparation...): {int((t[-1]-t[-2]) // 60)} min '
               + f'{(t[-1]-t[-2]) % 60 :.{2}f} sec')
@@ -2554,8 +2666,8 @@ class AtomicColumnLattice:
                 if use_circ_gauss:
                     if use_bounds:
                         bounds = [
-                            (None, None),
-                            (None, None),
+                            (x0-pos_bound_dist/2, x0+pos_bound_dist),
+                            (y0-pos_bound_dist/2, y0+pos_bound_dist),
                             (1, None),
                             (0, 1.2),
                         ] * num + [(0, None)]
@@ -2583,8 +2695,8 @@ class AtomicColumnLattice:
                 else:
                     if use_bounds:
                         bounds = [
-                            (None, None),
-                            (None, None),
+                            (x0 - pos_bound_dist/2, x0 + pos_bound_dist),
+                            (y0 - pos_bound_dist/2, y0 + pos_bound_dist),
                             (1, None),
                             (1, None),
                             (None, None),
@@ -2665,6 +2777,12 @@ class AtomicColumnLattice:
                             (1, None),
                             (0, 1.2),
                         ] * num + [(0, None)]
+                        for i in range(num):
+                            if pos_bound_dist == np.inf: break
+                            bounds[i*4] = (x0[i] - pos_bound_dist,
+                                           x0[i] + pos_bound_dist)
+                            bounds[i*4 + 1] = (y0[i] - pos_bound_dist,
+                                               y0[i] + pos_bound_dist)
 
                         method = 'L-BFGS-B'
 
@@ -2699,6 +2817,13 @@ class AtomicColumnLattice:
                             (None, None),
                             (0, 1.2),
                         ] * num + [(0, None)]
+
+                        for i in range(num):
+                            if pos_bound_dist == np.inf: break
+                            bounds[i*6] = (x0[i] - pos_bound_dist,
+                                           x0[i] + pos_bound_dist)
+                            bounds[i*6 + 1] = (y0[i] - pos_bound_dist,
+                                               y0[i] + pos_bound_dist)
 
                         method = 'L-BFGS-B'
 
@@ -2887,7 +3012,7 @@ class AtomicColumnLattice:
         ax.set_xticks([])
         ax.set_yticks([])
 
-        return fig
+        return fig, ax
 
     def refine_reference_lattice(
             self,
@@ -3000,10 +3125,7 @@ class AtomicColumnLattice:
             @ self.dir_struct_matrix + np.array([self.x0, self.y0])
         )
 
-        self.pixel_size_est = np.average(
-            [norm(self.a_2d[0, :]) / norm(self.a1),
-             norm(self.a_2d[1, :]) / norm(self.a2)]
-        )
+        self.pixel_size_est = self.get_est_pixel_size()
 
         theta_ref = np.degrees(np.arccos(
             self.dir_struct_matrix[0, :]
@@ -3016,14 +3138,9 @@ class AtomicColumnLattice:
 
         scale_distortion_res = 1 - (
             (norm(self.a1)
-             * norm(self.a_2d[1, :])) /
+             * norm(self.a_2d[:, 1])) /
             (norm(self.a2)
-             * norm(self.a_2d[0, :]))
-        )
-
-        pix_size = np.average(
-            [norm(self.a_2d[0, :]) / norm(self.a1),
-             norm(self.a_2d[1, :]) / norm(self.a2)]
+             * norm(self.a_2d[:, 0]))
         )
 
         print('')
@@ -3032,7 +3149,7 @@ class AtomicColumnLattice:
         )
         print(f'Scalar component: {scale_distortion_res * 100 :.{4}f} %')
         print(f'Shear component: {shear_distortion_res :.{6}f} (radians)')
-        print(f'Estimated Pixel Size: {pix_size * 100 :.{3}f} (pm)')
+        print(f'Estimated Pixel Size: {self.pixel_size_est * 100 :.{3}f} (pm)')
 
     def get_fitting_residuals(self):
         """Calculates fitting residuals for each atom column. Plots all

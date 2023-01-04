@@ -16,7 +16,7 @@
     along with this program.  If not, see https://www.gnu.org/licenses"""
 
 
-__version__ = "2.2.0"
+__version__ = "2.2.1"
 
 from SingleOrigin.utils import (metric_tensor,
                                 bond_length,
