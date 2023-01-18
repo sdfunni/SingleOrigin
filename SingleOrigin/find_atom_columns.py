@@ -239,16 +239,17 @@ class HRImage:
 
         Returns
         -------
-        rot_: HRImage object with rotated image and data
-            All associated lattices are rotated as well.
+        rot_ : HRImage object with rotated image.
+        lattice_dict : Dictionary of associated lattices with rotated data.
+            Some of the attributes do not rotate in a meaningful way and are,
+            therefore, set to None (e.g. mask arrays are destroyed by the
+            interpolation necessary for arbitrary rotations.)
 
         """
 
-        rot_ = copy.deepcopy(self)
-        if align_dir == 'horizontal' or align_dir == 'vertical':
-            pass
-        else:
-            raise Exception('align_dir must be "horizontal" or "vertical"')
+        rot_ = HRImage(self.image, pixel_size_cal=self.pixel_size_cal)
+        print(rot_.latt_dict.keys())
+        # rot_.latt_dict = copy.deepcopy(self.latt_dict)
 
         if align_basis == 'a1':
             align_vect = self.latt_dict[lattice_to_align].a1
@@ -270,21 +271,32 @@ class HRImage:
         [rot_.h, rot_.w] = rot_.image.shape
         rot_.fft = fft_equxy(rot_.image)
 
+        lattice_dict = {}
         for key, lattice in self.latt_dict.items():
-            lattice.fit_masks = rotate(
-                lattice.fit_masks,
-                np.degrees(angle),
-            )
-            lattice.group_masks = rotate(
-                lattice.group_masks,
-                np.degrees(angle),
-            )
+            lattice_dict[key] = copy.deepcopy(lattice)
+            lattice_rot = lattice_dict[key]
+
+            lattice_rot.image = rot_.image
+            [lattice_rot.h, lattice_rot.w] = lattice_rot.image.shape
+            # lattice_rot.fit_masks = rotate(
+            #     lattice_rot.fit_masks,
+            #     np.degrees(angle),
+            # )
+            # lattice_rot.group_masks = rotate(
+            #     lattice_rot.group_masks,
+            #     np.degrees(angle),
+            # )
+            lattice_rot.fit_masks = None
+            lattice_rot.group_masks = None
+            lattice_rot.at_cols_uncropped = None
 
             '''Translation of image center due to increased image array size
                 resulting from the rotation'''
-            trans = np.flip(((np.array(lattice.image.shape, ndmin=2)-1)/2
-                             - (np.array(self.image.shape, ndmin=2)-1)/2),
-                            axis=1)
+            origin_shift = np.flip((
+                (np.array(lattice_rot.image.shape, ndmin=2)-1)/2
+                - (np.array(self.image.shape, ndmin=2)-1)/2),
+                axis=1
+            )
             '''Find the origin-shifted rotation matrix for transforming atomic
                 column position data'''
             dir_struct_matrix = np.array(
@@ -304,47 +316,59 @@ class HRImage:
             )
             dir_struct_matrix = tau @ dir_struct_matrix @ tau_
 
-            xy = np.array(np.append(
-                lattice.at_cols.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float),
-                np.ones((lattice.at_cols.shape[0], 1)),
+            xy_fit = np.array(np.append(
+                lattice_rot.at_cols.loc[:, 'x_fit':'y_fit'].to_numpy(
+                    dtype=float),
+                np.ones((lattice_rot.at_cols.shape[0], 1)),
                 axis=1)
             ).T
 
-            lattice.at_cols.loc[:, 'x_fit':'y_fit'] = (
-                (dir_struct_matrix @ xy).T[:, :2] + trans)
+            lattice_rot.at_cols.loc[:, 'x_fit':'y_fit'] = (
+                (dir_struct_matrix @ xy_fit).T[:, :2] + origin_shift
+            )
 
-            xy_pix = np.append(
-                lattice.at_cols.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float),
-                np.ones((lattice.at_cols.shape[0], 1)),
+            xy_ref = np.append(
+                lattice_rot.at_cols.loc[:, 'x_ref':'y_ref'].to_numpy(
+                    dtype=float),
+                np.ones((lattice_rot.at_cols.shape[0], 1)),
                 axis=1).T
 
-            lattice.at_cols.loc[:, 'x_ref':'y_ref'] = (
-                (dir_struct_matrix @ xy_pix).T[:, :2] + trans)
+            lattice_rot.at_cols.loc[:, 'x_ref':'y_ref'] = (
+                (dir_struct_matrix @ xy_ref).T[:, :2] + origin_shift)
 
-            [lattice.x0, lattice.y0] = list((
-                np.array([lattice.x0, lattice.y0, 1], ndmin=2)
+            [lattice_rot.x0, lattice_rot.y0] = list((
+                np.array([lattice_rot.x0, lattice_rot.y0, 1], ndmin=2)
                 @ dir_struct_matrix.T
-            )[0, 0:2] + trans[0, :]
+            )[0, 0:2] + origin_shift[0, :]
             )
 
             '''Transform data'''
-            lattice.dir_struct_matrix = (lattice.dir_struct_matrix
-                                         @ dir_struct_matrix[0:2, 0:2].T)
-            lattice.a1 = lattice.dir_struct_matrix[0, :]
-            lattice.a2 = lattice.dir_struct_matrix[1, :]
+            lattice_rot.dir_struct_matrix = (
+                lattice_rot.dir_struct_matrix
+                @ dir_struct_matrix[0:2, 0:2].T
+            )
+
+            lattice_rot.a1 = lattice_rot.dir_struct_matrix[0, :]
+            lattice_rot.a2 = lattice_rot.dir_struct_matrix[1, :]
             '''***Logic sequence to make basis vectors ~right, ~up'''
 
-            lattice.a1_star = (np.linalg.inv(lattice.dir_struct_matrix).T
-                               )[0, :]
-            lattice.a2_star = (np.linalg.inv(lattice.dir_struct_matrix).T
-                               )[1, :]
-            lattice.at_cols.theta += np.degrees(angle)
-            lattice.at_cols.theta -= np.trunc(
-                lattice.at_cols.theta.to_numpy(dtype=float).astype('float')
-                / 90) * 180
-            lattice.angle = angle
+            lattice_rot.a1_star = (
+                np.linalg.inv(lattice_rot.dir_struct_matrix).T
+            )[0, :]
 
-        return rot_
+            lattice_rot.a2_star = (
+                np.linalg.inv(lattice_rot.dir_struct_matrix).T
+            )[1, :]
+
+            lattice_rot.at_cols.theta += np.degrees(angle)
+            lattice_rot.at_cols.theta -= np.trunc(
+                lattice_rot.at_cols.theta.to_numpy(dtype=float).astype('float')
+                / 90) * 180
+            lattice_rot.angle = angle
+
+            rot_.latt_dict = lattice_dict
+
+        return rot_, lattice_dict
 
     def plot_atom_column_positions(
             self,
@@ -449,9 +473,11 @@ class HRImage:
 
         if self.pixel_size_cal:
             pixel_size = self.pixel_size_cal
+            flag_estimated_pixel_size = False
         else:
             pixel_size = np.mean([latt.pixel_size_est
                                   for latt in self.latt_dict.values()])
+            flag_estimated_pixel_size = True
 
         if (type(outlier_disp_cutoff) == float or
                 type(outlier_disp_cutoff) == int):
@@ -514,6 +540,7 @@ class HRImage:
                     < outlier_disp_cutoff].copy()
 
             sub_latts = filtered.loc[:, filter_by].unique()
+            sub_latts.sort()
 
             for site in sub_latts:
                 if np.isin(site, sites_used):
@@ -533,9 +560,9 @@ class HRImage:
                     label=label,
                     **scatter_kwargs_default
                 )
-                
+
             arrow_scale = np.min([norm(lattice.a1), norm(lattice.a2)]) / 20
-            
+
             axs.arrow(
                 lattice.x0,
                 lattice.y0,
@@ -571,7 +598,7 @@ class HRImage:
 
         if scalebar_len_nm:
             scalebar = ScaleBar(
-                lattice.pixel_size_est/10,
+                pixel_size/10,
                 'nm', location='lower right',
                 pad=0.4,
                 fixed_value=scalebar_len_nm,
@@ -582,6 +609,14 @@ class HRImage:
             )
 
             axs.add_artist(scalebar)
+
+        if flag_estimated_pixel_size:
+            axs.set_title(
+                'Warning: scalebar length is based on the pixel size ' +
+                'estimated from the reference lattice. The user should ' +
+                'specify the calibrated pixel size if known.',
+                fontsize=12
+            )
 
         return fig, axs
 
@@ -664,10 +699,12 @@ class HRImage:
 
         if self.pixel_size_cal:
             pixel_size = self.pixel_size_cal
+            flag_estimated_pixel_size = False
         else:
             pixel_size = np.mean(
                 [latt.pixel_size_est for latt in self.latt_dict.values()]
             )
+            flag_estimated_pixel_size = True
 
         if outlier_disp_cutoff is None:
             outlier_disp_cutoff = np.inf
@@ -743,11 +780,11 @@ class HRImage:
 
         fig = plt.figure(figsize=figsize)
 
-        width_ratios = [3] * ncols
+        width_ratios = [1] * ncols
 
         if n_plots % ncols == 0:
             ncols_ = ncols + 1
-            width_ratios += [1]
+            width_ratios += [0.4]
         else:
             ncols_ = ncols
 
@@ -756,7 +793,7 @@ class HRImage:
             nrows=nrows,
             ncols=ncols_,
             width_ratios=width_ratios,
-            height_ratios=[3 for _ in range(nrows)],
+            height_ratios=[1 for _ in range(nrows)],
             wspace=0.05
         )
 
@@ -864,7 +901,8 @@ class HRImage:
 
             v = np.sqrt(xx ** 2 + yy ** 2)
             if clip_circle:
-                v[v > 0.99] = 1
+                v[v > 1] = 1
+            v[(v > 0.98) & (v < 1)] = 0
             h = ((np.arctan2(xx, yy) + np.pi/2) / (np.pi * 2)) % 1
             hsv = np.ones((samples, samples, 3))
             hsv[:, :, 0] = h
@@ -884,11 +922,11 @@ class HRImage:
             gs_legend = gs[-1, -1].subgridspec(5, 5)
             legend = fig.add_subplot(gs_legend[2, 2])
         else:
-            gs_legend = gs[-1, -1].subgridspec(5, 5)
-            legend = fig.add_subplot(gs_legend[2, 1])
+            gs_legend = gs[-1, -1].subgridspec(3, 3)
+            legend = fig.add_subplot(gs_legend[1, 1])
         legend.text(
             0.5,
-            -.7,
+            -1.2,
             f'Displacement\n(0 - {max_colorwheel_range_pm} pm)',
             transform=legend.transAxes,
             horizontalalignment='center',
@@ -899,9 +937,6 @@ class HRImage:
         legend.imshow(rgb)
         legend.set_xticks([])
         legend.set_yticks([])
-        r = rgb.shape[0]/2
-        circle = Wedge((r, r), r-5, 0, 360, width=5, color='black')
-        legend.add_artist(circle)
         legend.axis('off')
         legend.axis('image')
 
@@ -913,6 +948,16 @@ class HRImage:
             left=0.01,
             right=0.99
         )
+
+        if flag_estimated_pixel_size:
+            fig.suptitle(
+                'Warning: scalebar length and vector magnitudes are based\n' +
+                'on the pixel size estimated from the reference lattice.\n' +
+                'The user should specify the calibrated pixel size, '
+                'if known, when defining the HRImage object.',
+                fontsize=12,
+                c='red'
+            )
 
         return fig, axs
 
@@ -1244,7 +1289,7 @@ class AtomicColumnLattice:
             recip_latt.loc[:, 'x_fit'].to_numpy(dtype=float),
             recip_latt.loc[:, 'y_fit'].to_numpy(dtype=float)
         )
-        
+
         ax.arrow(
             origin[0],
             origin[1],
@@ -1641,7 +1686,7 @@ class AtomicColumnLattice:
         x_coords = list([
             *self.dir_struct_matrix[:, 0],
             np.sum(self.dir_struct_matrix[:, 0]).item(), 0])
-        
+
         y_coords = list([
             *self.dir_struct_matrix[:, 1],
             np.sum(self.dir_struct_matrix[:, 1]).item(), 0])
@@ -1670,19 +1715,18 @@ class AtomicColumnLattice:
             facecolor='lightslategrey',
             alpha=1
         )
-        
+
         ax.add_patch(box)
-        
+
         cell_verts = np.array(
             [xy0,
              xy0 + self.a1,
              xy0 + self.a1 + self.a2,
              xy0 + self.a2]
         )
-        
+
         cell = Polygon(cell_verts, fill=False, ec='black', zorder=1)
         ax.add_patch(cell)
-
 
         site_list = list(set(self.unitcell_2D[lab]))
         site_list.sort()
@@ -2087,11 +2131,6 @@ class AtomicColumnLattice:
             (at_cols.y_ref <= h-1)
         )]
 
-        # region_mask_buffer = binary_erosion(
-        #     self.region_mask,
-        #     iterations=5
-        # )
-
         if self.region_mask is not None:
             at_cols = at_cols[self.region_mask[
                 np.around(at_cols.y_ref.to_numpy()).astype(int),
@@ -2140,7 +2179,7 @@ class AtomicColumnLattice:
                 )
 
             arrow_scale = np.min([norm(self.a1), norm(self.a2)]) / 20
-            
+
             ax.arrow(
                 self.x0,
                 self.y0,
@@ -2165,7 +2204,6 @@ class AtomicColumnLattice:
                 head_width=arrow_scale * 3,
                 head_length=arrow_scale * 5
             )
-
 
     def fit_atom_columns(
             self,
@@ -2278,7 +2316,7 @@ class AtomicColumnLattice:
             column or group of columns. If False, background value is forced
             to be 0. 
             Default: True
-            
+
         pos_bound_dist : 'auto' or float or None
             The +/- distance in Angstroms used to bound the x, y position of 
             each atom column fit from its initial guess location. If 'auto',
@@ -2443,7 +2481,7 @@ class AtomicColumnLattice:
         detection neighborhood"""
 
         min_dist = self.get_min_atom_col_dist()
-        
+
         if pos_bound_dist == 'auto':
             pos_bound_dist = min_dist/2
         elif pos_bound_dist is None:
@@ -2453,8 +2491,8 @@ class AtomicColumnLattice:
         else:
             raise Exception(
                 "'pos_bound_dist' must be 'auto', a float or None."
-                )
-        
+            )
+
         t += [time.time()]
         print(f'Step 1(Preparation...): {int((t[-1]-t[-2]) // 60)} min '
               + f'{(t[-1]-t[-2]) % 60 :.{2}f} sec')
@@ -2778,7 +2816,8 @@ class AtomicColumnLattice:
                             (0, 1.2),
                         ] * num + [(0, None)]
                         for i in range(num):
-                            if pos_bound_dist == np.inf: break
+                            if pos_bound_dist == np.inf:
+                                break
                             bounds[i*4] = (x0[i] - pos_bound_dist,
                                            x0[i] + pos_bound_dist)
                             bounds[i*4 + 1] = (y0[i] - pos_bound_dist,
@@ -2819,7 +2858,8 @@ class AtomicColumnLattice:
                         ] * num + [(0, None)]
 
                         for i in range(num):
-                            if pos_bound_dist == np.inf: break
+                            if pos_bound_dist == np.inf:
+                                break
                             bounds[i*6] = (x0[i] - pos_bound_dist,
                                            x0[i] + pos_bound_dist)
                             bounds[i*6 + 1] = (y0[i] - pos_bound_dist,

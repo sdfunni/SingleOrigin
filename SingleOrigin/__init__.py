@@ -16,7 +16,7 @@
     along with this program.  If not, see https://www.gnu.org/licenses"""
 
 
-__version__ = "2.2.1"
+__version__ = "2.2.2"
 
 from SingleOrigin.utils import (metric_tensor,
                                 bond_length,
@@ -39,6 +39,7 @@ from SingleOrigin.utils import (metric_tensor,
                                 fit_gaussian_ellip,
                                 fit_gaussian_circ,
                                 pcf_radial,
+                                v_pcf,
                                 detect_peaks,
                                 watershed_segment,
                                 band_pass_filter,

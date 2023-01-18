@@ -1135,6 +1135,177 @@ def pcf_radial(
     return pcf
 
 
+def v_pcf(
+        xlim,
+        ylim,
+        coords1,
+        coords2=None,
+        d=0.05,
+        area=None,
+        method='kde'
+):
+    """
+    Get a 2D pair (or pair-pair) correlation function for a dataset.
+
+    Parameters
+    ----------
+    xlim, ylim : 2-tuple of floats or ints
+        The limits of the vPDF along each dimension. Must include 0 in both
+        x and y. The limits will determine the size of the vPCF array and the
+        time required to calculate.
+    coords1 : array of shape (n, 2)
+        The (x,y) coordinates of the data points.
+    coords2 : None or array of shape (n, 2)
+        If dcoords 2 is None, a vPCF is calculated for coords1 with respect to
+        itself. If a second data array is passed as coords2, a pair-pair vPCF
+        is found i.e. the vPCF of coords1 data with respect to coords2. coords1
+        and coords2 do not necessarily have to have the same number of data
+        points.
+        Default: None
+    d : float or int
+        The pixel size of the vPCF in the same units as the coords1/coords2.
+    area : float or int
+        The area containing the data points. Used to calculate the density
+        for normalizing the vPCF values. If None, the rectangle containing
+        the extreme points in coords1 is taken as the area. This may be wrong
+        if the data does not come from a retangular area or the rectangle has
+        been rotated relative to the cartesian axes.
+        Default: None
+    method : 'bin' or 'weight'
+        The method to use for calculating the v_pcf. If 'bin', uses a direct
+        histogram binning function in two dimensions. If 'weight',
+        linearly divides the count for each data point among the 2x2 nearest
+        neighbor pixels. Examples:
+            1: A point exactly at the center of a pixel will have its full
+            weight placed in that pixel and none in any others.
+            2: A point at the common corner of 4 pixels will have 1/4 weight
+            assigned to each.
+        Discussion: 'bin' is about 4x faster in execution while 'weight' is
+        more quantitatively correct. Practically, the results will be very
+        similar. 'bin' should only be preferred if the function must be called
+        many times and speed is critical. This option may be removed in a
+        future version in favor of always using the weighted method.
+        Default: 'weight'
+
+    Returns
+    -------
+    v_pcf : ndarray of shape (int((ylim[1]-ylim[0])/d),
+                              int((xlim[1]-xlim[0])/d))
+        The vPCF.
+    origin : array-like of shape (2,)
+        The x, y coordinates of the vPCF origin, given that the y axis points
+        down.
+
+    """
+
+    if (xlim[0] > 0) or (ylim[0] > 0) or (xlim[1] < 0) or (ylim[1] < 0):
+        raise Exception(
+            "x and y limits must include the origin, i.e. (0,0)"
+        )
+
+    if area is None:
+        area = (np.max(coords1[:, 0])
+                - np.min(coords1[:, 0])) * \
+            (np.max(coords1[:, 1]) - np.min(coords1[:, 1]))
+
+    # Get the point-to-point vectors
+    if coords2 is None:
+        coords2 = coords1
+
+        # Skip 0 length vectors for a partial vPCF
+        vects = np.array([
+            np.delete(coords1, i, axis=0) - xy for i, xy in enumerate(coords2)
+        ])
+    else:
+        # Keep all vectors for a pair-pair vPCF
+        vects = np.array([coords1 - i for i in coords2])
+
+    x_ = vects[:, :, 0].flatten()
+    y_ = vects[:, :, 1].flatten()
+
+    n = coords1.shape[0]
+    rho = n/area
+
+    # Get bin spacing
+    xedges = np.arange(xlim[0], xlim[1], d)
+    yedges = np.arange(ylim[0], ylim[1], d)
+
+    # Find edge closest to 0 and shift edges so (0,0) is exactly at the center
+    # of a pixel
+    x_min_ind = np.argmin(np.abs(xedges))
+    y_min_ind = np.argmin(np.abs(yedges))
+    xedges -= xedges[x_min_ind] + d/2
+    yedges -= yedges[y_min_ind] + d/2
+
+    if method == 'bin':
+        # Bin into 2D histogram
+        H, _, _ = np.histogram2d(
+            y_,
+            x_,
+            bins=[yedges, xedges]
+        )
+
+    elif method == 'weight':
+        xcents = xedges[:-1] + d/2
+        ycents = yedges[:-1] + d/2
+
+        H = np.zeros((ycents.shape[0], xcents.shape[0]))
+
+        # Round values down to nearest pixel
+        xF = np.floor(x_/d) * d
+        yF = np.floor(y_/d) * d
+
+        # Get x and y weights for the floor pixels
+        xFw = 1 - np.abs(x_/d % 1)
+        yFw = 1 - np.abs(y_/d % 1)
+
+        # Weighted histogram for x & y floor pixels
+        H += np.histogram2d(
+            yF, xF,
+            bins=[yedges, xedges],
+            weights=xFw * yFw
+        )[0]
+
+        # Weighted histogram for y floor & x ceiling pixels
+        H += np.histogram2d(
+            yF, xF + d,
+            bins=[yedges, xedges],
+            weights=(1 - xFw) * yFw
+        )[0]
+
+        # Weighted histogram for x floor & y ceiling pixels
+        H += np.histogram2d(
+            yF + d, xF,
+            bins=[yedges, xedges],
+            weights=xFw * (1 - yFw)
+        )[0]
+
+        # Weighted histogram for x & y ceiling pixels
+        H += np.histogram2d(
+            yF + d, xF + d,
+            bins=[yedges, xedges],
+            weights=(1 - xFw) * (1 - yFw)
+        )[0]
+
+    else:
+        raise Exception(
+            "'method' must be either 'bin' or 'weight'"
+        )
+
+    # Flip so y axis is positive going up
+    H = np.flipud(H)
+
+    # Find the origin
+    origin = np.array([
+        np.argwhere(np.isclose(xedges, -d/2)).item(),
+        yedges.shape[0] - np.argwhere(np.isclose(yedges, -d/2)).item() - 2
+    ])
+
+    v_pcf = H/rho  # Normalize vPCF by number density
+
+    return v_pcf, origin
+
+
 def detect_peaks(
         image,
         min_dist=4,

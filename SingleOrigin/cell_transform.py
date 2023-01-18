@@ -145,15 +145,17 @@ class UnitCell():
 
         if coord_max_precision < 2:
             coord_max_precision = 2
-
-        xyz = ((np.array(
+        
+        # Make array of uvw coordinates and shift into the 0-1 unit cell
+        xyz = np.array(
             [[i.split('(', 1)[0] for i in Crystal['_atom_site_fract_x'][0]],
              [i.split('(', 1)[0] for i in Crystal['_atom_site_fract_y'][0]],
              [i.split('(', 1)[0] for i in Crystal['_atom_site_fract_z'][0]]
              ],
-            dtype=np.float64) + np.array(origin_shift, ndmin=2).T
-        ) % 1).T
+            dtype=np.float64
+        ).T % 1
 
+        # Get other site attributes
         elem = np.array(
             Crystal['_atom_site_type_symbol'][0],
             ndmin=2
@@ -181,8 +183,8 @@ class UnitCell():
             atoms['Debye_Waller'] = dwf[:, 0]
 
         # Sort and combine atoms if multiple at one position
-        atoms = atoms.sort_values(['u', 'v', 'w'])
-        atoms.reset_index(inplace=True, drop=True)
+        # atoms = atoms.sort_values(['u', 'v', 'w'])
+        # atoms.reset_index(inplace=True, drop=True)
 
         _, index, rev_index, counts = np.unique(
             atoms.loc[:, 'u':'w'],
@@ -245,9 +247,11 @@ class UnitCell():
                                       ).drop_duplicates().index
         atoms = atoms.loc[indices_to_keep, :]
         atoms.reset_index(drop=True, inplace=True)
-
-        self.atoms = atoms
-        self.at_cols = pd.DataFrame
+        
+        # Apply origin shift
+        atoms.loc[:,'u':'w'] = (atoms.loc[:,'u':'w'] - origin_shift) % 1
+        atoms = atoms.sort_values(['u', 'v', 'w'])
+        atoms.reset_index(inplace=True, drop=True)
 
         g = metric_tensor(
             self.a, self.b, self.c,
@@ -273,6 +277,7 @@ class UnitCell():
         atoms.loc[:, 'x':'z'] = atoms.loc[:, 'u':'w'].to_numpy() @ self.a_3d.T
         atoms.reset_index(drop=True, inplace=True)
 
+        self.atoms = atoms
         self.at_cols = None
         self.a_2d = None
         self.g = g
