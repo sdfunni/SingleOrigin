@@ -248,8 +248,6 @@ class HRImage:
         """
 
         rot_ = HRImage(self.image, pixel_size_cal=self.pixel_size_cal)
-        print(rot_.latt_dict.keys())
-        # rot_.latt_dict = copy.deepcopy(self.latt_dict)
 
         if align_basis == 'a1':
             align_vect = self.latt_dict[lattice_to_align].a1
@@ -277,15 +275,6 @@ class HRImage:
             lattice_rot = lattice_dict[key]
 
             lattice_rot.image = rot_.image
-            [lattice_rot.h, lattice_rot.w] = lattice_rot.image.shape
-            # lattice_rot.fit_masks = rotate(
-            #     lattice_rot.fit_masks,
-            #     np.degrees(angle),
-            # )
-            # lattice_rot.group_masks = rotate(
-            #     lattice_rot.group_masks,
-            #     np.degrees(angle),
-            # )
             lattice_rot.fit_masks = None
             lattice_rot.group_masks = None
             lattice_rot.at_cols_uncropped = None
@@ -630,6 +619,7 @@ class HRImage:
             scalebar_len_nm=2,
             arrow_scale_factor=1,
             max_colorwheel_range_pm=None,
+            label_dict=None,
             plot_fit_points=False,
             plot_ref_points=False
     ):
@@ -681,6 +671,10 @@ class HRImage:
             colorwheel range. Displacement vectors longer than this value will
             have the same color intensity. Specified in picometers.
 
+        label_dict : None or a dict
+            Keys must be lattice site types in the 'filter_by' column of the
+            at_cols datarame(s). Values should be a string to replace this
+            with when labeling the plots.
         plot_fit_points : bool
             Whether to indicate the fitted positions with colored dots.
             Default: False
@@ -799,6 +793,12 @@ class HRImage:
 
         axs = []
         for ax, site in enumerate(sites_to_plot):
+            if ((label_dict is not None) &
+                    np.isin(site, list(label_dict.keys()))):
+                label = label_dict[site]
+            else:
+                label = site
+
             row = ax // ncols
             col = ax % ncols
             if ax > 0:
@@ -833,19 +833,21 @@ class HRImage:
 
             sub_latt = combined[combined.loc[:, filter_by] == site]
             h = y_lim[0] - y_lim[1]
+
             title = axs[ax].text(
                 x_lim[0] + 0.02*h,
-                y_lim[1] + 0.02*h,
-                rf'{"$" + sites_to_plot[ax] + "$"}',
-                color='white',
+                y_lim[1] - 0.02*h,
+                label,
+                color='black',
                 size=24,
                 weight='bold',
-                va='top',
+                va='bottom',
                 ha='left'
             )
-            title.set_path_effects([path_effects.Stroke(linewidth=3,
-                                                        foreground='black'),
-                                    path_effects.Normal()])
+
+            # title.set_path_effects([path_effects.Stroke(linewidth=3,
+            #                                             foreground='black'),
+            #                         path_effects.Normal()])
 
             hsv = np.ones((sub_latt.shape[0], 3))
             dxy = (sub_latt.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
@@ -891,7 +893,9 @@ class HRImage:
                 headwidth=5,
                 headaxislength=10,
                 edgecolor='white',
-                linewidths=0.5)
+                linewidths=0.5,
+                width=0.003,
+            )
 
         def colour_wheel(samples=1024, clip_circle=True):
             xx, yy = np.meshgrid(
@@ -1026,7 +1030,7 @@ class AtomicColumnLattice:
     fit_masks : The last set of masks used for fitting  atom columns. Has
         the same shape as image.
 
-    region_mask : ndarray or None
+    roi_mask : ndarray or None
         Binary array with the same shape as image. 1 where lattice is present.
         0 otherwise. Used to restrict the image area where a reference lattice
         will be generated. If none, reference lattice will extend over the
@@ -1052,7 +1056,7 @@ class AtomicColumnLattice:
         ):
         Find basis vectors for the image from the FFT.
 
-    get_region_mask_std(
+    get_roi_mask_std(
         self,
         r=4,
         sigma=8,
@@ -1117,7 +1121,7 @@ class AtomicColumnLattice:
         self.at_cols_uncropped = pd.DataFrame()
         self.x0, self.y0 = np.nan, np.nan
         self.fit_masks = np.zeros(image.shape)
-        self.region_mask = np.ones(image.shape)
+        self.roi_mask = np.ones(image.shape)
         self.a1, self.a2 = None, None
         self.a1_star, self.a2_star = None, None
         self.dir_struct_matrix = None
@@ -1427,7 +1431,7 @@ class AtomicColumnLattice:
             for i, label in enumerate(inds):
                 plt.annotate(label, (xy[i, 0], xy[i, 1]))
 
-    def get_region_mask_std(
+    def get_roi_mask_std(
             self,
             r=4,
             sigma=8,
@@ -1483,41 +1487,29 @@ class AtomicColumnLattice:
             std_local(self.image, r),
             sigma=sigma)
         )
-        self.region_mask = np.where(image_std > thresh, 1, 0)
+        self.roi_mask = np.where(image_std > thresh, 1, 0)
         if fill_holes:
-            self.region_mask = binary_fill_holes(self.region_mask)
+            self.roi_mask = binary_fill_holes(self.roi_mask)
         if buffer:
-            self.region_mask = binary_erosion(
-                self.region_mask,
+            self.roi_mask = binary_erosion(
+                self.roi_mask,
                 iterations=buffer
             )
 
         if show_mask:
-            plt.figure(0)
-            plt.imshow(
-                self.image,
-                cmap='gist_gray'
-            )
+            self.show_roi_mask()
 
-            plt.imshow(
-                self.region_mask,
-                alpha=0.2,
-                cmap='Reds'
-            )
-
-            plt.title('Region to analize:', fontsize=16)
-
-    def get_region_mask_polygon(
+    def get_roi_mask_polygon(
             self,
             vertices=None,
             buffer=0,
             invert=False,
-            show_poly=True,
+            show_mask=True,
             return_vertices=False
     ):
-        """Get mask for a polygon-shaped region of an image.
+        """Create mask for a polygon-shaped ROI in an image.
 
-        Create a mask for a desired image region from polygon vertices. The
+        Create a mask for a desired image ROI from polygon vertices. The
         mask is saved in the AtomColumnLattice object and used during
         reference lattice generation to limnit the extent of the lattice.
         Useful for images with interfaces, multiple grains, etc.
@@ -1585,31 +1577,21 @@ class AtomicColumnLattice:
             plt.close()
             vertices = np.fliplr(np.array(vertices))
 
-        self.region_mask = polygon2mask(self.image.shape, vertices)
+        self.roi_mask = polygon2mask(self.image.shape, vertices)
         if buffer:
-            self.region_mask = binary_erosion(
-                self.region_mask,
+            self.roi_mask = binary_erosion(
+                self.roi_mask,
                 iterations=buffer
             )
 
         if invert:
-            self.region_mask = np.where(self.region_mask == 1, 0, 1)
-        if show_poly:
-            self.show_region_mask()
-            # fig, ax = plt.subplots()
-            # ax.imshow(self.image, cmap='gist_gray')
-
-            # plt.imshow(
-            #     self.region_mask,
-            #     alpha=0.2,
-            #     cmap='Reds'
-            # )
-
-            # ax.set_title('Region to analize:', fontsize=16)
+            self.roi_mask = np.where(self.roi_mask == 1, 0, 1)
+        if show_mask:
+            self.show_roi_mask()
         if return_vertices:
             return vertices
 
-    def show_region_mask(self):
+    def show_roi_mask(self):
         """Show the current region mask
 
         """
@@ -1617,13 +1599,13 @@ class AtomicColumnLattice:
         fig, ax = plt.subplots()
         ax.imshow(self.image, cmap='gist_gray')
 
-        plt.imshow(
-            self.region_mask,
+        ax.imshow(
+            self.roi_mask,
             alpha=0.2,
             cmap='Reds'
         )
 
-        ax.set_title('Region to analize:', fontsize=16)
+        ax.set_title('Region of interest:', fontsize=16)
 
     def select_origin(
             self,
@@ -1914,15 +1896,15 @@ class AtomicColumnLattice:
             LoG_sigma = self.probe_fwhm / self.pixel_size_est * 0.5
 
         if mask is not None:
-            self.region_mask = mask
+            self.roi_mask = mask
 
         if origin is None:
             window_size = np.max([norm(self.a1),
                                   norm(self.a2)]
                                  ) * zoom_factor
-            if self.region_mask is not None:
+            if self.roi_mask is not None:
                 window_center = np.array(
-                    center_of_mass(self.region_mask)
+                    center_of_mass(self.roi_mask)
                 ).astype(int)
             else:
                 window_center = np.array([self.h, self.w]) / 2
@@ -2011,10 +1993,10 @@ class AtomicColumnLattice:
             (at_cols.y_ref <= h-1)
         )]
 
-        if self.region_mask is None:
-            self.region_mask = np.ones((self.h, self.w))
+        if self.roi_mask is None:
+            self.roi_mask = np.ones((self.h, self.w))
 
-        at_cols = at_cols[self.region_mask[
+        at_cols = at_cols[self.roi_mask[
             np.around(at_cols.y_ref.to_numpy()).astype(int),
             np.around(at_cols.x_ref.to_numpy()).astype(int)
         ] == 1
@@ -2052,8 +2034,8 @@ class AtomicColumnLattice:
             (at_cols.y == at_cols.at[origin_ind, 'y'])
         ].copy()
 
-        if self.region_mask is not None:
-            at_cols_orig_type = at_cols_orig_type[self.region_mask[
+        if self.roi_mask is not None:
+            at_cols_orig_type = at_cols_orig_type[self.roi_mask[
                 np.around(at_cols_orig_type.y_ref.to_numpy()).astype(int),
                 np.around(at_cols_orig_type.x_ref.to_numpy()).astype(int)
             ] == 1]
@@ -2131,8 +2113,8 @@ class AtomicColumnLattice:
             (at_cols.y_ref <= h-1)
         )]
 
-        if self.region_mask is not None:
-            at_cols = at_cols[self.region_mask[
+        if self.roi_mask is not None:
+            at_cols = at_cols[self.roi_mask[
                 np.around(at_cols.y_ref.to_numpy()).astype(int),
                 np.around(at_cols.x_ref.to_numpy()).astype(int)
             ] == 1]
@@ -2995,15 +2977,15 @@ class AtomicColumnLattice:
         self.at_cols = self.at_cols_uncropped.dropna(axis=0)
 
         if buffer:
-            region_mask_buffer = binary_erosion(
-                self.region_mask,
+            roi_mask_buffer = binary_erosion(
+                self.roi_mask,
                 iterations=buffer
             )
 
         else:
-            region_mask_buffer = self.region_mask
+            roi_mask_buffer = self.roi_mask
 
-        self.at_cols = self.at_cols[region_mask_buffer[
+        self.at_cols = self.at_cols[roi_mask_buffer[
             np.around(self.at_cols.y_ref.to_numpy()).astype(int),
             np.around(self.at_cols.x_ref.to_numpy()).astype(int)
         ] == 1

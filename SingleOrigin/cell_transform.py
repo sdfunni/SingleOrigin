@@ -48,7 +48,7 @@ class UnitCell():
 
     Parameters
     ----------
-    cif_path : str
+    path : str
         Path to the .cif file.
     origin_shift : array_like with shape (3,)
         Change of origin in fractional coordinates.
@@ -82,6 +82,8 @@ class UnitCell():
     alpha_t = The transformation matrix from the original basis system
         of the .cif file to the "new" basis specified by the
         'transform_basis()' method.
+    path : str
+        The path to the .cif used.
 
     Methods
     -------
@@ -112,20 +114,20 @@ class UnitCell():
 
     def __init__(
             self,
-            directory='',
+            path='',
             origin_shift=[0, 0, 0]
     ):
 
-        if directory[-4:] == '.cif':
-            cif_path = directory
+        if path[-4:] == '.cif':
+            path = path
         else:
-            cif_path, _ = qfd.getOpenFileName(
+            path, _ = qfd.getOpenFileName(
                 caption='Select a .cif file...',
-                directory=directory,
+                directory=path,
                 filter='*.cif'
             )
 
-        cif_data = copy.deepcopy(ReadCif(cif_path))
+        cif_data = copy.deepcopy(ReadCif(path))
         Crystal = cif_data.dictionary[
             list(cif_data.dictionary.keys())[0]
         ].block
@@ -161,11 +163,16 @@ class UnitCell():
             ndmin=2
         ).T
 
-        site_frac = np.array(
-            Crystal['_atom_site_occupancy'][0],
-            ndmin=2,
-            dtype=str
-        ).T
+        if '_atom_site_occupancy' in Crystal:
+            
+            site_frac = np.array(
+                Crystal['_atom_site_occupancy'][0],
+                ndmin=2,
+                dtype=str
+            ).T
+            
+        else:
+            site_frac = np.ones((xyz.shape[0], 1))
 
         atoms = pd.DataFrame(
             {'u': xyz[:, 0], 'v': xyz[:, 1], 'w': xyz[:, 2],
@@ -283,6 +290,7 @@ class UnitCell():
         self.g = g
         self.g_star = g_star
         self.alpha_t = np.identity(3)
+        self.path = path
 
     def transform_basis(
             self,

@@ -16,7 +16,7 @@
     along with this program.  If not, see https://www.gnu.org/licenses"""
 
 
-__version__ = "2.2.2"
+__version__ = "2.2.3"
 
 from SingleOrigin.utils import (metric_tensor,
                                 bond_length,
@@ -48,6 +48,7 @@ from SingleOrigin.utils import (metric_tensor,
                                 fft_amplitude_area,
                                 std_local,
                                 binary_find_largest_rectangle,
+                                binary_find_smallest_rectangle,
                                 fft_equxy)
 
 from SingleOrigin.cell_transform import UnitCell

@@ -583,7 +583,7 @@ def img_equ_ellip(image):
     mu = moments_central(image, order=2)
 
     try:
-        [x0, y0] = [M[1, 0]/M[0, 0], M[0, 1]/M[0, 0]]
+        [x0, y0] = [M[0, 1]/M[0, 0], M[1, 0]/M[0, 0]]
 
         [u20, u11, u02] = [
             mu[2, 0]/M[0, 0],
@@ -1266,7 +1266,7 @@ def v_pcf(
             weights=xFw * yFw
         )[0]
 
-        # Weighted histogram for y floor & x ceiling pixels
+        # Weighted histogram for x ceiling & y floor pixels
         H += np.histogram2d(
             yF, xF + d,
             bins=[yedges, xedges],
@@ -1300,8 +1300,10 @@ def v_pcf(
         np.argwhere(np.isclose(xedges, -d/2)).item(),
         yedges.shape[0] - np.argwhere(np.isclose(yedges, -d/2)).item() - 2
     ])
+    
+    H[origin[1], origin[0]] = 0
 
-    v_pcf = H/rho  # Normalize vPCF by number density
+    v_pcf = H/(rho * d**2)  # Normalize vPCF by number density
 
     return v_pcf, origin
 
@@ -1885,7 +1887,46 @@ def binary_find_largest_rectangle(array):
     sl = np.s_[ylim[0]:ylim[1], xlim[0]:xlim[1]]
 
     return xlim, ylim, sl
+    
+def binary_find_smallest_rectangle(array):
+    """
+    Get the smallest rectangle (with horizontal and vertical sides) that 
+    contains an entire ROI defined by a binary array. 
+    
+    This is useful for cropping to the smallest area without losing any useful
+    data. Unless the region is already a rectangle with horiaontal and vertical
+    sides, there will be remaining areas that are not part of the ROI. If only
+    ROI area is desired in the final rectangle, use
+    "binary_find_largest_rectangle."
+    
+    
+    Parameters
+    ----------
+    array : ndarray of shape (h,w)
+        The binary image.
 
+    Returns
+    -------
+    xlim : list-like of length 2
+        The x limits (columns) of the smallest rectangle.
+
+    ylim : list-like of length 2
+        The y limits (columns) of the smallest rectangle.
+
+    sl : numpy slice object
+        The slice object which crops the image to the smallest rectangle.    
+    """
+        
+    xinds = np.where(np.sum(array.astype(int), axis=1) >0, 1, 0
+                     ).reshape((-1,1))
+    yinds = np.where(np.sum(array.astype(int), axis=0) >0, 1, 0
+                     ).reshape((1,-1))
+    
+    newroi = (xinds @ yinds).astype(bool)
+    
+    xlim, ylim, sl = binary_find_largest_rectangle(newroi)
+    
+    return xlim, ylim, sl
 
 def fft_equxy(image,
               hanning_window=False
