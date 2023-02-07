@@ -442,7 +442,7 @@ def load_image(
     elif path[-3:] == 'emd':
         if emd_velox:
             emd_file = emdVeloxReader(path)
-            image = emd_file['data']
+            image = emd_file['data'].transpose((2, 0, 1))
             metadata = {
                 key: val for key, val in emd_file.items() if key != 'data'
             }
@@ -1142,7 +1142,7 @@ def v_pcf(
         coords2=None,
         d=0.05,
         area=None,
-        method='kde'
+        method='weighted'
 ):
     """
     Get a 2D pair (or pair-pair) correlation function for a dataset.
@@ -1162,18 +1162,18 @@ def v_pcf(
         and coords2 do not necessarily have to have the same number of data
         points.
         Default: None
-    d : float or int
+    d : scalar
         The pixel size of the vPCF in the same units as the coords1/coords2.
-    area : float or int
+    area : scalar
         The area containing the data points. Used to calculate the density
         for normalizing the vPCF values. If None, the rectangle containing
         the extreme points in coords1 is taken as the area. This may be wrong
         if the data does not come from a retangular area or the rectangle has
         been rotated relative to the cartesian axes.
         Default: None
-    method : 'bin' or 'weight'
+    method : 'bin' or 'weighted'
         The method to use for calculating the v_pcf. If 'bin', uses a direct
-        histogram binning function in two dimensions. If 'weight',
+        histogram binning function in two dimensions. If 'weighted',
         linearly divides the count for each data point among the 2x2 nearest
         neighbor pixels. Examples:
             1: A point exactly at the center of a pixel will have its full
@@ -1198,7 +1198,7 @@ def v_pcf(
 
     """
 
-    if (xlim[0] > 0) or (ylim[0] > 0) or (xlim[1] < 0) or (ylim[1] < 0):
+    if ((xlim[0] > 0) or (ylim[0] > 0) or (xlim[1] < 0) or (ylim[1] < 0)):
         raise Exception(
             "x and y limits must include the origin, i.e. (0,0)"
         )
@@ -1245,7 +1245,7 @@ def v_pcf(
             bins=[yedges, xedges]
         )
 
-    elif method == 'weight':
+    elif method == 'weighted':
         xcents = xedges[:-1] + d/2
         ycents = yedges[:-1] + d/2
 
@@ -1289,7 +1289,7 @@ def v_pcf(
 
     else:
         raise Exception(
-            "'method' must be either 'bin' or 'weight'"
+            "'method' must be either 'bin' or 'weighted'"
         )
 
     # Flip so y axis is positive going up
@@ -1300,7 +1300,7 @@ def v_pcf(
         np.argwhere(np.isclose(xedges, -d/2)).item(),
         yedges.shape[0] - np.argwhere(np.isclose(yedges, -d/2)).item() - 2
     ])
-    
+
     H[origin[1], origin[0]] = 0
 
     v_pcf = H/(rho * d**2)  # Normalize vPCF by number density
@@ -1564,7 +1564,7 @@ def get_phase_from_com(
     com_xy : ndarray of shape (h,w,2)
         The center of mass shift component images as a stack.
 
-    theta : float or int
+    theta : scalar
         Rotation angle in degrees between real and reciprocal space.
 
     flip : bool
@@ -1658,7 +1658,7 @@ def fast_rotate_90deg(image, angle):
     image : ndarray of shape (h,w)
         The image.
 
-    angle : float or int
+    angle : scalar
         Rotation angle in degrees. Must be a multiple of 90.
 
     Returns
@@ -1887,19 +1887,20 @@ def binary_find_largest_rectangle(array):
     sl = np.s_[ylim[0]:ylim[1], xlim[0]:xlim[1]]
 
     return xlim, ylim, sl
-    
+
+
 def binary_find_smallest_rectangle(array):
     """
     Get the smallest rectangle (with horizontal and vertical sides) that 
     contains an entire ROI defined by a binary array. 
-    
+
     This is useful for cropping to the smallest area without losing any useful
     data. Unless the region is already a rectangle with horiaontal and vertical
     sides, there will be remaining areas that are not part of the ROI. If only
     ROI area is desired in the final rectangle, use
     "binary_find_largest_rectangle."
-    
-    
+
+
     Parameters
     ----------
     array : ndarray of shape (h,w)
@@ -1916,17 +1917,18 @@ def binary_find_smallest_rectangle(array):
     sl : numpy slice object
         The slice object which crops the image to the smallest rectangle.    
     """
-        
-    xinds = np.where(np.sum(array.astype(int), axis=1) >0, 1, 0
-                     ).reshape((-1,1))
-    yinds = np.where(np.sum(array.astype(int), axis=0) >0, 1, 0
-                     ).reshape((1,-1))
-    
+
+    xinds = np.where(np.sum(array.astype(int), axis=1) > 0, 1, 0
+                     ).reshape((-1, 1))
+    yinds = np.where(np.sum(array.astype(int), axis=0) > 0, 1, 0
+                     ).reshape((1, -1))
+
     newroi = (xinds @ yinds).astype(bool)
-    
+
     xlim, ylim, sl = binary_find_largest_rectangle(newroi)
-    
+
     return xlim, ylim, sl
+
 
 def fft_equxy(image,
               hanning_window=False

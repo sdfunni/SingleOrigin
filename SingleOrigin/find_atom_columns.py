@@ -32,14 +32,15 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import (
     Rectangle,
     Circle,
+    Ellipse,
     Polygon,
-    Wedge,
 )
 from matplotlib.legend_handler import HandlerPatch
 from matplotlib import colors as colors
 from matplotlib.colors import Normalize
-import matplotlib.patheffects as path_effects
 from matplotlib.backend_bases import MouseButton
+from matplotlib.cm import ScalarMappable
+
 
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
@@ -69,6 +70,7 @@ from SingleOrigin.utils import (
     watershed_segment,
     std_local,
     fft_equxy,
+    v_pcf,
 )
 
 # %%
@@ -206,6 +208,7 @@ class HRImage:
             unitcell,
             probe_fwhm,
             origin_atom_column=None,
+            pixel_size_cal=self.pixel_size_cal
         )
         self.latt_dict[name] = new_lattice
 
@@ -275,6 +278,8 @@ class HRImage:
             lattice_rot = lattice_dict[key]
 
             lattice_rot.image = rot_.image
+            lattice_rot.roi_mask = rotate(lattice_rot.roi_mask,
+                                          np.degrees(angle))
             lattice_rot.fit_masks = None
             lattice_rot.group_masks = None
             lattice_rot.at_cols_uncropped = None
@@ -392,7 +397,7 @@ class HRImage:
             Which poisitions to plot, the
             Default: 'fit'
 
-        outlier_disp_cutoff : None or float or int
+        outlier_disp_cutoff : None or scalar
             Criteria for removing outlier atomic column fits from the
             plot (in Angstroms). The maximum difference between the fitted
             position and the corresponding reference lattice point. All
@@ -638,7 +643,7 @@ class HRImage:
             to plot: ['Ba', 'Ti']
             Default 'all'
 
-        outlier_disp_cutoff : None or float or int
+        outlier_disp_cutoff : None or scalar
             Criteria for removing outlier atomic column fits from the
             plot (in Angstroms). The maximum difference between the fitted
             position and the corresponding reference lattice point. All
@@ -793,9 +798,9 @@ class HRImage:
 
         axs = []
         for ax, site in enumerate(sites_to_plot):
-            if ((label_dict is not None) &
-                    np.isin(site, list(label_dict.keys()))):
-                label = label_dict[site]
+            if label_dict is not None:
+                if np.isin(site, list(label_dict.keys())):
+                    label = label_dict[site]
             else:
                 label = site
 
@@ -1109,7 +1114,8 @@ class AtomicColumnLattice:
             image,
             unitcell,
             probe_fwhm=0.8,
-            origin_atom_column=None
+            origin_atom_column=None,
+            pixel_size_cal=None,
     ):
 
         self.image = image
@@ -1859,7 +1865,7 @@ class AtomicColumnLattice:
             If None, calculated by: pixel_size_est / probe_fwhm * 0.5.
             Default None.
 
-        zoom_factor : float or int
+        zoom_factor : scalar
             Factor used to determine the plotting window for graphical picking
             of the approximate position of the origin atom column. This is
             multiplied by the magnitude (in pixels) of the longer lattice
@@ -3063,7 +3069,7 @@ class AtomicColumnLattice:
             labels.
             Default 'all'.
 
-        outlier_disp_cutoff : None or float or int
+        outlier_disp_cutoff : None or scalar
             Criteria for removing outlier atomic column fits from the
             reference lattice refinement (in pm). The maximum difference
             between the fitted position and the corresponding reference
@@ -3316,3 +3322,525 @@ class AtomicColumnLattice:
         print(f'R-squared of all atom column fits: {R_sq :.{6}f} \n')
 
         return fig
+    
+    def get_vpcfs(
+            self,
+            xlim,
+            ylim,
+            d=0.05,
+            buffer=0.5,
+            area=None,
+            filter_by='elem',
+            sublattice_list=None,
+            get_only_partial_vpcfs=False,
+            affine_transform=False,
+        ):
+        """Calculates pair-pair vPCFs for all sublattices in the
+        AtomColumnLattice object.
+
+        The vPCFs are stored in the "vpcfs" dictionary within the 
+        AtomColumnLattice object. Peak shape measurement and plotting are
+        included as separate methods. Works best if a lattice vector is 
+        nearly parallel to the x-axis. For an image with the lattice rotated
+        relative to the image edges, use HRImage.rotate_image_and_data() 
+        following atom column fitting and prior to vPCF analysis.
+
+        Parameters
+        ----------
+        xlim, ylim : scalar array of shape (2,) 
+            The limits of the vPDF along each dimension in lattice basis vector 
+            multiples (self.a1 is assumed to be horizontal and and self.a2 
+            is assumed to be vertical). 
+            Must include 0 in both
+            x and y. The limits will determine the size of the vPCF array and 
+            the time required to calculate it.
+        d : scalar
+            The pixel size of the vPCF in units of Angstroms.
+            Default: 0.05
+        buffer : scalar
+            The edge region of the vPCFs that will be zeroed out after 
+            calculation. Removes peaks close to the edge of the vPCF so that an
+            erroenous shape is not determined for them, if shape measurement
+            is applied.
+            Default: 0.5
+        area : scalar
+            The area containing the data points. Used to calculate the density
+            for normalizing the vPCF values. If None, the area of the roi_mask
+            is used. If you did not explicitly define the roi_mask, it is the
+            image size minus any edge buffer applied.
+            Default: None
+        filter_by : str
+            The DataFrame column used to determine the sublattice. 
+            Default: 'elem'
+        sublattice_list : list of strings or None
+            List of sublattices for which to calculate vPCFs. If None,
+            find all pair-pair vPCFs.
+        get_only_partial_vpcfs : bool
+            Only get partial vPCFs if True. Otherwise get all unique 
+            combinations of partial and pair-pair vPCFs.
+            Default: False
+        affine_transform : bool
+            If True, applies an affine transformation to the data so that 
+            the basis vectors match the lattice parameters from the CIF file
+            used to generate the reference lattice. This is useful
+            
+        Returns
+        -------
+        None
+
+        """
+        
+        buffer = np.ceil(buffer/d).astype(int)
+        
+        if self.pixel_size_cal is not None:
+            pixel_size = self.pixel_size_cal
+        else: 
+            pixel_size = self.pixel_size_est
+            
+        self.vpcfs = {}
+        sites = [site for site in 
+                 pd.unique(self.at_cols.loc[:, filter_by])]
+        sites.sort()
+        if sublattice_list is not None:
+            sites = [site for site in sites 
+                     if np.isin(site, sublattice_list).item()]
+            
+        if get_only_partial_vpcfs:
+            pair_pairs = [[site1, site2]
+                          for count, site1 in enumerate(sites)
+                          for site2 in sites[count:] if site1==site2]
+        else:
+            pair_pairs = [[site1, site2]
+                          for count, site1 in enumerate(sites)
+                          for site2 in sites[count:]]
+
+        at_cols = self.at_cols.copy()
+        
+        # Get analized image area from the ROI mask (in A**2):
+        area = np.count_nonzero(self.roi_mask) * self.pixel_size_est**2
+
+        a1_mag = norm(self.a_2d[0, :])
+        a2_mag = norm(self.a_2d[1, :])
+
+        for pair in pair_pairs:
+            pair_pair_str = f'{pair[0]}-{pair[1]}'
+            print(f'Calculating {pair_pair_str} vPCF')
+            sub1 = at_cols[
+                (at_cols[filter_by] == pair[0])
+            ].loc[:, 'x_fit': 'y_fit'].to_numpy()
+
+            sub2 = at_cols[
+                (at_cols[filter_by] == pair[1])
+            ].loc[:, 'x_fit': 'y_fit'].to_numpy()
+            
+            if affine_transform:
+                print('affine transforming...')
+                sub1 = (sub1 @ self.dir_struct_matrix
+                        / norm(self.dir_struct_matrix, axis=1)**2
+                        ) @ self.a_2d
+                sub2 = (sub2 @ self.dir_struct_matrix
+                        / norm(self.dir_struct_matrix, axis=1)**2
+                        ) @ self.a_2d
+            elif not affine_transform:
+                sub1 *= pixel_size
+                sub2 *= pixel_size
+
+            self.vpcfs[pair_pair_str], origin = v_pcf(
+                xlim=np.array(xlim)*a1_mag,
+                ylim=np.array(ylim)*a2_mag,
+                coords1=sub1,
+                coords2=sub2,
+                d=d,
+                area=area,
+                method='weighted',
+            )
+            
+            # Apply edge buffer
+            h, w = self.vpcfs[pair_pair_str].shape
+            buffer_mask = np.zeros((h, w))
+            buffer_mask[buffer:-buffer, buffer:-buffer] = 1
+
+            self.vpcfs[pair_pair_str] *= buffer_mask
+        
+        self.vpcfs['metadata'] = {'origin': origin,
+                                  'pixel_size': d,
+                                  'filter_by': filter_by,
+                                  'pair_pair': not(get_only_partial_vpcfs),
+                                  'affine_transform': affine_transform,
+                                  }
+        
+        
+    def get_vpcf_peak_params(
+            self,
+            sigma=10,
+            method='moments',
+            min_dist=None,
+        ):
+        """Calculates shape of peaks in each pair-pair vPCF.
+
+        Calculates peak equivalent ellipse shapes and locations for all vPCFs
+        stored in the "vpcfs" dictionary within the AtomColumnLattice object.
+        Results are saved in the "vpcf_peaks" dictionary and can be plotted
+        with the "plot_vpcfs" method.
+
+        Parameters
+        ----------
+        sigma : scalar
+            The Gaussian sigma for bluring peaks prior to identifying 
+            mask areas for each peak by he watershed algorithm. 
+        method : 'momenets' or 'gaussian'
+            Method to calculate shape and location of peaks. 'moments' uses
+            image moments calculations to measure the peaks while 'gaussian'
+            fits with a 2D Gaussian. Methods are roughly equivalent and give
+            the parameters of the ellipse that best describes the peak shape.
+            Gaussian fitting, however, is more unstable and slightly slower.
+            The primary reason to use 2D Gaussians is in the case of peaks
+            with overalapping tails when simultaneous fitting is needed for 
+            accurate measurements.
+            In future the moments method will return higher order moments along
+            the major and minor axes to measure additional statistical
+            parameters of the distributions.
+            Default: 'moments'
+        min_dist : scalar or None
+            The maximum separation distance used for grouping close peaks for
+            simultaneous fitting. This is necessary if peaks are close enough
+            to have overlapping tails. Must use Gaussian fitting to account for
+            overlap when determining peak shapes. If None, not used. 
+            Default: None.
+            
+        Returns
+        -------
+        None
+
+        """
+        
+        xy_bnd = 10    # Position bound limit for gaussian fitting
+        
+        self.vpcf_peaks = {}
+        for key, vpcf in self.vpcfs.items():
+            if key=='metadata': 
+                continue
+        
+            print(f'Calculating peaks for {key} vPCF')
+            self.vpcf_peaks[key] = pd.DataFrame(columns=['x_fit', 'y_fit',
+                                                   'sig_maj', 'sig_min',
+                                                   'theta', 'ecc'])
+            print(key)
+            pcf_sm = gaussian_filter(
+                vpcf,
+                sigma=sigma,
+                truncate=3
+            )
+
+            masks_indiv, n_peaks, _, peaks = watershed_segment(
+                pcf_sm,
+                min_dist=sigma,
+                local_thresh_factor=0,
+                sigma=None,
+                buffer=0,
+                watershed_line=False,
+            )
+            
+            if min_dist is not None:
+                if method != 'gaussian':
+                    print('Using Gaussian method to account for peak overlap.')
+                    method = 'gaussian'
+                
+    
+                masks_group, n_peaks, _, _ = watershed_segment(
+                    pcf_sm,
+                    min_dist=min_dist,
+                    local_thresh_factor=0,
+                    sigma=None,
+                    buffer=0,
+                    watershed_line=False
+                )
+            
+            if method == 'moments':                
+                for i in tqdm(range(n_peaks)):
+                    pcf_masked = np.where(masks_indiv == i+1, 1, 0
+                                          )*self.vpcfs[key]
+                    x_fit, y_fit, ecc, theta, sig_maj, sig_min = \
+                        img_ellip_param(
+                        pcf_masked
+                    )
+    
+                    self.vpcf_peaks[key].loc[i, 'x_fit':] = [
+                        x_fit,
+                        y_fit,
+                        sig_maj,
+                        sig_min,
+                        theta,
+                        ecc,
+                    ]
+                    
+            elif method == 'gaussian':
+                for i in tqdm(range(n_peaks)):
+                    if min_dist is None:
+                        mask = np.where(masks_indiv == i+1, 1, 0)
+                    else:
+                        mask = np.where(masks_group == i+1, 1, 0)
+                        
+                    pcf_masked = mask * self.vpcfs[key]
+                    match = np.argwhere(
+                        [mask[y, x] for x, y in 
+                         peaks.loc[:, 'x':'y'].to_numpy()]
+                    )
+                    
+                    mask_peaks = peaks.loc[match.flatten(), :]
+                    num_peaks = mask_peaks.shape[0]
+            
+                    for i, (ind, row) in enumerate(mask_peaks.iterrows()):
+                        if num_peaks > 1:
+                            mask_num = masks_indiv[int(row.y), int(row.x)]
+                            mask = np.where(masks_indiv == mask_num, 1, 0)
+                            peak_masked = mask * self.vpcfs[key]
+                        else: peak_masked = pcf_masked
+                             
+                        x0, y0, ecc, theta, sig_maj, sig_min = \
+                            img_ellip_param(
+                            peak_masked
+                        )
+                        if i == 0:
+                            p0 = np.array([
+                                x0,
+                                y0,
+                                sig_maj,
+                                sig_maj/sig_min,
+                                np.max(pcf_masked),
+                                0])
+            
+                            bounds = [(row.x-xy_bnd, row.x+xy_bnd),
+                                      (row.y-xy_bnd, row.y+xy_bnd),
+                                      (1, None),
+                                      (1, None),
+                                      (None, None),
+                                      (0, None),
+                                      ]
+            
+                        else:    # Simultaneous fitting for the close peaks
+                        
+                            p0 = np.concatenate((
+                                p0, np.array([x_fit, y_fit, 5, 5, 0, 0])))
+            
+                            bounds += [(row.x-xy_bnd, row.x+xy_bnd),
+                                       (row.y-xy_bnd, row.y+xy_bnd),
+                                       (1, None),
+                                       (1, None),
+                                       (None, None),
+                                       (0, None),
+                                       ]
+            
+                    p0 = np.concatenate((p0, [0]))
+                    bounds += [(0, 0)]
+            
+                    params = fit_gaussian_ellip(
+                        pcf_masked,
+                        p0,
+                        masks=None,
+                        method='L-BFGS-B',
+                        bounds=bounds
+                    )
+            
+                    params = params[:, :-1]
+                    params[:, 3] = params[:, 2] / params[:, 3]
+                    params[:, 4] = np.degrees(params[:, 4])
+                    params[:, -1] = np.sqrt(1 - params[:, 3]**2 
+                                            / params[:, 2]**2)
+            
+                    next_ind = self.vpcf_peaks[key].shape[0]
+                    for k, p in enumerate(params):
+                        self.vpcf_peaks[key].loc[next_ind + k, :] = p
+            
+        
+    def plot_vpcfs(
+            self,
+            buffer=20,
+            vpcfs_to_plot='all',
+            # plot_only_partial_vpcfs=False,
+            plot_equ_ellip=True, 
+            vpcf_cmap='Greys',
+            ellip_color_scale_param='sig_maj',
+            ellip_scale_factor=20,
+            unint_cell_box=True,
+            unint_cell_box_color='black'
+        ):
+        """
+        Plot vPCFs.
+        
+        Parameters
+        ----------
+           
+        Returns
+        -------
+        fig : the matplotlib figure object.
+        axs : the list of matplotlib axes objects: each vpcf plot and
+            the scalebar.
+
+        """
+        
+        prop = ellip_color_scale_param
+        cmap = plt.cm.plasma
+        origin = self.vpcfs['metadata']['origin']
+        d = self.vpcfs['metadata']['pixel_size']
+        filter_by = self.vpcfs['metadata']['filter_by']
+
+        shape_params_all = np.concatenate(
+            [self.vpcf_peaks[key].loc[:, prop].to_numpy()
+             for key in self.vpcf_peaks.keys()]
+            )
+        if prop == 'sig_maj':
+            unit_conv = 100 * d
+        elif prop == 'ecc': 
+            unit_conv=1
+        else:
+            raise Exception('argument "ellip_color_scale_param" must be ' \
+                            +'either "sig_maj" or "ecc".')
+        
+        [max_, min_] = np.array([
+            np.ceil(np.max(shape_params_all) * unit_conv),
+            np.floor(np.min(shape_params_all) * unit_conv)
+        ])
+        
+        corners = np.array([[0, 0], [1, 0], [1, -1], [0, -1]])
+        
+        # Set up Figure and gridspec
+        if vpcfs_to_plot == 'all':
+            vpcfs_to_plot = list(self.vpcfs.keys())
+            vpcfs_to_plot.remove('metadata')
+            sites = [site for site in 
+                     pd.unique(self.at_cols.loc[:, filter_by])]
+            sites.sort()
+
+            if self.vpcfs['metadata']['pair_pair']:
+                nrows = ncols = len(sites)
+                gs_inds = [[row, col]
+                           for row in range(nrows)
+                           for col in range(row, nrows)]
+            else:
+                nplots = len(vpcfs_to_plot)
+                ncols = np.ceil(nplots**0.5).astype(int)
+                nrows = (nplots // ncols + np.ceil(nplots % ncols)).astype(int)
+                gs_inds = [[row, col]
+                           for row in range(nrows)
+                           for col in range(ncols)]
+                print(nrows, ncols)
+            
+        else:
+            vpcfs_found = np.isin(vpcfs_to_plot, list(self.vpcfs.keys()))
+            vpcfs_not_found = np.array(vpcfs_to_plot)[~vpcfs_found]
+            vpcfs_to_plot = np.array(vpcfs_to_plot)[vpcfs_found]
+            if len(vpcfs_not_found) > 0:
+                print('!!! Note: Specified vPCFs not found for plotting: \n',
+                      f'{vpcfs_not_found} \n')
+            nplots = len(vpcfs_to_plot)
+            ncols = np.ceil(nplots**0.5).astype(int)
+            nrows = (nplots // ncols + np.ceil(nplots % ncols)).astype(int)
+            gs_inds = [[row, col]
+                       for row in range(nrows)
+                       for col in range(ncols)]
+
+        h, w = self.vpcfs[list(self.vpcfs.keys())[0]].shape
+        width_ratio = (w * ncols) / (h * nrows)
+        fig = plt.figure(figsize=(10 * width_ratio + 0.5, 10))
+        gs = fig.add_gridspec(
+            nrows=nrows,
+            ncols=ncols + 1,
+            width_ratios=[width_ratio] * ncols + [0.05],
+            wspace=0.05
+        )
+
+        axs = [fig.add_subplot(gs[row, col]) for [row, col] in gs_inds]
+        
+        axs_cbar = fig.add_subplot(gs[nrows-1, ncols])
+
+        font = 14
+        
+        for i, key in enumerate(vpcfs_to_plot):
+            row, col = gs_inds[i]
+            axs[i].imshow(self.vpcfs[key], cmap=vpcf_cmap, zorder=0)
+            
+            if plot_equ_ellip:
+                peaks = self.vpcf_peaks[key]
+                '''Ellipse Plotting'''
+                elips = [Ellipse(
+                    xy=[peak.x_fit, peak.y_fit],
+                    width=peak.sig_maj * ellip_scale_factor,
+                    height=peak.sig_min * ellip_scale_factor,
+                    angle=-peak.theta,
+                    facecolor=cmap((peak[prop] * unit_conv - min_) /
+                                   (max_ - min_)),
+                    lw=2,
+                    zorder=2,
+                    alpha=0.85)
+                    for i, peak in peaks.iterrows()
+                ]
+    
+                for elip in elips:
+                    axs[i].add_artist(elip)
+
+            axs[i].set_xticks([])
+            axs[i].set_yticks([])
+
+            axs[i].scatter(
+                origin[0],
+                origin[1],
+                c='red',
+                marker='+')
+
+            cell_box = np.array(
+                [origin + corner @ self.a_2d / d
+                 for corner in corners]
+            )
+
+            label=key
+            axs[i].text(
+                0.05, 1.02,
+                label, color='black', size=font,
+                ha='left',
+                va='bottom',
+                weight='bold',
+                transform=axs[i].transAxes
+            )
+            if unint_cell_box:
+                rectangle = Polygon(
+                    cell_box,
+                    fill=False,
+                    ec=unint_cell_box_color, 
+                    zorder=1,
+                    lw=0.25)
+                
+                axs[i].add_artist(rectangle)
+
+            if (row == 0 and col == 0):
+                scalebar = ScaleBar(
+                    d/10,
+                    'nm',
+                    font_properties={'size': 12},
+                    pad=0.3,
+                    border_pad=0.6,
+                    box_color='dimgrey',
+                    height_fraction=0.02,
+                    color='white',
+                    location='lower right',
+                    fixed_value=1,
+                )
+
+                axs[i].add_artist(scalebar)
+
+            for axis in ['top', 'bottom', 'left', 'right']:
+                axs[i].spines[axis].set_linewidth(1.5)
+
+        cbar_ell = fig.colorbar(
+            ScalarMappable(norm=Normalize(vmin=min_, vmax=max_), cmap=cmap),
+            cax=axs_cbar,
+            orientation='vertical',
+            # location='left',
+            shrink=0.6,
+            # fraction=0.25,
+            aspect=12,
+        )
+
+        cbar_ell.set_label(label='Major axis length (pm)', fontsize=10)
+        
+        
