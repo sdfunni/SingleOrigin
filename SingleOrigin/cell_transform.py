@@ -147,7 +147,7 @@ class UnitCell():
 
         if coord_max_precision < 2:
             coord_max_precision = 2
-        
+
         # Make array of uvw coordinates and shift into the 0-1 unit cell
         xyz = np.array(
             [[i.split('(', 1)[0] for i in Crystal['_atom_site_fract_x'][0]],
@@ -164,13 +164,13 @@ class UnitCell():
         ).T
 
         if '_atom_site_occupancy' in Crystal:
-            
+
             site_frac = np.array(
                 Crystal['_atom_site_occupancy'][0],
                 ndmin=2,
                 dtype=str
             ).T
-            
+
         else:
             site_frac = np.ones((xyz.shape[0], 1))
 
@@ -254,9 +254,9 @@ class UnitCell():
                                       ).drop_duplicates().index
         atoms = atoms.loc[indices_to_keep, :]
         atoms.reset_index(drop=True, inplace=True)
-        
+
         # Apply origin shift
-        atoms.loc[:,'u':'w'] = (atoms.loc[:,'u':'w'] - origin_shift) % 1
+        atoms.loc[:, 'u':'w'] = (atoms.loc[:, 'u':'w'] - origin_shift) % 1
         atoms = atoms.sort_values(['u', 'v', 'w'])
         atoms.reset_index(inplace=True, drop=True)
 
@@ -654,7 +654,8 @@ class UnitCell():
             color_dict=None,
             label_dict=None,
             scatter_kwargs_dict={},
-            return_fig=False
+            return_fig=False,
+            plot_positions_on_both_edges=True,
     ):
         """Plots the projected unit cell for verification.
 
@@ -680,7 +681,11 @@ class UnitCell():
                 s=25, edgecolor='black', linewidths=0.5. These or other
             pyplot.scattter parameters can be modified through this dictionary.
             Default: {}
-
+        plot_positions_on_both_edges : bool
+            If True, plot positions with a fractional coordinate of 0 on the
+            unit cell boundary corresponding to a fractional coordinate of 1.
+            Makes the unit cell look complete, though strictly it is not the 
+            true unit cell.
         return_fig : bool
             Whether to return the figure object to allow manipulation within
             a script. If True and result is not passed to a variable, plot
@@ -701,11 +706,10 @@ class UnitCell():
 
         scatter_kwargs_default.update(scatter_kwargs_dict)
 
-        col_type_list = self.at_cols.loc[:, label_by].unique()
         num_colors = self.at_cols.loc[:, label_by].unique().shape[0]
         cmap = plt.cm.RdYlGn
 
-        if color_dict is None and col_type_list.shape[0] > 1:
+        if color_dict is None:
             cmap = plt.cm.RdYlGn
             color_dict = {
                 k: cmap(v/(num_colors-1))
@@ -714,16 +718,13 @@ class UnitCell():
                 )
             }
 
-        else:
-            color_dict = {col_type_list[0]: cmap(0)}
-
         x_rng = np.max(self.a_2d[0, :]) - np.min(self.a_2d[0, :])
         y_rng = np.max(self.a_2d[1, :]) - np.min(self.a_2d[1, :])
         xy_ratio = np.array([x_rng, y_rng])
 
-        figsize = tuple(xy_ratio/np.max(xy_ratio) * 8)
+        figsize = tuple(xy_ratio/np.max(xy_ratio) * [8, 8])
 
-        fig, axs = plt.subplots(ncols=1, figsize=figsize)
+        fig, axs = plt.subplots(ncols=1, figsize=figsize, tight_layout=True)
         axs.set_aspect(1)
         p = patches.Polygon(
             np.array(
@@ -741,35 +742,92 @@ class UnitCell():
         axs.set_facecolor('grey')
 
         for site in color_dict:
-            sublattice = self.at_cols[self.at_cols[label_by] == site].copy()
+            sublattice = self.at_cols[self.at_cols[label_by] == site
+                                      ].copy()
+
+            if plot_positions_on_both_edges:  # Placeholder for flag
+                for ind, row in sublattice.iterrows():
+                    if (row.u == 0):
+                        new_row = row.copy()
+                        new_row.u = 1
+                        new_row.loc['x':'y'] = (
+                            new_row.loc['u':'v'] @ self.a_2d)
+                        sublattice = pd.concat(
+                            [sublattice, new_row.to_frame().T], axis=0
+                        )
+                    if (row.v == 0):
+                        new_row = row.copy()
+                        new_row.v = 1
+                        new_row.loc['x':'y'] = (
+                            new_row.loc['u':'v'] @ self.a_2d)
+                        sublattice = pd.concat(
+                            [sublattice, new_row.to_frame().T], axis=0
+                        )
+                    if ((row.u == 0) & (row.v == 0)):
+                        new_row = row.copy()
+                        new_row.u = 1
+                        new_row.v = 1
+                        new_row.loc['x':'y'] = (
+                            new_row.loc['u':'v'] @ self.a_2d)
+                        sublattice = pd.concat(
+                            [sublattice, new_row.to_frame().T], axis=0
+                        )
+            sublattice.reset_index(drop=True, inplace=True)
 
             axs.scatter(
                 sublattice.loc[:, 'x'],
                 sublattice.loc[:, 'y'],
                 color=color_dict[site],
+                label=label_dict[site],
                 **scatter_kwargs_default
             )
 
-        if label_dict:
-            for ind, row in self.at_cols.iterrows():
-                label = label_dict[row[label_by]]
+            if label_dict:
+                # print(sublattice.loc[0, 'x'])
+                label = label_dict[site]
                 axs.annotate(
                     label,
-                    (row['x'] + 1/8, row['y'] + 1/8),
+                    (sublattice.loc[0, 'x'] + 1/8,
+                     sublattice.loc[0, 'y'] + 1/8),
                     fontsize=20
                 )
 
-        else:
-            for ind, row in self.at_cols.iterrows():
-                label = rf'${ row[label_by] }$'
+            else:
+                label = rf'${site}$'
                 axs.annotate(
                     label,
-                    (row['x'] + 1/8, row['y'] + 1/8),
+                    (sublattice.loc[0, 'x'] + 1/8,
+                     sublattice.loc[0, 'y'] + 1/8),
                     fontsize=20
                 )
+
+        # if label_dict:
+        #     for ind, row in self.at_cols.iterrows():
+        #         label = label_dict[row[label_by]]
+        #         axs.annotate(
+        #             label,
+        #             (row['x'] + 1/8, row['y'] + 1/8),
+        #             fontsize=20
+        #         )
+
+        # else:
+        #     for ind, row in self.at_cols.iterrows():
+        #         label = rf'${ row[label_by] }$'
+        #         axs.annotate(
+        #             label,
+        #             (row['x'] + 1/8, row['y'] + 1/8),
+        #             fontsize=20
+        #         )
 
         axs.set_xticks([])
         axs.set_yticks([])
+        axs.legend(
+            loc='lower left',
+            bbox_to_anchor=[1.02, 0],
+            facecolor='grey',
+            fontsize=16,
+            markerscale=1,
+        )
 
         axs.set_title(
             'Projected Unit Cell',

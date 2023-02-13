@@ -76,11 +76,9 @@ no_mask_error = (
     + "be detected, splitting an atom column. Too large a value for either "
     + "filter may cause low intensity peaks to be ignored by the watershed "
     + "algorithm. Masks may  be checked with the 'show_masks()' method. \n"
-    + "3) For very large images, rough registration of the reference lattice "
-    + "may be slightly off near the edges of the image as a result of "
-    + "choosing a poorly defined atom column during the registeration. "
-    + "This misregistration can be prevented by selecting a well resolved "
-    + "atom column and carefully clicking near its peak."
+    + "3) Reference lattice may extend to regions of the image without "
+    + "detectable atom columns. Use or alter an roi_mask to restrict the "
+    + "reference lattice to avoid these parts of the image."
 )
 # %%
 """General Crystallographic computations"""
@@ -381,7 +379,8 @@ def load_image(
         display_image=True,
         images_from_stack=None,
         emd_velox=True,
-        return_path=False
+        return_path=False,
+        norm_image=True,
 ):
     """Select image from 'Open File' dialog box, import and (optionally) plot
 
@@ -480,11 +479,13 @@ def load_image(
 
     if len(image.shape) == 2:
         image = image[:int((h//2)*2), :int((w//2)*2)]
-        image = image_norm(image)
+        if norm_image:
+            image = image_norm(image)
         image_ = image
     if len(image.shape) == 3:
         image = image[:, :int((h//2)*2), :int((w//2)*2)]
-        image = np.array([image_norm(im) for im in image])
+        if norm_image:
+            image = np.array([image_norm(im) for im in image])
         image_ = image[0, :, :]
     if display_image is True:
         fig, axs = plt.subplots()
@@ -574,7 +575,8 @@ def img_equ_ellip(image):
     -------
     eigvals : squared magnitudes of the major and minor semi-axes, in that
         order
-    eigvects : unit vectors of the major and minor semi-axes, in that order
+    eigvects : matrix containing the unit vectors of the major and minor 
+    semi-axes (in that order) as row vectors
     x0, y0 : coordinates of the ellipse center
 
     """
@@ -620,11 +622,13 @@ def img_equ_ellip(image):
         0
     ))
 
-    eigvects = np.take_along_axis(
-        eigvects,
-        np.array([ind_sort, ind_sort]).T,
-        0
-    )
+    # eigvects = np.take_along_axis(
+    #     eigvects,
+    #     np.array([ind_sort, ind_sort]).T,
+    #     0
+    # )
+
+    eigvects = np.array([eigvects[:, ind] for ind in ind_sort])
 
     return eigvals, eigvects, x0, y0
 
@@ -660,9 +664,9 @@ def img_ellip_param(image):
     sig_1 = np.sqrt(eigvals[major])
     sig_2 = np.sqrt(eigvals[minor])
     eccen = np.sqrt(1-eigvals[minor]/eigvals[major])
-    theta = np.degrees(-np.arcsin(
+    theta = np.degrees(np.arcsin(
         np.cross(np.array([1, 0]),
-                 eigvects[:, major])
+                 eigvects[major]).item()
     ))
 
     return x0, y0, eccen, theta, sig_1, sig_2
@@ -1604,7 +1608,7 @@ def get_phase_from_com(
         fft_pixelSize = 1 / (np.array(com_xy.shape[1:])
                              * filter_params['pixel_size'])  # nm^-1
 
-        apeture_cutoff = 2*np.sin(2 * filter_params['conv_semi_angle']  # nm^-1
+        apeture_cutoff = 2*np.sin(2 * filter_params['conv_semi_angle']/1000
                                   )/lambda_
         low_pass = (filter_params['low_pass']*apeture_cutoff
                     / fft_pixelSize[min_dim])
@@ -1646,7 +1650,7 @@ def get_phase_from_com(
 
     phase = (np.real(complex_image)**2 + np.imag(complex_image)**2)**0.5
 
-    return phase
+    return phase, mask
 
 
 def fast_rotate_90deg(image, angle):
