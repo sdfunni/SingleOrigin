@@ -3539,8 +3539,6 @@ class AtomicColumnLattice:
                 masks_indiv,
                 index=peaks.loc[:, 'label']
             )
-            print(np.max(peaks.loc[:, 'stdev']),
-                  np.min(peaks.loc[:, 'stdev']))
 
             thresh = 0.01 * thresh_factor
 

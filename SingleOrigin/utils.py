@@ -622,12 +622,6 @@ def img_equ_ellip(image):
         0
     ))
 
-    # eigvects = np.take_along_axis(
-    #     eigvects,
-    #     np.array([ind_sort, ind_sort]).T,
-    #     0
-    # )
-
     eigvects = np.array([eigvects[:, ind] for ind in ind_sort])
 
     return eigvals, eigvects, x0, y0
@@ -1060,11 +1054,12 @@ def fit_gaussian_circ(
 
     p0_ = np.append(p0_.flatten(), I0)
 
-    # with warnings.catch_warnings():
-    #     warnings.filterwarnings('ignore', category=UserWarning,
-    #                             lineno=182)
-    #     warnings.filterwarnings('ignore', category=RuntimeWarning,
-    #                             lineno=579)
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', category=UserWarning,
+                                lineno=182)
+        warnings.filterwarnings('ignore', category=RuntimeWarning,
+                                lineno=579)
+        
     params = minimize(
         gaussian_circ_ss,
         p0_,
@@ -1227,8 +1222,8 @@ def v_pcf(
     x_ = vects[:, :, 0].flatten()
     y_ = vects[:, :, 1].flatten()
 
-    n = coords1.shape[0]
-    rho = n/area
+    n_sq = coords1.shape[0] * coords2.shape[0]
+    denominator = n_sq / area
 
     # Get bin spacing
     xedges = np.arange(xlim[0], xlim[1], d)
@@ -1307,7 +1302,7 @@ def v_pcf(
 
     H[origin[1], origin[0]] = 0
 
-    v_pcf = H/(rho * d**2)  # Normalize vPCF by number density
+    v_pcf = H/(denominator * d**2)  # Normalize vPCF by number density
 
     return v_pcf, origin
 
