@@ -207,7 +207,7 @@ class HRImage:
             self.image,
             unitcell,
             probe_fwhm,
-            origin_atom_column=None,
+            origin_atom_column=origin_atom_column,
             pixel_size_cal=self.pixel_size_cal
         )
         self.latt_dict[name] = new_lattice
@@ -1438,6 +1438,28 @@ class AtomicColumnLattice:
             for i, label in enumerate(inds):
                 plt.annotate(label, (xy[i, 0], xy[i, 1]))
 
+    def specify_basis_vect(self, a1, a2):
+        """Specify basis vectors manually. Useful for simulated images that are
+        too small for basis vector estimation from the FFT.
+
+        Parameters
+        ----------
+        a1, a2 : array-like of shape (2,)
+            The basis vectors, [x,y] in pixels. Follows the matpoltlib
+            convention of positive x and y being in the 'right' and 'down'
+            directions, respectively.
+
+        Returns
+        -------
+        None.
+
+        """
+        self.dir_struct_matrix = np.array([a1, a2])
+        self.a1 = np.array(a1)
+        self.a2 = np.array(a2)
+        self.basis_offset_pix = self.basis_offset_frac @ self.dir_struct_matrix
+        self.pixel_size_est = self.get_est_pixel_size()
+    
     def get_roi_mask_std(
             self,
             r=4,
@@ -1941,8 +1963,8 @@ class AtomicColumnLattice:
 
         a1 = self.a1
         a2 = self.a2
-        x0 = self.x0
-        y0 = self.y0
+        # x0 = self.x0
+        # y0 = self.y0
         h = self.h
         w = self.w
 
@@ -1952,13 +1974,17 @@ class AtomicColumnLattice:
             theta = np.arccos(a @ b.T/(norm(a) * norm(b)))
             return theta
 
+        # Vectors from origin to image corners
         d = [
             np.array([-x0, -y0]),
             np.array([-x0, h - y0]),
             np.array([w - x0, h - y0]),
             np.array([w - x0, -y0])
         ]
-
+        
+        # Find  +/- basis vectors that are closest angularly to each
+        # origin-to-image-corner vector.
+        
         a1p = np.argmin([(vect_angle(a1, d[i])) for i, _ in enumerate(d)])
         a1n = np.argmin([(vect_angle(-a1, d[i])) for i, _ in enumerate(d)])
         a2p = np.argmin([(vect_angle(a2, d[i])) for i, _ in enumerate(d)])
@@ -1968,6 +1994,7 @@ class AtomicColumnLattice:
         a1_stop = int(norm(d[a1p])**2 / (a1 @ d[a1p].T)) + 2
         a2_start = int(norm(d[a2n])**2 / (a2 @ d[a2n].T)) - 1
         a2_stop = int(norm(d[a2p])**2 / (a2 @ d[a2p].T)) + 2
+        
 
         latt_cells = np.array([
             [i, j]

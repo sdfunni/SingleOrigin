@@ -708,15 +708,17 @@ class UnitCell():
 
         num_colors = self.at_cols.loc[:, label_by].unique().shape[0]
         cmap = plt.cm.RdYlGn
+        
+        sites = np.sort(self.at_cols.loc[:, label_by].unique())
 
         if color_dict is None:
             cmap = plt.cm.RdYlGn
             color_dict = {
-                k: cmap(v/(num_colors-1))
-                for v, k in enumerate(
-                    np.sort(self.at_cols.loc[:, label_by].unique())
-                )
+                k: cmap(v/(num_colors-1)) for v, k in enumerate(sites)
             }
+        
+        if label_dict is None:
+            label_dict = {k: k for k in sites}
 
         x_rng = np.max(self.a_2d[0, :]) - np.min(self.a_2d[0, :])
         y_rng = np.max(self.a_2d[1, :]) - np.min(self.a_2d[1, :])
