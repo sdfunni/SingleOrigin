@@ -1438,9 +1438,13 @@ class AtomicColumnLattice:
             for i, label in enumerate(inds):
                 plt.annotate(label, (xy[i, 0], xy[i, 1]))
 
-    def specify_basis_vect(self, a1, a2):
-        """Specify basis vectors manually. Useful for simulated images that are
-        too small for basis vector estimation from the FFT.
+    def specify_basis_vectors(self, a1, a2):
+        """Specify basis vectors manually. 
+        
+        Useful for images that are too small for basis vector estimation from
+        the FFT (such as small simulated images) or if the basis vectors are
+        known. Input basis vectors do not need to be exact. They will be
+        refined during the subsequent fitting processes.
 
         Parameters
         ----------
