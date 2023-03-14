@@ -1,6 +1,6 @@
 """SingleOrigin is a module for atomic column position finding intended for
     high resolution scanning transmission electron microscope images.
-    Copyright (C) 2022  Stephen D. Funni
+    Copyright (C) 2023  Stephen D. Funni
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -1312,7 +1312,8 @@ def detect_peaks(
         min_dist=4,
         thresh=0
 ):
-    """Segment an image using the Watershed algorithm.
+    """Detect peaks in an image using a maximum filter with a minimum
+    separation distance and threshold.
 
     Parameters
     ----------
@@ -1350,6 +1351,86 @@ def detect_peaks(
              ) * (image > thresh)
 
     return peaks.astype(int)
+
+
+def disp_vect_sum_squares(p0, xy, M):
+    """Objective function for 'fit_lattice()'.
+
+    Parameters
+    ----------
+    p0 : list-like of shape (6,)
+        The current basis guess of the form: [a1x, a1y, a2x, a2y, x0, y0].
+        Where [a1x, a1y] is the first basis vector, [a2x, a2y] is the second
+        basis vector and [x0, y0] is the origin.
+    xy : array-like of shape (n, 2)
+        The array of measured [x, y] lattice coordinates. 
+    M : array-like of shape (n, 2)
+        The array of fractional coorinates or reciprocal lattice indices  
+        corresponding to the xy coordinates. Rows correspond to [u, v] or 
+        [h, k] coordinates depending on whether the data is in real or
+        reciproal space.
+
+    Returns
+    -------
+    sum_sq : scalar
+        The sum of squared errors given p0.
+
+    """
+
+    dir_struct_matrix = p0[:4].reshape((2, 2))
+    origin = p0[4:]
+
+    err_xy = xy - M @ dir_struct_matrix - origin
+    sum_sq = np.sum(err_xy**2)
+    
+    return sum_sq
+
+
+def fit_lattice(p0, xy, M, fix_origin=False):
+    """Find the best fit of a rigid lattice to a set of points.
+
+    Parameters
+    ----------
+    p0 : list-like of shape (6,)
+        The initial basis guess of the form: [a1x, a1y, a2x, a2y, x0, y0].
+        Where [a1x, a1y] is the first basis vector, [a2x, a2y] is the second
+        basis vector and [x0, y0] is the origin.
+    xy : array-like of shape (n, 2)
+        The array of measured [x, y] lattice coordinates. 
+    M : array-like of shape (n, 2)
+        The array of fractional coorinates or reciprocal lattice indices  
+        corresponding to the xy coordinates. Rows correspond to [u, v] or 
+        [h, k] coordinates depending on whether the data is in real or
+        reciproal space.
+    fix_origin : bool
+        Whether to fix the origin (if True) or allow it to be refined 
+        (if False). Generally, should be false unless data is from an FFT,
+        then the origin is known and should be fixed. 
+
+    Returns
+    -------
+    params : list-like of shape (6,)
+        The refined basis, using the same form as p0.
+
+    """
+    
+    p0 = np.array(p0)
+    x0, y0 = p0[4:]
+    
+    if fix_origin is True:
+        bounds = [(None, None)] * 4 + [(x0, x0), (y0, y0)]
+    else:
+        bounds = [(None, None)] * 6
+    
+    params = minimize(
+        disp_vect_sum_squares,
+        p0,
+        bounds=bounds,
+        args=(xy, M),
+        method='L-BFGS-B',
+    ).x
+    
+    return params
 
 
 def watershed_segment(
@@ -1929,7 +2010,7 @@ def binary_find_smallest_rectangle(array):
     return xlim, ylim, sl
 
 
-def fft_equxy(image,
+def fft_square(image,
               hanning_window=False
               ):
     """Gets FFT with equal x & y pixel sizes
@@ -1953,8 +2034,8 @@ def fft_equxy(image,
     h, w = image.shape
     m = (min(h, w) // 2) * 2
     U = int(m/2)
-    image_square = image[int(h/2)-U: int(h/2)+U,
-                         int(w/2)-U: int(w/2)+U]
+    image_square = copy.deepcopy(image[int(h/2)-U: int(h/2)+U,
+                                       int(w/2)-U: int(w/2)+U])
     if hanning_window:
         hann = np.outer(np.hanning(m), np.hanning(m))
         image_square *= hann
@@ -1962,3 +2043,29 @@ def fft_equxy(image,
     fft = image_norm(np.abs(np.fft.fftshift(np.fft.fft2(image_square))))
 
     return fft
+
+
+def get_fft_pixel_size(image, pixel_size):
+    """Gets FFT pixel size for a real-space image.
+
+    Parameters
+    ----------
+    image : 2D array
+        The image. If not square, the smaller dimension will be used.
+
+    pixel_size : scalar
+        The pixel size of the real space image.
+
+    Returns
+    -------
+    reciprocal_pixel_size : scalar
+        Size of a pixel in an FFT of the image (assuming the image is first
+        cropped to the largest square).
+
+    """
+    h, w = image.shape
+    m = (min(h, w) // 2) * 2
+
+    reciprocal_pixel_size = (pixel_size * m) ** -1
+    
+    return reciprocal_pixel_size

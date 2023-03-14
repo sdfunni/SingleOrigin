@@ -1,6 +1,6 @@
 """SingleOrigin is a module for atomic column position finding intended for
     high probe_fwhm scanning transmission electron microscope images.
-    Copyright (C) 2022  Stephen D. Funni
+    Copyright (C) 2023  Stephen D. Funni
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -51,7 +51,7 @@ from scipy.ndimage import (
     gaussian_filter,
     gaussian_laplace,
     rotate,
-    standard_deviation,
+    # standard_deviation,
     map_coordinates,
     center_of_mass,
     binary_fill_holes,
@@ -69,8 +69,9 @@ from SingleOrigin.utils import (
     detect_peaks,
     watershed_segment,
     std_local,
-    fft_equxy,
+    fft_square,
     v_pcf,
+    fit_lattice,
 )
 
 # %%
@@ -270,7 +271,7 @@ class HRImage:
 
         rot_.image = rotate(rot_.image, np.degrees(angle))
         [rot_.h, rot_.w] = rot_.image.shape
-        rot_.fft = fft_equxy(rot_.image)
+        rot_.fft = fft_square(rot_.image)
 
         lattice_dict = {}
         for key, lattice in self.latt_dict.items():
@@ -1261,27 +1262,17 @@ class AtomicColumnLattice:
         ) < 0.1*np.max(norm(a_star, axis=1))
         ].reset_index(drop=True)
 
-        def disp_vect_sum_squares(p0, M_star, xy, origin):
-            a_star = p0.reshape((2, 2))
-            err_xy = xy - M_star @ a_star - origin
-            sum_sq = np.sum(err_xy**2)
-            return sum_sq
-
         M_star = recip_latt.loc[:, 'h':'k'].to_numpy(dtype=float)
         xy = recip_latt.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
 
-        p0 = a_star.flatten()
+        p0 = np.concatenate((a_star.flatten(), origin))
 
-        params = minimize(
-            disp_vect_sum_squares,
-            p0,
-            args=(M_star, xy, origin)
-        ).x
+        params = fit_lattice(p0, xy, M_star, fix_origin=True)
 
         a1_star = params[:2]
-        a2_star = params[2:]
+        a2_star = params[2:4]
+        a_star = np.array([a1_star, a2_star])
 
-        a_star = params.reshape((2, 2))
         dir_struct_matrix = np.linalg.inv(a_star.T) * m
 
         recip_latt.loc[:, 'x_ref':'y_ref'] = (
@@ -1387,7 +1378,7 @@ class AtomicColumnLattice:
 
         """
 
-        self.fft = fft_equxy(self.image)
+        self.fft = fft_square(self.image, hanning_window=True)
         m = (min(self.h, self.w) // 2) * 2
         U = int(m/2)
         if m > 1024:
@@ -1399,11 +1390,12 @@ class AtomicColumnLattice:
 
         masks, num_masks, slices, spots = watershed_segment(fft_der)
 
-        spots.loc[:, 'stdev'] = standard_deviation(
-            fft_der,
-            masks,
-            index=np.arange(1, num_masks+1)
-        )
+        im_std = std_local(self.fft, sigma)
+        
+        spots.loc[:, 'stdev'] = [
+            im_std[y,x] for [x, y] 
+            in np.around(spots.loc[:, 'x':'y']).to_numpy(dtype=int)
+        ]
 
         thresh = 0.003 * thresh_factor
         spots_ = spots[(spots.loc[:, 'stdev'] > thresh)].reset_index(drop=True)
@@ -3146,14 +3138,6 @@ class AtomicColumnLattice:
             axis=1
         ) < outlier_disp_cutoff].copy()
 
-        def disp_vect_sum_squares(p0, M, xy):
-
-            dir_struct_matrix = p0[:4].reshape((2, 2))
-            origin = p0[4:]
-
-            err_xy = xy - M @ dir_struct_matrix - origin
-            sum_sq = np.sum(err_xy**2)
-            return sum_sq
 
         M = filtered.loc[:, 'u':'v'].to_numpy(dtype=float)
         xy = filtered.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
@@ -3163,7 +3147,7 @@ class AtomicColumnLattice:
              np.array([self.x0, self.y0]))
         )
 
-        params = minimize(disp_vect_sum_squares, p0, args=(M, xy)).x
+        params = fit_lattice(p0, xy, M)
 
         self.a1 = params[:2]
         self.a2 = params[2:4]
@@ -3565,11 +3549,12 @@ class AtomicColumnLattice:
                 watershed_line=False,
             )
 
-            peaks.loc[:, 'stdev'] = standard_deviation(
-                image_norm(pcf_sm),
-                masks_indiv,
-                index=peaks.loc[:, 'label']
-            )
+            im_std = std_local(vpcf, sigma)
+            
+            peaks.loc[:, 'stdev'] = [
+                im_std[y,x] for [x, y] 
+                in np.around(peaks.loc[:, 'x':'y']).to_numpy(dtype=int)
+            ]
 
             thresh = 0.01 * thresh_factor
 

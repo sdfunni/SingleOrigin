@@ -1,6 +1,6 @@
 """SingleOrigin is a module for atomic column position finding intended for
     high resolution scanning transmission electron microscope images.
-    Copyright (C) 2022  Stephen D. Funni
+    Copyright (C) 2023  Stephen D. Funni
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -416,10 +416,16 @@ class UnitCell():
         Parameters
         ----------
         za, a1, a2 : array-like shape (3,)
-            The zone axis and image basis vectors. 'a1' and 'a2' must be
-            directions that correspond to planes that obey the zone law for the
-            specified zone axis. 'za'->'a1'->'a2' must also obey the right
-            hand rule in that order.
+            The zone axis and image basis vectors. When za, a1 and a2 are
+            grouped as row vectors into a 3x3 matrix, the matrix must be a
+            valid basis transformation (including obeying the right hand rule)
+            of the original unit cell. a1 and a2 DO NOT necessarily need to
+            lie in the image plane. Often, two of the original basis vectors
+            may be valid transformation components. Otherwise, it is best to
+            choose some other low order vectors that make an intuitive
+            projected cell (e.g. [110]). Choosing vectors that are
+            perpendicular in projection is helpful to make subsequent lattice
+            alignment simpler to understand.
 
         ignore_elements : list of strings
             The element labels of the atoms that should be dropped before
@@ -712,10 +718,13 @@ class UnitCell():
         sites = np.sort(self.at_cols.loc[:, label_by].unique())
 
         if color_dict is None:
-            cmap = plt.cm.RdYlGn
-            color_dict = {
-                k: cmap(v/(num_colors-1)) for v, k in enumerate(sites)
-            }
+            if num_colors == 1:
+                color_dict = {sites[0]: cmap(0)}
+            else:
+                cmap = plt.cm.RdYlGn
+                color_dict = {
+                    k: cmap(v/(num_colors-1)) for v, k in enumerate(sites)
+                }
         
         if label_dict is None:
             label_dict = {k: k for k in sites}

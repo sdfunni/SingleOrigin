@@ -1,6 +1,6 @@
 """SingleOrigin is a module for atomic column position finding intended for 
     high resolution scanning transmission electron microscope images.
-    Copyright (C) 2022  Stephen D. Funni
+    Copyright (C) 2023  Stephen D. Funni
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -16,42 +16,51 @@
     along with this program.  If not, see https://www.gnu.org/licenses"""
 
 
-__version__ = "2.3.0"
+__version__ = "2.4.0"
 
-from SingleOrigin.utils import (metric_tensor,
-                                bond_length,
-                                bond_angle,
-                                absolute_angle_bt_vectors,
-                                rotation_angle_bt_vectors,
-                                IntPlSpc,
-                                IntPlAng,
-                                TwoTheta,
-                                elec_wavelength,
-                                select_folder,
-                                load_image,
-                                image_norm,
-                                write_image_array_to_tif,
-                                img_equ_ellip,
-                                img_ellip_param,
-                                gaussian_2d,
-                                gaussian_circ_ss,
-                                gaussian_ellip_ss,
-                                fit_gaussian_ellip,
-                                fit_gaussian_circ,
-                                pcf_radial,
-                                v_pcf,
-                                detect_peaks,
-                                watershed_segment,
-                                band_pass_filter,
-                                get_phase_from_com,
-                                fast_rotate_90deg,
-                                fft_amplitude_area,
-                                std_local,
-                                binary_find_largest_rectangle,
-                                binary_find_smallest_rectangle,
-                                fft_equxy)
+from SingleOrigin.utils import (
+    metric_tensor,
+    bond_length,
+    bond_angle,
+    absolute_angle_bt_vectors,
+    rotation_angle_bt_vectors,
+    IntPlSpc,
+    IntPlAng,
+    TwoTheta,
+    elec_wavelength,
+    select_folder,
+    load_image,
+    image_norm,
+    write_image_array_to_tif,
+    img_equ_ellip,
+    img_ellip_param,
+    gaussian_2d,
+    gaussian_circ_ss,
+    gaussian_ellip_ss,
+    fit_gaussian_ellip,
+    fit_gaussian_circ,
+    pcf_radial,
+    v_pcf,
+    detect_peaks,
+    disp_vect_sum_squares,
+    fit_lattice,
+    watershed_segment,
+    band_pass_filter,
+    get_phase_from_com,
+    fast_rotate_90deg,
+    fft_amplitude_area,
+    std_local,
+    binary_find_largest_rectangle,
+    binary_find_smallest_rectangle,
+    fft_square,
+    get_fft_pixel_size,
+)
 
 from SingleOrigin.cell_transform import UnitCell
 
-from SingleOrigin.find_atom_columns import (HRImage,
-                                            AtomicColumnLattice)
+from SingleOrigin.find_atom_columns import (
+    HRImage,
+    AtomicColumnLattice
+)
+
+from SingleOrigin.reciprocal_lattice_analyzer import ReciprocalImage
