@@ -18,7 +18,7 @@
 
 __version__ = "2.4.0"
 
-from SingleOrigin.utils import (
+from utils import (
     metric_tensor,
     bond_length,
     bond_angle,
@@ -56,11 +56,11 @@ from SingleOrigin.utils import (
     get_fft_pixel_size,
 )
 
-from SingleOrigin.cell_transform import UnitCell
+from cell_transform import UnitCell
 
-from SingleOrigin.find_atom_columns import (
+from find_atom_columns import (
     HRImage,
     AtomicColumnLattice
 )
 
-from SingleOrigin.reciprocal_lattice_analyzer import ReciprocalImage
+from reciprocal_lattice_analyzer import ReciprocalImage

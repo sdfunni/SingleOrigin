@@ -30,7 +30,7 @@ from PyQt5.QtWidgets import QFileDialog as qfd
 
 from CifFile import ReadCif
 
-from SingleOrigin.utils import (
+from utils import (
     metric_tensor,
     bond_length,
     bond_angle,
