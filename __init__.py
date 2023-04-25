@@ -15,10 +15,9 @@
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see https://www.gnu.org/licenses"""
 
-
 __version__ = "2.4.0"
 
-from utils import (
+from SingleOrigin.utils import (
     metric_tensor,
     bond_length,
     bond_angle,
@@ -54,13 +53,13 @@ from utils import (
     binary_find_smallest_rectangle,
     fft_square,
     get_fft_pixel_size,
-)
+    )
 
-from cell_transform import UnitCell
+from SingleOrigin.cell_transform import UnitCell
 
-from find_atom_columns import (
+from SingleOrigin.find_atom_columns import (
     HRImage,
     AtomicColumnLattice
-)
+    )
 
-from reciprocal_lattice_analyzer import ReciprocalImage
+from SingleOrigin.reciprocal_lattice_analyzer import ReciprocalImage

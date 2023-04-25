@@ -29,7 +29,7 @@ from scipy.ndimage import (
     gaussian_laplace,
 )
 
-from utils import (
+from SingleOrigin.utils import (
     image_norm,
     watershed_segment,
     std_local,

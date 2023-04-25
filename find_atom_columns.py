@@ -60,7 +60,7 @@ from scipy.ndimage import (
 
 from skimage.draw import polygon2mask
 
-from utils import (
+from SingleOrigin.utils import (
     image_norm,
     img_ellip_param,
     gaussian_2d,
