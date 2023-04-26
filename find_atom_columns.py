@@ -51,7 +51,6 @@ from scipy.ndimage import (
     gaussian_filter,
     gaussian_laplace,
     rotate,
-    # standard_deviation,
     map_coordinates,
     center_of_mass,
     binary_fill_holes,
@@ -140,8 +139,8 @@ class HRImage:
         filter_by='elem',
         sites_to_plot='all',
         titles=None,
-        x_lim=None,
-        y_lim=None,
+        xlim=None,
+        ylim=None,
         scalebar=True,
         scalebar_len_nm=2,
         arrow_scale_factor = 1,
@@ -219,7 +218,7 @@ class HRImage:
             self,
             lattice_to_align,
             align_basis='a1',
-            align_dir='horizontal',
+            align_dir='right',
     ):
         """Rotates the image and data to align a basis vector to image edge.
 
@@ -237,9 +236,9 @@ class HRImage:
             The basis vector to align.
             Default 'a1'.
 
-        align_dir : str ('horizontal' or 'vertical')
+        align_dir : str ('right' or 'left' or 'up' or 'down')
             Direction to align the chosen basis vector.
-            Default 'horizontal'.
+            Default 'right'.
 
         Returns
         -------
@@ -260,12 +259,18 @@ class HRImage:
 
         '''Find the rotation angle and direction'''
         angle = np.arctan2(align_vect[1], align_vect[0])
-        if align_dir == 'horizontal':
+        if align_dir == 'right':
             pass
-        elif align_dir == 'vertical':
-            angle += np.pi/2
+        elif align_dir == 'up':
+            angle += np.pi / 2
+        elif align_dir == 'left':
+            angle += np.pi
+        elif align_dir == 'down':
+            angle += 3 * np.pi / 2
         else:
-            raise Exception('align_dir must be "horizontal" or "vertical"')
+            raise Exception(
+                "align_dir must be 'right' or 'left' or 'up' or 'down'"
+            )
 
         print('Rotation angle:', np.degrees(angle))
 
@@ -372,8 +377,8 @@ class HRImage:
             fit_or_ref='fit',
             outlier_disp_cutoff=None,
             plot_masked_image=False,
-            x_lim=None,
-            y_lim=None,
+            xlim=None,
+            ylim=None,
             scalebar_len_nm=2,
             color_dict=None,
             legend_dict=None,
@@ -411,15 +416,14 @@ class HRImage:
             for fitting). If False, the unmasked image is plotted.
             Default: False
 
-        x_lim : None or list-like shape (2,)
-            The x axis limits to be plotted. If None, the whole image is
-            displayed.
+        xlim : None or list-like shape (2,)
+            The x axis limits to be plotted as (min, max). If None, the whole
+            image is displayed.
             Default: None
 
-        y_lim : None or list-like shape (2,)
-            The y axis limits to be plotted. Note that the more positive
-            y limit value should be first or the plot will be flipped
-            top-to-bottom.  If None, the whole image is displayed.
+        ylim : None or list-like shape (2,)
+            The y axis limits to be plotted as (min, max). If None, the whole
+            image is displayed.
             Default: None
 
         scalebar_len_nm : int or float or None
@@ -497,10 +501,12 @@ class HRImage:
         axs.set_xticks([])
         axs.set_yticks([])
 
-        if x_lim:
-            axs.set_xlim(x_lim)
-        if y_lim:
-            axs.set_ylim(y_lim)
+        if xlim:
+            xlim = np.sort(xlim)
+            axs.set_xlim(xlim)
+        if ylim:
+            ylim = np.flip(np.sort(ylim))
+            axs.set_ylim(ylim)
 
         if color_dict is None:
             elems = np.sort(np.unique(np.concatenate(
@@ -620,8 +626,8 @@ class HRImage:
             filter_by='elem',
             sites_to_plot='all',
             outlier_disp_cutoff=None,
-            x_lim=None,
-            y_lim=None,
+            xlim=None,
+            ylim=None,
             scalebar_len_nm=2,
             arrow_scale_factor=1,
             max_colorwheel_range_pm=None,
@@ -652,15 +658,14 @@ class HRImage:
             If None, all column positions will be plotted.
             Default None.
 
-        x_lim : None or list-like shape (2,)
+        xlim : None or list-like shape (2,)
             The x axis limits to be plotted. If None, the whole image is
             displayed.
             Default: None
 
-        y_lim : None or list-like shape (2,)
-            The y axis limits to be plotted. Note that the more positive
-            y limit value should be first or the plot will be flipped
-            top-to-bottom.  If None, the whole image is displayed.
+        ylim : None or list-like shape (2,)
+            The y axis limits to be plotted. If None, the whole image is
+            displayed.
             Default: None
 
         scalebar_len_nm : int or float or None
@@ -710,13 +715,6 @@ class HRImage:
             outlier_disp_cutoff = np.inf
         else:
             outlier_disp_cutoff /= pixel_size * 100
-
-        if x_lim is None:
-            x_lim = [0, self.w]
-        if y_lim is None:
-            y_lim = [self.h, 0]
-        if y_lim[0] < y_lim[1]:
-            y_lim = [y_lim[1], y_lim[0]]
 
         # Get combined data an list of unique sublattices
         combined = pd.concat(
@@ -818,8 +816,19 @@ class HRImage:
 
             axs[ax].imshow(self.image, cmap='gray')
 
-            axs[ax].set_xlim(x_lim[0], x_lim[1])
-            axs[ax].set_ylim(y_lim[0], y_lim[1])
+            if xlim:
+                xlim = np.sort(xlim)
+                axs[ax].set_xlim(xlim)
+            else:
+                xlim = [0, self.w]
+
+            if ylim:
+                ylim = np.flip(np.sort(ylim))
+                axs[ax].set_ylim(ylim)
+            else:
+                ylim = [self.h, 0]
+
+            h = ylim[0] - ylim[1]
 
             axs[ax].set_xticks([])
             axs[ax].set_yticks([])
@@ -838,11 +847,10 @@ class HRImage:
                 axs[ax].add_artist(scalebar)
 
             sub_latt = combined[combined.loc[:, filter_by] == site]
-            h = y_lim[0] - y_lim[1]
 
             axs[ax].text(
-                x_lim[0] + 0.02*h,
-                y_lim[1] - 0.02*h,
+                xlim[0] + 0.02*h,
+                ylim[1] - 0.02*h,
                 label,
                 color='black',
                 size=24,
@@ -1391,9 +1399,9 @@ class AtomicColumnLattice:
         masks, num_masks, slices, spots = watershed_segment(fft_der)
 
         im_std = std_local(self.fft, sigma)
-        
+
         spots.loc[:, 'stdev'] = [
-            im_std[y,x] for [x, y] 
+            im_std[y, x] for [x, y]
             in np.around(spots.loc[:, 'x':'y']).to_numpy(dtype=int)
         ]
 
@@ -1431,8 +1439,8 @@ class AtomicColumnLattice:
                 plt.annotate(label, (xy[i, 0], xy[i, 1]))
 
     def specify_basis_vectors(self, a1, a2):
-        """Specify basis vectors manually. 
-        
+        """Specify basis vectors manually.
+
         Useful for images that are too small for basis vector estimation from
         the FFT (such as small simulated images) or if the basis vectors are
         known. Input basis vectors do not need to be exact. They will be
@@ -1455,7 +1463,7 @@ class AtomicColumnLattice:
         self.a2 = np.array(a2)
         self.basis_offset_pix = self.basis_offset_frac @ self.dir_struct_matrix
         self.pixel_size_est = self.get_est_pixel_size()
-    
+
     def get_roi_mask_std(
             self,
             r=4,
@@ -1868,7 +1876,8 @@ class AtomicColumnLattice:
             zoom_factor=10,
             origin=None,
             mask=None,
-            plot_ref_lattice=False
+            plot_ref_lattice=False,
+            buffer=None,
     ):
         """Register reference lattice to image.
 
@@ -1906,6 +1915,14 @@ class AtomicColumnLattice:
              Whether to plot the reference lattice after registration. For
              verification of proper alignment. This can help avoid wasted time
              running the fitting step if alignment was not accurate.
+         buffer : scalar or None
+             Apply an ROI mask to restrict the reference lattice to stop this
+             distance from the image edges. For more complex ROI masks, use
+             the various ROI mask functions directly. If None, reference
+             lattice is only restricted if an ROI mask already exists. Without
+             an ROI mask, the reference lattice will only stop at the image
+             edges.
+             Default: None.
 
         Returns
         -------
@@ -1914,6 +1931,13 @@ class AtomicColumnLattice:
         """
 
         self.pixel_size_est = self.get_est_pixel_size()
+
+        if buffer is not None:
+            self.get_roi_mask_polygon(
+                vertices=np.array([[buffer, buffer],
+                                   [self.w-buffer, buffer],
+                                   [self.w-buffer, self.h-buffer],
+                                   [buffer, self.h-buffer]]))
 
         if ((LoG_sigma is None)
             & ((type(self.probe_fwhm) == float)
@@ -1977,10 +2001,10 @@ class AtomicColumnLattice:
             np.array([w - x0, h - y0]),
             np.array([w - x0, -y0])
         ]
-        
+
         # Find  +/- basis vectors that are closest angularly to each
         # origin-to-image-corner vector.
-        
+
         a1p = np.argmin([(vect_angle(a1, d[i])) for i, _ in enumerate(d)])
         a1n = np.argmin([(vect_angle(-a1, d[i])) for i, _ in enumerate(d)])
         a2p = np.argmin([(vect_angle(a2, d[i])) for i, _ in enumerate(d)])
@@ -1990,7 +2014,6 @@ class AtomicColumnLattice:
         a1_stop = int(norm(d[a1p])**2 / (a1 @ d[a1p].T)) + 2
         a2_start = int(norm(d[a2n])**2 / (a2 @ d[a2n].T)) - 1
         a2_stop = int(norm(d[a2p])**2 / (a2 @ d[a2p].T)) + 2
-        
 
         latt_cells = np.array([
             [i, j]
@@ -2046,11 +2069,12 @@ class AtomicColumnLattice:
 
         print('Performing rough reference lattice refinement...')
 
-        init_inc = int(np.min(np.max(np.abs(at_cols.loc[:, 'u':'v']),
-                                     axis=0))/10)
+        init_inc = np.max(np.abs(at_cols.loc[:, 'u':'v'].to_numpy()))/10
 
         if init_inc < 3:
             init_inc = 3
+
+        print('initial: ', init_inc)
 
         origin_ind = at_cols[
             (at_cols.u == self.basis_offset_frac[0]) &
@@ -2062,6 +2086,13 @@ class AtomicColumnLattice:
             (at_cols.y == at_cols.at[origin_ind, 'y'])
         ].copy()
 
+        at_cols_orig_type = at_cols_orig_type[(
+            (at_cols_orig_type.x_ref >= 20) &
+            (at_cols_orig_type.x_ref <= w-21) &
+            (at_cols_orig_type.y_ref >= 20) &
+            (at_cols_orig_type.y_ref <= h-21)
+        )]
+
         t = [time.time()]
 
         for i, mult in enumerate([1, 3, 9]):
@@ -2069,12 +2100,12 @@ class AtomicColumnLattice:
 
             print(f'Refinement iteration {i+1}')
 
-            if lim > init_inc:
-                at_cols_orig_type.loc[:, 'x_ref':'y_ref'] = (
-                    at_cols_orig_type.loc[:, 'u':'v'].to_numpy(dtype=float)
-                    @ self.dir_struct_matrix
-                    + np.array([self.x0, self.y0])
-                )
+            # if lim > init_inc:
+            at_cols_orig_type.loc[:, 'x_ref':'y_ref'] = (
+                at_cols_orig_type.loc[:, 'u':'v'].to_numpy(dtype=float)
+                @ self.dir_struct_matrix
+                + np.array([self.x0, self.y0])
+            )
 
             filtered = at_cols_orig_type[
                 (np.abs(at_cols_orig_type.u) <= lim) &
@@ -2390,7 +2421,7 @@ class AtomicColumnLattice:
 
         else:
             raise Exception(
-                '"peak_sharpening_filter" must be "auto", a positive float '
+                '"peak_grouping_filter" must be "auto", a positive float '
                 + 'or int value, or None.'
             )
 
@@ -3138,7 +3169,6 @@ class AtomicColumnLattice:
             axis=1
         ) < outlier_disp_cutoff].copy()
 
-
         M = filtered.loc[:, 'u':'v'].to_numpy(dtype=float)
         xy = filtered.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
 
@@ -3468,7 +3498,7 @@ class AtomicColumnLattice:
         self.vpcfs['metadata'] = {'origin': origin,
                                   'pixel_size': d,
                                   'filter_by': filter_by,
-                                  'pair_pair': not(get_only_partial_vpcfs),
+                                  'pair_pair': not get_only_partial_vpcfs,
                                   'affine_transform': affine_transform,
                                   }
 
@@ -3513,8 +3543,11 @@ class AtomicColumnLattice:
             overlap when determining peak shapes. If None, not used.
             Default: None.
         thresh_factor : scalar
-            Value to multiply by the standard threshold for removing low
-            intensity peaks. Raise until undesired peaks are not found.
+            Adjusts the minimum amplitude for considering an identified local
+            maximum to be a peak for the purposes of finding its shape. By
+            default peaks with less than 10% of the amplitude of the largest
+            peak are not considered for fitting. A thresh_factor of 2 would
+            raise this cutoff to 20% while 0.5 would lower it to 5%.
             Default: 1.
 
         Returns
@@ -3533,7 +3566,8 @@ class AtomicColumnLattice:
             print(f'Calculating peaks for {key} vPCF')
             self.vpcf_peaks[key] = pd.DataFrame(columns=['x_fit', 'y_fit',
                                                          'sig_maj', 'sig_min',
-                                                         'theta', 'ecc'])
+                                                         'theta', 'ecc',
+                                                         'peak_max'])
             pcf_sm = gaussian_filter(
                 vpcf,
                 sigma=sigma,
@@ -3549,18 +3583,16 @@ class AtomicColumnLattice:
                 watershed_line=False,
             )
 
-            im_std = std_local(vpcf, sigma)
-            
-            peaks.loc[:, 'stdev'] = [
-                im_std[y,x] for [x, y] 
-                in np.around(peaks.loc[:, 'x':'y']).to_numpy(dtype=int)
+            peaks.loc[:, 'peak_max'] = vpcf[
+                peaks.loc[:, 'y'].to_numpy(dtype=int),
+                peaks.loc[:, 'x'].to_numpy(dtype=int)
             ]
 
-            thresh = 0.01 * thresh_factor
+            thresh = np.max(peaks.loc[:, 'peak_max']) * 0.1 * thresh_factor
 
-            peaks = peaks[(peaks.loc[:, 'stdev'] > thresh)
+            peaks = peaks[(peaks.loc[:, 'peak_max'] > thresh)
                           ].reset_index(drop=True)
-            n_peaks = peaks.shape[0]
+            # n_peaks = peaks.shape[0]
             xy_peak = peaks.loc[:, 'x':'y'].to_numpy(dtype=int)
             labels = peaks.loc[:, 'label'].to_numpy(dtype=int)
 
@@ -3598,12 +3630,13 @@ class AtomicColumnLattice:
                     0
                 )
 
-                n_peaks = labels.shape[0]
+                # n_peaks = labels.shape[0]
 
             if method == 'moments':
-                for i in tqdm(range(n_peaks)):
-                    pcf_masked = np.where(masks_indiv == i+1, 1, 0
+                for i, label in tqdm(enumerate(labels)):
+                    pcf_masked = np.where(masks_indiv == label, 1, 0
                                           )*self.vpcfs[key]
+                    peak_max = np.max(pcf_masked)
                     x_fit, y_fit, ecc, theta, sig_maj, sig_min = \
                         img_ellip_param(
                             pcf_masked
@@ -3616,6 +3649,7 @@ class AtomicColumnLattice:
                         sig_min,
                         theta,
                         ecc,
+                        peak_max,
                     ]
 
             elif method == 'gaussian':
@@ -3693,14 +3727,15 @@ class AtomicColumnLattice:
     def plot_vpcfs(
         self,
         vpcfs_to_plot='all',
-        # plot_only_partial_vpcfs=False,
         plot_equ_ellip=True,
         vpcf_cmap='Greys',
-        ellip_color_scale_param='sig_maj',
         ellip_scale_factor=10,
+        ellip_colormap_param='sig_maj',
+        colormap_range=None,
         unit_cell_box=True,
         unit_cell_box_color='black',
         scalebar_len=1,
+
     ):
         """
         Plot vPCFs.
@@ -3731,6 +3766,12 @@ class AtomicColumnLattice:
             ellipses (which illustrate the shape of the underlying peak) to be
             easily seen in a figure.
             Default: 5
+        colormap_range : listlike of shape (2,) or None
+            The (minimum, maximum) values for the range of ellipse colors.
+            Sizes of ellipse are still plotted proportionally, but colormap
+            saturates below and above these values. If None, the minimum and
+            maximum values of the ellipse scale parameter
+            Default: None
         unit_cell_box : bool
             Whether to plot the unit cell box on the vPCF.
             Default: True
@@ -3738,7 +3779,7 @@ class AtomicColumnLattice:
             Line color for the unit cell box. Must be a matplotlib color.
             Default: 'black'
         scalebar_len : scalar
-            The length of the scalebar to plot in nm.
+            The length of the scalebar to plot in Angstroms.
             Default: 1
 
         Returns
@@ -3749,7 +3790,7 @@ class AtomicColumnLattice:
 
         """
 
-        prop = ellip_color_scale_param
+        prop = ellip_colormap_param
         cmap = plt.cm.plasma
         origin = self.vpcfs['metadata']['origin']
         d = self.vpcfs['metadata']['pixel_size']
@@ -3767,10 +3808,23 @@ class AtomicColumnLattice:
             raise Exception('argument "ellip_color_scale_param" must be '
                             + 'either "sig_maj" or "ecc".')
 
-        [max_, min_] = np.array([
-            np.ceil(np.max(shape_params_all) * unit_conv),
-            np.floor(np.min(shape_params_all) * unit_conv)
-        ])
+        if colormap_range is None:
+            [min_, max_] = np.array([
+                np.floor(np.min(shape_params_all) * unit_conv),
+                np.ceil(np.max(shape_params_all) * unit_conv)
+            ])
+
+        else:
+            colormap_range = np.array(colormap_range, dtype=float).flatten()
+
+            if (colormap_range.shape[0] == 2 and
+                    np.isin(colormap_range.dtype, [float, int]).item()):
+                [min_, max_] = colormap_range
+
+            else:
+                raise Exception(
+                    '"colormap_range" must be: listlike of shape (2,) or None'
+                )
 
         corners = np.array([[0, 0], [1, 0], [1, -1], [0, -1]])
 
@@ -3900,7 +3954,6 @@ class AtomicColumnLattice:
 
             for axis in ['top', 'bottom', 'left', 'right']:
                 axs[i].spines[axis].set_linewidth(1.5)
-
         cbar_ell = fig.colorbar(
             ScalarMappable(norm=Normalize(vmin=min_, vmax=max_), cmap=cmap),
             cax=axs_cbar,
@@ -3913,7 +3966,6 @@ class AtomicColumnLattice:
 
         return fig, axs, axs_cbar
 
-    # def get_coords_from_image()
     def get_vector_from_vpcf(
         self,
         vpcf,
@@ -3927,7 +3979,7 @@ class AtomicColumnLattice:
             vpcfs_to_plot=[vpcf],
             plot_equ_ellip=plot_equ_ellip,
             vpcf_cmap='Greys',
-            ellip_color_scale_param='sig_maj',
+            ellip_colormap_param='sig_maj',
             ellip_scale_factor=10,
             unit_cell_box=True,
             unit_cell_box_color='black'
@@ -3992,11 +4044,11 @@ class AtomicColumnLattice:
         dist_along_vector=None,
         deviation_or_absolute='deviation',
         plot_equ_ellip=True,
-        center_deviation_at_zero=True,
         return_nn_list=False,
         xlim=None,
         ylim=None,
         scalebar_len=1,
+        outlier_disp_cutoff=None
     ):
         """Finds vector from vPCF and plots the inter-column distances
         in the image that correspond to that vector.
@@ -4035,6 +4087,13 @@ class AtomicColumnLattice:
             Whether to return the list of DataFrames of near neighbor
             information.
             Default: False
+        outlier_disp_cutoff : None or scalar
+            Criteria for removing outlier atomic column fits from the
+            plot (in Angstroms). The maximum difference between the fitted
+            position and the corresponding reference lattice point. All
+            positions with greater errors than this value will be removed.
+            If None, all column positions will be plotted.
+            Default None.
 
         Returns
         -------
@@ -4045,6 +4104,13 @@ class AtomicColumnLattice:
             chosen.
 
         """
+
+        if not np.isin(vpcf, list(self.vpcfs.keys())).item():
+            vpcfs_list = [v for v in list(self.vpcfs.keys())
+                          if v != 'metadata']
+            raise Exception(
+                'Specified vpcf does not exist. Available vpcfs: \n' +
+                f'{vpcfs_list}')
 
         vects, str1, str2 = self.get_vector_from_vpcf(
             vpcf,
@@ -4069,10 +4135,26 @@ class AtomicColumnLattice:
             pixel_size = self.pixel_size_est
 
         filter_by = self.vpcfs['metadata']['filter_by']
-        sub1 = self.at_cols[self.at_cols.loc[:, filter_by] == str1
-                            ].loc[:, 'x_ref':'y_fit'].reset_index(drop=True)
-        sub2 = self.at_cols[self.at_cols.loc[:, filter_by] == str2
-                            ].loc[:, 'x_ref':'y_fit'].reset_index(drop=True)
+
+        if ((outlier_disp_cutoff is not None) &
+                (outlier_disp_cutoff is not np.inf)):
+            # if (type(outlier_disp_cutoff) == float or
+            #         type(outlier_disp_cutoff) == int):
+            outlier_disp_cutoff /= pixel_size * 100
+
+            at_cols = self.at_cols[norm(
+                self.at_cols.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
+                - self.at_cols.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float),
+                axis=1)
+                < outlier_disp_cutoff].copy()
+
+        else:
+            at_cols = self.at_cols.copy()
+
+        sub1 = at_cols[at_cols.loc[:, filter_by] == str1
+                       ].loc[:, 'x_ref':'y_fit'].reset_index(drop=True)
+        sub2 = at_cols[at_cols.loc[:, filter_by] == str2
+                       ].loc[:, 'x_ref':'y_fit'].reset_index(drop=True)
 
         if locate_by_fit_or_ref == 'ref':
             xy1 = sub1.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float)
@@ -4152,14 +4234,8 @@ class AtomicColumnLattice:
                            * pixel_size * 100]
 
             label = r'$\Delta$ Distance (pm)'
-
-            if center_deviation_at_zero:
-                max_ = np.ceil(np.max(np.abs(np.concatenate(cscale))))
-                min_ = -max_
-
-            else:
-                max_ = np.ceil(np.max(np.concatenate(cscale)))
-                min_ = np.floor(np.min(np.concatenate(cscale)))
+            max_ = np.ceil(np.max(np.abs(np.concatenate(cscale))))
+            min_ = -max_
 
         else:
             raise Exception(
@@ -4189,10 +4265,12 @@ class AtomicColumnLattice:
         ax.set_xticks([])
         ax.set_yticks([])
 
-        if xlim is not None:
+        if xlim:
+            xlim = np.sort(xlim)
             ax.set_xlim(xlim)
-        if ylim is not None:
-            ax.set_ylim(np.flip(ylim))
+        if ylim:
+            ylim = np.flip(np.sort(ylim))
+            ax.set_ylim(ylim)
 
         cbar = fig.colorbar(
             ScalarMappable(norm=Normalize(vmin=min_, vmax=max_), cmap='bwr'),

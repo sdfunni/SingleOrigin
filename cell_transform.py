@@ -372,8 +372,8 @@ class UnitCell():
 
         '''Fix rounding errors to ensure atoms are not cut off or included
          erroneously'''
-        uvw = np.where(np.isclose(0, uvw), 0, uvw)
-        uvw = np.where(np.isclose(1, uvw), 1, uvw)
+        uvw = np.where(np.isclose(0, uvw, atol=1e-6), 0, uvw)
+        uvw = np.where(np.isclose(1, uvw, atol=1e-6), 1, uvw)
         atoms.loc[:, 'u':'w'] = uvw
 
         '''Reduce to new unit cell'''
@@ -494,6 +494,8 @@ class UnitCell():
             columns={'y': 'x', 'z': 'y'},
             inplace=True
         )
+
+        self.at_cols = at_cols
 
         if reduce_proj_cell:
             a1_ = self.a_3d_[:, 1]
@@ -690,7 +692,7 @@ class UnitCell():
         plot_positions_on_both_edges : bool
             If True, plot positions with a fractional coordinate of 0 on the
             unit cell boundary corresponding to a fractional coordinate of 1.
-            Makes the unit cell look complete, though strictly it is not the 
+            Makes the unit cell look complete, though strictly it is not the
             true unit cell.
         return_fig : bool
             Whether to return the figure object to allow manipulation within
@@ -714,7 +716,7 @@ class UnitCell():
 
         num_colors = self.at_cols.loc[:, label_by].unique().shape[0]
         cmap = plt.cm.RdYlGn
-        
+
         sites = np.sort(self.at_cols.loc[:, label_by].unique())
 
         if color_dict is None:
@@ -725,7 +727,7 @@ class UnitCell():
                 color_dict = {
                     k: cmap(v/(num_colors-1)) for v, k in enumerate(sites)
                 }
-        
+
         if label_dict is None:
             label_dict = {k: k for k in sites}
 

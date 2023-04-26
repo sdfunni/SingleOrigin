@@ -19,6 +19,9 @@
 import os
 import copy
 import warnings
+import io
+import json
+from contextlib import redirect_stdout
 
 import numpy as np
 from numpy.linalg import norm
@@ -47,9 +50,11 @@ from PyQt5.QtWidgets import QFileDialog as qfd
 
 import imageio
 
+import hyperspy.api as hs
+
 from ncempy.io.dm import dmReader
 from ncempy.io.ser import serReader
-from ncempy.io.emdVelox import emdVeloxReader
+from ncempy.io.emdVelox import fileEMDVelox
 from ncempy.io.emd import emdReader
 
 from skimage.segmentation import watershed
@@ -378,9 +383,10 @@ def load_image(
         path=None,
         display_image=True,
         images_from_stack=None,
-        emd_velox=True,
+        dset=None,
         return_path=False,
         norm_image=True,
+        full_metadata=False,
 ):
     """Select image from 'Open File' dialog box, import and (optionally) plot
 
@@ -401,9 +407,17 @@ def load_image(
         Default: None: import only the first image of the stack.
         'all' : import all images as a 3d numpy array.
 
-    emd_velox : bool
-        Whether .emd files are of Velox format. If True, open .emd files
-        assuming Velox format. Otherwise, open using Berkeley .emd reader.
+    dset : str or int
+        If more than one dataset in the file, the title or index of the desired
+        dataset (for Velox .emd files) or the dataset number for all other
+        filetypes.
+
+    full_metadata : bool
+        For emd files ONLY, whether to load the entire metadata as nested
+        dictionaries using JSON. If False, loads standard metadata using
+        ncempy reader (including pixel size). If True, all metadata available
+        in the file is loaded. It is a lot of metadata!
+        Default: False
 
     Returns
     -------
@@ -434,27 +448,89 @@ def load_image(
         )
 
     if path[-3:] in ['dm4', 'dm3']:
+
         dm_file = dmReader(path)
         image = (dm_file['data'])
         metadata = {key: val for key, val in dm_file.items() if key != 'data'}
 
     elif path[-3:] == 'emd':
-        if emd_velox:
-            emd_file = emdVeloxReader(path)
-            image = emd_file['data'].transpose((2, 0, 1))
+        # Load emd files using hyperspy (extracts dataset names for files with
+        # multiple datasets)
+
+        emd = hs.load(path)
+        if type(emd) != list:
+            dsets = [emd.metadata.General.title]
+            image = np.array(emd)
+            print('Loaded only dataset: ', dsets[0])
+            dset_ind = 0
+        else:
+            dsets = [emd[i].metadata.General.title for i in range(len(emd))]
+
+            print('Multiple datasets found: ', ', '.join(dsets))
+
+            if type(dset) == str and np.isin(dset, dsets).item():
+                dset_ind = np.argwhere(np.array(dsets) == dset).item()
+            elif type(dset) == int:
+                dset_ind = dset
+            # If dset not specified try to load the HAADF
+            elif np.isin('HAADF', dsets).item():
+                dset_ind = np.argwhere(np.array(dsets) == 'HAADF').item()
+            # Otherwise import the last dataset
+            else:
+                dset_ind = len(dsets) - 1
+
+            print(f'{dsets[dset_ind]} image loaded.')
+
+            image = np.array(emd[dset_ind])
+
+        # Change DPC vector images from complex type to an image stack
+        if image.dtype == 'complex64':
+            image = np.stack([np.real(image), np.imag(image)])
+
+        # Get metadata using ncempy (because it loads more informative metadata
+        # and allows loading everyting using JSON)
+        try:
+            trap = io.StringIO()
+            with redirect_stdout(trap):  # To suppress printing from emdReader
+                emd_file = emdReader(path, dsetNum=dset_ind)
+
+            # image = emd_file['data']
             metadata = {
                 key: val for key, val in emd_file.items() if key != 'data'
             }
 
-        else:
-            emd_file = emdReader(path)
-            image = emd_file['data']
-            metadata = {
-                key: val for key, val in emd_file.items() if key != 'data'
-            }
+        except IndexError as ie:
+            raise ie
+        except TypeError:
+
+            try:
+                # Need to remove EDS datasets from the list and get the correct
+                # index as spectra are not seen by ncempy functions
+                dset_label = dsets[dset_ind]
+                dsets = [i for i in dsets if i != 'EDS']
+                dset_ind = np.argwhere(np.array(dsets) == dset_label).item()
+
+                emd = fileEMDVelox(path)
+                if full_metadata is False:
+                    _, metadata = emd.get_dataset(dset_ind)
+
+                elif full_metadata is True:
+                    group = emd.list_data[dset_ind]
+                    tempMetaData = group['Metadata'][:, 0]
+                    validMetaDataIndex = np.where(tempMetaData > 0)
+                    metaData = tempMetaData[validMetaDataIndex].tobytes()
+                    # Interpret as UTF-8 encoded characters and load as JSON
+                    metadata = json.loads(metaData.decode('utf-8', 'ignore'))
+
+            except IndexError as ie:
+                raise ie
+            except:
+                raise Exception('Unknown file type.')
+
+        metadata['imageType'] = dsets[dset_ind]
 
     elif path[-3:] == 'ser':
-        ser_file = serReader(path)
+        ser_file = serReader(path, dsetNum=dset)
         image = ser_file['data']
         metadata = {
             key: val for key, val in ser_file.items() if key != 'data'
@@ -475,18 +551,19 @@ def load_image(
           or type(images_from_stack) == int):
         image = image[images_from_stack, :, :]
 
-    # Make image dimensions even length
+    # Norm the image(s)
+    if norm_image:
+        image = image_norm(image)
 
+    # Make image dimensions even length
     if len(image.shape) == 2:
         image = image[:int((h//2)*2), :int((w//2)*2)]
-        if norm_image:
-            image = image_norm(image)
         image_ = image
+
     if len(image.shape) == 3:
         image = image[:, :int((h//2)*2), :int((w//2)*2)]
-        if norm_image:
-            image = np.array([image_norm(im) for im in image])
         image_ = image[0, :, :]
+
     if display_image is True:
         fig, axs = plt.subplots()
         axs.imshow(image_, cmap='gray')
@@ -575,7 +652,7 @@ def img_equ_ellip(image):
     -------
     eigvals : squared magnitudes of the major and minor semi-axes, in that
         order
-    eigvects : matrix containing the unit vectors of the major and minor 
+    eigvects : matrix containing the unit vectors of the major and minor
     semi-axes (in that order) as row vectors
     x0, y0 : coordinates of the ellipse center
 
@@ -1059,7 +1136,7 @@ def fit_gaussian_circ(
                                 lineno=182)
         warnings.filterwarnings('ignore', category=RuntimeWarning,
                                 lineno=579)
-        
+
     params = minimize(
         gaussian_circ_ss,
         p0_,
@@ -1363,10 +1440,10 @@ def disp_vect_sum_squares(p0, xy, M):
         Where [a1x, a1y] is the first basis vector, [a2x, a2y] is the second
         basis vector and [x0, y0] is the origin.
     xy : array-like of shape (n, 2)
-        The array of measured [x, y] lattice coordinates. 
+        The array of measured [x, y] lattice coordinates.
     M : array-like of shape (n, 2)
-        The array of fractional coorinates or reciprocal lattice indices  
-        corresponding to the xy coordinates. Rows correspond to [u, v] or 
+        The array of fractional coorinates or reciprocal lattice indice
+        corresponding to the xy coordinates. Rows correspond to [u, v] or
         [h, k] coordinates depending on whether the data is in real or
         reciproal space.
 
@@ -1382,7 +1459,7 @@ def disp_vect_sum_squares(p0, xy, M):
 
     err_xy = xy - M @ dir_struct_matrix - origin
     sum_sq = np.sum(err_xy**2)
-    
+
     return sum_sq
 
 
@@ -1396,16 +1473,16 @@ def fit_lattice(p0, xy, M, fix_origin=False):
         Where [a1x, a1y] is the first basis vector, [a2x, a2y] is the second
         basis vector and [x0, y0] is the origin.
     xy : array-like of shape (n, 2)
-        The array of measured [x, y] lattice coordinates. 
+        The array of measured [x, y] lattice coordinates.
     M : array-like of shape (n, 2)
-        The array of fractional coorinates or reciprocal lattice indices  
-        corresponding to the xy coordinates. Rows correspond to [u, v] or 
+        The array of fractional coorinates or reciprocal lattice indices
+        corresponding to the xy coordinates. Rows correspond to [u, v] or
         [h, k] coordinates depending on whether the data is in real or
         reciproal space.
     fix_origin : bool
-        Whether to fix the origin (if True) or allow it to be refined 
+        Whether to fix the origin (if True) or allow it to be refined
         (if False). Generally, should be false unless data is from an FFT,
-        then the origin is known and should be fixed. 
+        then the origin is known and should be fixed.
 
     Returns
     -------
@@ -1413,15 +1490,15 @@ def fit_lattice(p0, xy, M, fix_origin=False):
         The refined basis, using the same form as p0.
 
     """
-    
+
     p0 = np.array(p0)
     x0, y0 = p0[4:]
-    
+
     if fix_origin is True:
         bounds = [(None, None)] * 4 + [(x0, x0), (y0, y0)]
     else:
         bounds = [(None, None)] * 6
-    
+
     params = minimize(
         disp_vect_sum_squares,
         p0,
@@ -1429,7 +1506,7 @@ def fit_lattice(p0, xy, M, fix_origin=False):
         args=(xy, M),
         method='L-BFGS-B',
     ).x
-    
+
     return params
 
 
@@ -1524,6 +1601,7 @@ def watershed_segment(
     peaks = pd.DataFrame.from_dict({
         'x': list(peak_xy[:, 0]),
         'y': list(peak_xy[:, 1]),
+        'max': image[peak_xy[:, 1], peak_xy[:, 0]],
         'label': [i+1 for i in range(num_masks)]
     })
 
@@ -1622,7 +1700,8 @@ def band_pass_filter(
 
 
 def get_phase_from_com(
-        com_xy,
+        comx,
+        comy,
         theta,
         flip=True,
         high_low_filter=False,
@@ -1673,15 +1752,15 @@ def get_phase_from_com(
 
     """
 
-    f_freq_1d_y = np.fft.fftfreq(com_xy.shape[1], 1)
-    f_freq_1d_x = np.fft.fftfreq(com_xy.shape[2], 1)
-    h, w = com_xy.shape[1:]
+    f_freq_1d_y = np.fft.fftfreq(comx.shape[0], 1)
+    f_freq_1d_x = np.fft.fftfreq(comx.shape[1], 1)
+    h, w = comx.shape
 
     if high_low_filter:
         lambda_ = elec_wavelength(filter_params['beam_energy']) * 1e9  # in nm
-        h, w = com_xy.shape[1:]
+        h, w = comx.shape
         min_dim = np.argmin((h, w))
-        fft_pixelSize = 1 / (np.array(com_xy.shape[1:])
+        fft_pixelSize = 1 / (np.array(comx.shape)
                              * filter_params['pixel_size'])  # nm^-1
 
         apeture_cutoff = 2*np.sin(2 * filter_params['conv_semi_angle']/1000
@@ -1701,32 +1780,56 @@ def get_phase_from_com(
     else:
         mask = np.ones((h, w))
 
-    theta = np.radians(theta)
+    # theta = np.radians(theta)
     if not flip:
-        CoMx_rot = com_xy[0]*np.cos(theta) - com_xy[1]*np.sin(theta)
-        CoMy_rot = com_xy[0]*np.sin(theta) + com_xy[1]*np.cos(theta)
+        comx_ = comx*np.cos(theta) - comy*np.sin(theta)
+        comy_ = comx*np.sin(theta) + comy*np.cos(theta)
     if flip:
-        CoMx_rot = com_xy[0]*np.cos(theta) + com_xy[1]*np.sin(theta)
-        CoMy_rot = com_xy[0]*np.sin(theta) - com_xy[1]*np.cos(theta)
-
-    com_ = np.zeros(com_xy.shape)
-    com_[0] = CoMx_rot
-    com_[1] = CoMy_rot
+        comx_ = comx*np.cos(theta) + comy*np.sin(theta)
+        comy_ = comx*np.sin(theta) - comy*np.cos(theta)
 
     k_p = np.array(np.meshgrid(f_freq_1d_x, f_freq_1d_y))
 
     _ = np.seterr(divide='ignore')
-    denominator = 1/(1j*(k_p[0] + 1j*k_p[1]))
+    denominator = 1/((k_p[0] + 1j*k_p[1]))
     denominator[0, 0] = 0
     _ = np.seterr(divide='warn')
 
-    complex_image = np.fft.ifft2((mask * (np.fft.fft2(com_[1])
-                                          + 1j*np.fft.fft2(com_[0])))
+    complex_image = np.fft.ifft2((mask * (np.fft.fft2(comy_)
+                                          + 1j*np.fft.fft2(comx_)))
                                  * denominator)
 
-    phase = (np.real(complex_image)**2 + np.imag(complex_image)**2)**0.5
+    # phase = (np.real(complex_image)**2 + np.imag(complex_image)**2)**0.5
+    phase = - np.real(complex_image)
+    return phase
 
-    return phase, mask
+
+def get_charge_density_image(comx, comy, theta):
+    """Get charge density image.
+
+    Parameters
+    ----------
+    comx, comy : ndarrays of shape (h,w)
+        The center of mass shift component images.
+
+    theta : scalar
+        Rotation angle in degrees between horizontal scan direction and
+        detector orientation (i.e. the comx vector).
+
+    Returns
+    -------
+    charge_density : 2D array with shape (h,w)
+        The sample charge density convolved with the probe intensity function.
+
+    """
+
+    theta = np.radians(theta)
+    comx_ = comx*np.cos(theta) - comy*np.sin(theta)
+    comy_ = comx*np.sin(theta) + comy*np.cos(theta)
+
+    charge_density = np.gradient(comx_, axis=1) + np.gradient(comy_, axis=0)
+
+    return charge_density
 
 
 def fast_rotate_90deg(image, angle):
@@ -1971,8 +2074,8 @@ def binary_find_largest_rectangle(array):
 
 def binary_find_smallest_rectangle(array):
     """
-    Get the smallest rectangle (with horizontal and vertical sides) that 
-    contains an entire ROI defined by a binary array. 
+    Get the smallest rectangle (with horizontal and vertical sides) that
+    contains an entire ROI defined by a binary array.
 
     This is useful for cropping to the smallest area without losing any useful
     data. Unless the region is already a rectangle with horiaontal and vertical
@@ -1995,7 +2098,7 @@ def binary_find_smallest_rectangle(array):
         The y limits (columns) of the smallest rectangle.
 
     sl : numpy slice object
-        The slice object which crops the image to the smallest rectangle.    
+        The slice object which crops the image to the smallest rectangle.
     """
 
     xinds = np.where(np.sum(array.astype(int), axis=1) > 0, 1, 0
@@ -2011,8 +2114,8 @@ def binary_find_smallest_rectangle(array):
 
 
 def fft_square(image,
-              hanning_window=False
-              ):
+               hanning_window=False
+               ):
     """Gets FFT with equal x & y pixel sizes
 
     Parameters
@@ -2067,5 +2170,5 @@ def get_fft_pixel_size(image, pixel_size):
     m = (min(h, w) // 2) * 2
 
     reciprocal_pixel_size = (pixel_size * m) ** -1
-    
+
     return reciprocal_pixel_size
