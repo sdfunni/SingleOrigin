@@ -163,8 +163,15 @@ class UnitCell():
             ndmin=2
         ).T
 
-        if '_atom_site_occupancy' in Crystal:
+        if '_atom_site_label' in Crystal:
+            symbol = np.array(
+                Crystal['_atom_site_label'][0],
+                ndmin=2
+            ).T
+        else:
+            symbol = elem
 
+        if '_atom_site_occupancy' in Crystal:
             site_frac = np.array(
                 Crystal['_atom_site_occupancy'][0],
                 ndmin=2,
@@ -177,6 +184,7 @@ class UnitCell():
         atoms = pd.DataFrame(
             {'u': xyz[:, 0], 'v': xyz[:, 1], 'w': xyz[:, 2],
              'elem': elem[:, 0],
+             'symbol': symbol[:, 0],
              'site_frac': site_frac[:, 0]
              }
         )
@@ -205,9 +213,9 @@ class UnitCell():
         for i, ind in enumerate(index):
             if counts[i] > 1:
                 for j in range(counts[i]-1):
-                    atoms_.loc[ind, 'elem'] += (
+                    atoms_.at[ind, 'elem'] += (
                         '/' + atoms.at[np.sum(counts[:i])+1+j, 'elem'])
-                    atoms_.loc[ind, 'site_frac'] += (
+                    atoms_.at[ind, 'site_frac'] += (
                         '/' + atoms.at[np.sum(counts[:i])+1+j, 'site_frac'])
         atoms = atoms_.copy()
         del atoms_
@@ -256,7 +264,7 @@ class UnitCell():
         atoms.reset_index(drop=True, inplace=True)
 
         # Apply origin shift
-        atoms.loc[:, 'u':'w'] = (atoms.loc[:, 'u':'w'] - origin_shift) % 1
+        atoms[['u', 'v', 'w']] = (atoms.loc[:, 'u':'w'] - origin_shift) % 1
         atoms = atoms.sort_values(['u', 'v', 'w'])
         atoms.reset_index(inplace=True, drop=True)
 
@@ -281,7 +289,7 @@ class UnitCell():
         atoms.insert(atoms.shape[1], 'x', 0)
         atoms.insert(atoms.shape[1], 'y', 0)
         atoms.insert(atoms.shape[1], 'z', 0)
-        atoms.loc[:, 'x':'z'] = atoms.loc[:, 'u':'w'].to_numpy() @ self.a_3d.T
+        atoms[['x', 'y', 'z']] = atoms.loc[:, 'u':'w'].to_numpy() @ self.a_3d.T
         atoms.reset_index(drop=True, inplace=True)
 
         self.atoms = atoms
@@ -374,7 +382,7 @@ class UnitCell():
          erroneously'''
         uvw = np.where(np.isclose(0, uvw, atol=1e-6), 0, uvw)
         uvw = np.where(np.isclose(1, uvw, atol=1e-6), 1, uvw)
-        atoms.loc[:, 'u':'w'] = uvw
+        atoms[['u', 'v', 'w']] = uvw
 
         '''Reduce to new unit cell'''
         atoms = atoms[
@@ -385,7 +393,8 @@ class UnitCell():
 
         '''Transform coordinates to Cartesian using the structure matrix'''
 
-        atoms.loc[:, 'x':'z'] = atoms.loc[:, 'u':'w'].to_numpy() @ self.a_3d_.T
+        atoms[['x', 'y', 'z']] = atoms.loc[:,
+                                           'u':'w'].to_numpy() @ self.a_3d_.T
         atoms.reset_index(drop=True, inplace=True)
         self.atoms = atoms
         self.g_ = g
@@ -481,7 +490,7 @@ class UnitCell():
 
         index = weights.iloc[:, 0].tolist()
         at_cols = at_cols.iloc[index, :]
-        at_cols.loc[:, 'weight'] = list(weights.loc[:, 1])
+        at_cols['weight'] = list(weights.loc[:, 1])
 
         at_cols = at_cols.reset_index(drop=True)
 
@@ -527,7 +536,7 @@ class UnitCell():
             for val in uv.flatten():
                 uv = np.where(np.isclose(val, uv), val, uv)
 
-            at_cols.loc[:, 'u':'v'] = uv
+            at_cols[['u', 'v']] = uv
 
             at_cols = at_cols[
                 ((at_cols.u >= 0) & (at_cols.u < 1) &
@@ -550,7 +559,7 @@ class UnitCell():
 
             a_2d /= a_mult.T
 
-        at_cols.loc[:, 'x':'y'] = at_cols.loc[:, 'u':'v'].to_numpy() @ a_2d.T
+        at_cols[['x', 'y']] = at_cols.loc[:, 'u':'v'].to_numpy() @ a_2d.T
         at_cols = at_cols.sort_values(by=['elem', 'u', 'v'])
         at_cols.reset_index(drop=True, inplace=True)
 
@@ -628,7 +637,7 @@ class UnitCell():
 
             new.append(self.at_cols.loc[rows[0], :].copy())
 
-            new[i].loc['u'] = np.average(
+            new[i]['u'] = np.average(
                 [self.at_cols.at[ind, 'u'] for ind in rows]
             )
 
@@ -763,7 +772,7 @@ class UnitCell():
                     if (row.u == 0):
                         new_row = row.copy()
                         new_row.u = 1
-                        new_row.loc['x':'y'] = (
+                        new_row[['x', 'y']] = (
                             new_row.loc['u':'v'] @ self.a_2d)
                         sublattice = pd.concat(
                             [sublattice, new_row.to_frame().T], axis=0
@@ -771,7 +780,7 @@ class UnitCell():
                     if (row.v == 0):
                         new_row = row.copy()
                         new_row.v = 1
-                        new_row.loc['x':'y'] = (
+                        new_row[['x', 'y']] = (
                             new_row.loc['u':'v'] @ self.a_2d)
                         sublattice = pd.concat(
                             [sublattice, new_row.to_frame().T], axis=0
@@ -780,7 +789,7 @@ class UnitCell():
                         new_row = row.copy()
                         new_row.u = 1
                         new_row.v = 1
-                        new_row.loc['x':'y'] = (
+                        new_row[['x', 'y']] = (
                             new_row.loc['u':'v'] @ self.a_2d)
                         sublattice = pd.concat(
                             [sublattice, new_row.to_frame().T], axis=0
