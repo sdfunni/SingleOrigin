@@ -57,8 +57,8 @@ from ncempy.io.ser import serReader
 from ncempy.io.emdVelox import fileEMDVelox
 from ncempy.io.emd import emdReader
 
-# from skimage.segmentation import watershed
-from cv2 import watershed
+from skimage.segmentation import watershed
+# from cv2 import watershed
 from skimage.measure import (moments, moments_central)
 
 from tifffile import imwrite
@@ -1426,6 +1426,10 @@ def detect_peaks(
          for j in range(size) for i in range(size)]
     ).reshape((size, size))
 
+    # im_std = std_local(image, int(min_dist/2))
+    # max_, min_ = [np.max(im_std), np.min(im_std)]
+    # thresh = 0.2*(max_ - min_) + min_
+
     peaks = (maximum_filter(image, footprint=neighborhood) == image
              ) * (image > thresh)
 
@@ -1581,14 +1585,16 @@ def watershed_segment(
     local_max *= frame_edge
     local_max = label(local_max)[0]
 
-    # masks = watershed(-img_der, local_max, watershed_line=watershed_line)
-    img_der = (image_norm(img_der) * (2**8 - 1))
-    img_der_3 = np.zeros((h, w, 3), dtype=np.uint8)
-    img_der_3[:, :, 0] = img_der
+    masks = watershed(-img_der, local_max, watershed_line=watershed_line)
+    # img_der = (image_norm(-img_der) * (2**8 - 1)).astype(np.uint8)
+    # img_der_3 = np.zeros((h, w, 3), dtype=np.uint8)
+    # img_der_3[:, :, 0] = img_der
+    # img_der_3[:, :, 1] = img_der
+    # img_der_3[:, :, 2] = img_der
 
-    masks = np.squeeze(watershed(img_der_3, copy.deepcopy(local_max)))
+    # masks = np.squeeze(watershed(img_der_3, copy.deepcopy(local_max)))
 
-    masks[masks <= 0] = 0
+    # masks[masks <= 0] = 0
 
     slices = find_objects(masks)
     num_masks = int(np.max(masks))

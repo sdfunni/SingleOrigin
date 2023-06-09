@@ -1,5 +1,5 @@
 """SingleOrigin is a module for atomic column position finding intended for
-    high probe_fwhm scanning transmission electron microscope images.
+    high resolution scanning transmission electron microscope images.
     Copyright (C) 2023  Stephen D. Funni
 
     This program is free software: you can redistribute it and/or modify
@@ -25,7 +25,6 @@ from joblib import Parallel, delayed
 
 import numpy as np
 from numpy.linalg import norm
-from numpy.fft import (fft2, ifft2)
 
 import pandas as pd
 
@@ -48,6 +47,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib_scalebar.scalebar import ScaleBar
 
 from scipy.optimize import minimize
+from scipy.interpolate import make_interp_spline
 from scipy.ndimage import (
     gaussian_filter,
     gaussian_laplace,
@@ -59,6 +59,7 @@ from scipy.ndimage import (
 )
 
 from skimage.draw import polygon2mask
+from skimage.feature import hessian_matrix_det
 
 from SingleOrigin.utils import (
     image_norm,
@@ -72,6 +73,7 @@ from SingleOrigin.utils import (
     fft_square,
     v_pcf,
     fit_lattice,
+    binary_find_smallest_rectangle,
 )
 
 # %%
@@ -110,7 +112,6 @@ class HRImage:
         self,
         name,
         unitcell,
-        probe_fwhm=0.8,
         origin_atom_column=None
         ):
         Initiatites a new AtomColumnLattice object associated with the
@@ -169,7 +170,7 @@ class HRImage:
             self,
             name,
             unitcell,
-            probe_fwhm=0.8,
+            # probe_fwhm=0.8,
             origin_atom_column=None,
     ):
         """Initiatites a new AtomColumnLattice object associated with the
@@ -186,12 +187,6 @@ class HRImage:
             project_uc_2d() method applied. See examples for how to generate
             this.
 
-        probe_fwhm : scalar
-            The approximate probe_fwhm of the microscope in Angstroms.
-            Used for automatic calculation of filtering parameters prior to
-            fitting.
-            Default: 0.8.
-
         origin_atom_column : int
             The DataFrame row index (in unitcell.at_cols) of the atom column
             that is later picked by the user to register the reference lattice.
@@ -207,7 +202,7 @@ class HRImage:
         new_lattice = AtomicColumnLattice(
             self.image,
             unitcell,
-            probe_fwhm,
+            # probe_fwhm,
             origin_atom_column=origin_atom_column,
             pixel_size_cal=self.pixel_size_cal
         )
@@ -1000,10 +995,6 @@ class AtomicColumnLattice:
         An appropriate UnitCell object of the SingleOrigin module with
         project_uc_2d() method applied. See examples for how to generate this.
 
-    probe_fwhm : scalar
-        The approximate probe_fwhm of the microscope in Angstroms.
-        Default: 0.8.
-
     origin_atom_column : int
         The DataFrame row index (in unitcell.at_cols) of the atom column
         that is later picked by the user to register the reference lattice.
@@ -1013,10 +1004,6 @@ class AtomicColumnLattice:
 
     Attributes
     ----------
-    probe_fwhm : Approximate full width half maximum of the imaging probe in
-        Angstroms. Used for auto-calculation of bluring parameters for
-        watershed segmentation.
-
     basis_offset_frac : The input basis_offset_frac, fractional coordinates
 
     basis_offset_pix : The basis offset in image pixel coordinates.
@@ -1123,13 +1110,13 @@ class AtomicColumnLattice:
             self,
             image,
             unitcell,
-            probe_fwhm=0.8,
+            # probe_fwhm=0.8,
             origin_atom_column=None,
             pixel_size_cal=None,
     ):
 
         self.image = image
-        self.probe_fwhm = probe_fwhm
+        # self.probe_fwhm = probe_fwhm
         (self.h, self.w) = image.shape
         self.unitcell_2D = unitcell.at_cols
         self.a_2d = unitcell.a_2d
@@ -1141,6 +1128,7 @@ class AtomicColumnLattice:
         self.a1, self.a2 = None, None
         self.a1_star, self.a2_star = None, None
         self.dir_struct_matrix = None
+        self.sigma = None
         self.pixel_size_est = None
         self.pixel_size_cal = None
         self.residuals = None
@@ -1471,7 +1459,7 @@ class AtomicColumnLattice:
     def get_roi_mask_std(
             self,
             r=4,
-            sigma=8,
+            # sigma=8,
             thresh=0.5,
             fill_holes=True,
             buffer=10,
@@ -1520,13 +1508,17 @@ class AtomicColumnLattice:
         None.
 
         """
+
+        if self.sigma is None:
+            self.select_scale()
+
         image_std = image_norm(gaussian_filter(
             std_local(self.image, r),
-            sigma=sigma)
+            sigma=self.sigma)
         )
         new_mask = np.where(image_std > thresh, 1, 0)
         if fill_holes:
-            new_mask = binary_fill_holes(self.roi_mask)
+            new_mask = binary_fill_holes(new_mask)
         if buffer:
             new_mask = binary_erosion(
                 new_mask,
@@ -1882,6 +1874,61 @@ class AtomicColumnLattice:
 
         return min_dist
 
+    def select_scale(self):
+        """
+        Select appropriate image scale value: the approximate size of atom
+        columns in the image ROI.
+
+        Select scale for the image ROI based on the highest maximum of the
+        determinant of the Hessian (as applied to the central 1024x1024 region
+        of the image if larger than 1k). Stores the determined scale / 2 as
+        self.sigma. This parameter is used for the automatic filtering value in
+        other class methods.
+
+        Parameters
+        ----------
+        None.
+
+        Returns
+        -------
+        None.
+
+        """
+
+        if np.min(self.roi_mask) == 0:
+            _, _, sl = binary_find_smallest_rectangle(self.roi_mask)
+            image_crop = self.image[sl]
+        else:
+            image_crop = self.image
+
+        h, w = image_crop.shape
+        if h * w > 1024**2:
+            crop_factor = 1024/np.sqrt(h*w)
+            crop_h = int(h * crop_factor / 2)
+            crop_w = int(w * crop_factor / 2)
+
+            image_crop = image_crop[int(h/2)-crop_h:int(h/2)+crop_h,
+                                    int(w/2)-crop_w:int(w/2)+crop_w]
+
+        min_scale = 1
+        max_scale = 30
+        scale_step = 2
+
+        scale = np.arange(min_scale, max_scale, scale_step)
+        hess_max = np.array([
+            np.max(hessian_matrix_det(image_crop, sigma=i))
+            for i in scale
+        ])
+
+        spl = make_interp_spline(scale, hess_max, k=2)
+        scale_interp = np.linspace(min_scale, max_scale, 117)
+        hess_max_interp = spl(scale_interp).T
+        scale_max = scale_interp[np.argmax(hess_max_interp)]
+
+        sigma = np.around(scale_max/2, decimals=1)
+
+        self.sigma = sigma
+
     def define_reference_lattice(
             self,
             LoG_sigma=None,
@@ -1902,7 +1949,7 @@ class AtomicColumnLattice:
         ----------
         LoG_sigma : scalar
             The Laplacian of Gaussian sigma value to use for peak sharpening.
-            If None, calculated by: pixel_size_est / probe_fwhm * 0.5.
+            If None, calculated using select_scale().
             Default None.
 
         zoom_factor : scalar
@@ -1945,6 +1992,8 @@ class AtomicColumnLattice:
 
         self.pixel_size_est = self.get_est_pixel_size()
 
+        self.select_scale()
+
         if buffer is not None:
             self.get_roi_mask_polygon(
                 vertices=np.array([[buffer, buffer],
@@ -1952,10 +2001,11 @@ class AtomicColumnLattice:
                                    [self.w-buffer, self.h-buffer],
                                    [buffer, self.h-buffer]]))
 
-        if ((LoG_sigma is None)
-            & ((type(self.probe_fwhm) == float)
-               | (type(self.probe_fwhm) == int))):
-            LoG_sigma = self.probe_fwhm / self.pixel_size_est * 0.5
+        if (LoG_sigma is None):
+            # & ((type(self.probe_fwhm) == float)
+            #    | (type(self.probe_fwhm) == int))):
+            # LoG_sigma = self.probe_fwhm / self.pixel_size_est * 0.5
+            LoG_sigma = self.sigma * 0.75
 
         if mask is not None:
             self.roi_mask = mask
@@ -2325,15 +2375,15 @@ class AtomicColumnLattice:
         peak_sharpening_filter : scalar or 'auto'
             The Laplacian of Gaussian sigma value to use for peak sharpening
             for defining peak regions via the Watershed segmentation method.
-            Should be approximately pixel_size_est / probe_fwhm / 2. If 'auto',
-            calculated using self.pixel_size_est and self.probe_fwhm.
+            Should be approximately pixel_size_est / probe_fwhm / 2.
+            If 'auto', sigma found using select_scale().
             Default 'auto'.
 
         peak_grouping_filter : scalar, 'auto' or None
             The Gaussian sigma value to use for peak grouping by blurring,
             then creating image segment regions with watershed method.
-            Should be approximately pixel_size_est / probe_fwhm * 0.5. If
-            'auto', calculated using self.pixel_size_est and self.probe_fwhm.
+            Should be approximately pixel_size_est / probe_fwhm * 0.5.
+            If 'auto', sigma found using select_scale().
             If simultaneous fitting of close atom columns is not desired, set
             to None.
             Default: 'auto'.
@@ -2423,20 +2473,22 @@ class AtomicColumnLattice:
             )
 
         if peak_grouping_filter == 'auto':
-            if ((type(self.probe_fwhm) == float)
-                    | (type(self.probe_fwhm) == int)):
+            peak_grouping_filter = self.sigma
 
-                peak_grouping_filter = (
-                    self.probe_fwhm / self.pixel_size_est * 0.5
-                )
+            # if ((type(self.probe_fwhm) == float)
+            #         | (type(self.probe_fwhm) == int)):
 
-            else:
-                raise Exception(
-                    '"probe_fwhm" must be defined for the class instance '
-                    + 'to enable "peak_grouping_filter" auto calculation.'
-                )
+            #     peak_grouping_filter = (
+            #         self.probe_fwhm / self.pixel_size_est * 0.5
+            #     )
 
-        if (
+            # else:
+            #     raise Exception(
+            #         '"probe_fwhm" must be defined for the class instance '
+            #         + 'to enable "peak_grouping_filter" auto calculation.'
+            #     )
+
+        elif (
             (type(peak_grouping_filter) == float or
              type(peak_grouping_filter) == int)
             and peak_grouping_filter > 0
@@ -2450,24 +2502,21 @@ class AtomicColumnLattice:
             )
 
         if peak_sharpening_filter == 'auto':
-            if (
-                (type(self.probe_fwhm) == float)
-                | (type(self.probe_fwhm) == int)
-            ):
+            peak_sharpening_filter = self.sigma * 0.75
+            # if (
+            #     (type(self.probe_fwhm) == float)
+            #     | (type(self.probe_fwhm) == int)
+            # ):
 
-                peak_sharpening_filter = (
-                    self.probe_fwhm / self.pixel_size_est * 0.5
-                )
+            #     peak_sharpening_filter = (
+            #         self.probe_fwhm / self.pixel_size_est * 0.5
+            #     )
 
-            else:
-                raise Exception(
-                    '"probe_fwhm" must be defined for the class instance to '
-                    + 'enable "peak_sharpening_filter" auto calculation.'
-                )
-
-        elif peak_sharpening_filter is None:
-            peak_sharpening_filter = 'auto'
-            print('Using "auto" setting for peak sharpening filter.')
+            # else:
+            #     raise Exception(
+            #         '"probe_fwhm" must be defined for the class instance to '
+            #         + 'enable "peak_sharpening_filter" auto calculation.'
+            #     )
 
         elif (
             (type(peak_sharpening_filter) is float or
@@ -2577,7 +2626,7 @@ class AtomicColumnLattice:
 
         """*** OR now we will just throw them out???"""
         if pos_toler is None:
-            pos_toler = self.probe_fwhm / self.pixel_size_est / 2
+            pos_toler = self.sigma
         else:
             pos_toler /= self.pixel_size_est
 
