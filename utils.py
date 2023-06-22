@@ -384,8 +384,8 @@ def select_folder(path=None):
 def load_image(
         path=None,
         display_image=True,
-        images_from_stack=None,
-        dset=None,
+        images_from_stack='all',
+        load_dset=0,
         return_path=False,
         norm_image=True,
         full_metadata=False,
@@ -409,10 +409,12 @@ def load_image(
         Default: None: import only the first image of the stack.
         'all' : import all images as a 3d numpy array.
 
-    dset : str or int
-        If more than one dataset in the file, the title or index of the desired
-        dataset (for Velox .emd files) or the dataset number for all other
-        filetypes.
+    load_dset : str, or int, or list of strings
+        If more than one dataset in the file, the title of the desired
+        dataset (for Velox .emd files) or the dataset number (for all other
+        filetypes). For .emd files with multiple datasets, passing a list will
+        result in all matching datasets being returned in a dictionary with
+        "name" : numpy.ndarray as the key : value pairs.
 
     full_metadata : bool
         For emd files ONLY, whether to load the entire metadata as nested
@@ -449,11 +451,23 @@ def load_image(
             filter="Images (*.png *.jpg *.tif *.dm4 *.dm3 *.emd *.ser)"
         )
 
+    if ((type(load_dset) == int) | (type(load_dset) == str)) & (load_dset != 'all'):
+        load_dset = [load_dset]
+
+    if (type(load_dset) == list) & (len(load_dset) > 1) & (path[-3:] != 'emd'):
+        raise Exception(
+            'Loading multiple datasets is only implimented for .emd files. '
+            + 'Specify a single dataset for this file or pass None to load '
+            + 'the default dataset.'
+        )
+
     if path[-3:] in ['dm4', 'dm3']:
 
         dm_file = dmReader(path)
-        image = (dm_file['data'])
-        metadata = {key: val for key, val in dm_file.items() if key != 'data'}
+        images = {'image': dm_file['data']}
+        metadata = {'image':
+                    {key: val for key, val in dm_file.items() if key != 'data'}
+                    }
 
     elif path[-3:] == 'emd':
         # Load emd files using hyperspy (extracts dataset names for files with
@@ -462,120 +476,347 @@ def load_image(
         emd = hs.load(path)
         if type(emd) != list:
             dsets = [emd.metadata.General.title]
-            image = np.array(emd)
-            print('Loaded only dataset: ', dsets[0])
-            dset_ind = 0
+            # images = {dsets[0]: np.array(emd)}
+            # print('Loaded only dataset: ', dsets[0])
+            # dset_ind = 0
         else:
             dsets = [emd[i].metadata.General.title for i in range(len(emd))]
+            print('Datasets found: ', ', '.join(dsets))
 
-            print('Multiple datasets found: ', ', '.join(dsets))
+            # Get list of all datasets to load if "all" specified
+            if load_dset == 'all':
+                load_dset = dsets
 
-            if type(dset) == str and np.isin(dset, dsets).item():
-                dset_ind = np.argwhere(np.array(dsets) == dset).item()
-            elif type(dset) == int:
-                dset_ind = dset
-            # If dset not specified try to load the HAADF
-            elif np.isin('HAADF', dsets).item():
-                dset_ind = np.argwhere(np.array(dsets) == 'HAADF').item()
-            # Otherwise import the last dataset
+            # Otherwise get list of requested datasets that are in the file
             else:
-                dset_ind = len(dsets) - 1
+                num_requested = len(load_dset)
+                load_dset = [dset_ for dset_ in load_dset
+                             if dset_ in dsets]
+                num_avail = len(load_dset)
 
-            print(f'{dsets[dset_ind]} image loaded.')
+                if len(load_dset) == 0:
+                    raise Exception('No matching dataset(s) found to load.')
+                elif num_requested > num_avail:
+                    print(
+                        'Some datasets not available. Loading: ',
+                        *load_dset
+                    )
 
-            image = np.array(emd[dset_ind])
+        images = {}
+        metadata = {}
+        for dset_ in load_dset:
+            dset_ind = np.argwhere(np.array(dsets) == dset_).item()
+            images[dset_] = np.array(emd[dset_ind])
 
-        # Change DPC vector images from complex type to an image stack
-        if image.dtype == 'complex64':
-            image = np.stack([np.real(image), np.imag(image)])
+            # Change DPC vector images from complex type to an image stack
+            if images[dset_].dtype == 'complex64':
+                images[dset_] = np.stack([np.real(images[dset_]),
+                                          np.imag(images[dset_])])
 
-        # Get metadata using ncempy (because it loads more informative metadata
-        # and allows loading everyting using JSON)
-        try:
-            trap = io.StringIO()
-            with redirect_stdout(trap):  # To suppress printing from emdReader
-                emd_file = emdReader(path, dsetNum=dset_ind)
-
-            # image = emd_file['data']
-            metadata = {
-                key: val for key, val in emd_file.items() if key != 'data'
-            }
-
-        except IndexError as ie:
-            raise ie
-        except TypeError:
-
+            # Get metadata using ncempy (because it loads more informative
+            # metadata and allows loading everyting using JSON)
             try:
-                # Need to remove EDS datasets from the list and get the correct
-                # index as spectra are not seen by ncempy functions
-                dset_label = dsets[dset_ind]
-                dsets = [i for i in dsets if i != 'EDS']
-                dset_ind = np.argwhere(np.array(dsets) == dset_label).item()
+                trap = io.StringIO()
+                with redirect_stdout(trap):  # To suppress printing
+                    emd_file = emdReader(path, dsetNum=dset_ind)
 
-                emd = fileEMDVelox(path)
-                if full_metadata is False:
-                    _, metadata = emd.get_dataset(dset_ind)
-
-                elif full_metadata is True:
-                    group = emd.list_data[dset_ind]
-                    tempMetaData = group['Metadata'][:, 0]
-                    validMetaDataIndex = np.where(tempMetaData > 0)
-                    metaData = tempMetaData[validMetaDataIndex].tobytes()
-                    # Interpret as UTF-8 encoded characters and load as JSON
-                    metadata = json.loads(metaData.decode('utf-8', 'ignore'))
+                # image = emd_file['data']
+                metadata[dset_] = {
+                    key: val for key, val in emd_file.items() if key != 'data'
+                }
 
             except IndexError as ie:
                 raise ie
-            except:
-                raise Exception('Unknown file type.')
+            except TypeError:
+
+                try:
+                    # Need to remove EDS datasets from the list and get the
+                    # correct index as spectra are not seen by ncempy functions
+                    dset_label = dsets[dset_ind]
+                    dsets = [i for i in dsets if i != 'EDS']
+                    dset_ind = np.argwhere(
+                        np.array(dsets) == dset_label).item()
+
+                    emd_vel = fileEMDVelox(path)
+                    if full_metadata is False:
+                        _, metadata[dset_] = emd_vel.get_dataset(dset_ind)
+
+                    elif full_metadata is True:
+                        group = emd_vel.list_data[dset_ind]
+                        tempMetaData = group['Metadata'][:, 0]
+                        validMetaDataIndex = np.where(tempMetaData > 0)
+                        metaData = tempMetaData[validMetaDataIndex].tobytes()
+                        # Interpret as UTF-8 encoded characters, load as JSON
+                        metadata[dset_] = json.loads(
+                            metaData.decode('utf-8', 'ignore')
+                        )
+
+                except IndexError as ie:
+                    raise ie
+                except:
+                    raise Exception('Unknown file type.')
 
         metadata['imageType'] = dsets[dset_ind]
 
     elif path[-3:] == 'ser':
-        ser_file = serReader(path, dsetNum=dset)
-        image = ser_file['data']
-        metadata = {
+        ser_file = serReader(path, dsetNum=load_dset)
+        images = {load_dset: ser_file['data']}
+        metadata = {load_dset: {
             key: val for key, val in ser_file.items() if key != 'data'
-        }
+        }}
 
     else:
-        image = imageio.volread(path)
-        metadata = image.meta
+        images = {'image': imageio.volread(path)}
+        metadata = {'image': images['image'].meta}
 
-    h, w = image.shape[-2:]
+    for key in images.keys():
+        h, w = images[key].shape[-2:]
 
-    if images_from_stack is None and len(image.shape) == 3:
-        image = image[0, :, :]
+        if images_from_stack == 'all':
+            pass
+        elif (type(images_from_stack) == list
+              or type(images_from_stack) == int):
+            images[key] = images[key][images_from_stack, :, :]
+        else:
+            raise Exception('"images_from_stack" must be "all", an int, or '
+                            + 'a list of ints.')
 
-    elif images_from_stack == 'all':
-        pass
-    elif (type(images_from_stack) == list
-          or type(images_from_stack) == int):
-        image = image[images_from_stack, :, :]
+        # Norm the image(s)
+        if norm_image:
+            images[key] = image_norm(images[key])
 
-    # Norm the image(s)
-    if norm_image:
-        image = image_norm(image)
+        # Make image dimensions even length
+        if len(images[key].shape) == 2:
+            images[key] = images[key][:int((h//2)*2), :int((w//2)*2)]
+            image_ = images[key]
 
-    # Make image dimensions even length
-    if len(image.shape) == 2:
-        image = image[:int((h//2)*2), :int((w//2)*2)]
-        image_ = image
+        if len(images[key].shape) == 3:
+            images[key] = images[key][:, :int((h//2)*2), :int((w//2)*2)]
+            image_ = images[key][0, :, :]
 
-    if len(image.shape) == 3:
-        image = image[:, :int((h//2)*2), :int((w//2)*2)]
-        image_ = image[0, :, :]
+        if display_image is True:
+            fig, axs = plt.subplots()
+            axs.imshow(image_, cmap='gray')
+            axs.set_xticks([])
+            axs.set_yticks([])
 
-    if display_image is True:
-        fig, axs = plt.subplots()
-        axs.imshow(image_, cmap='gray')
-        axs.set_xticks([])
-        axs.set_yticks([])
+    # If only one image, extract from dictionaries
+    if len(images) == 1:
+        key = list(images.keys())[0]
+        images = images[key]
+        metadata = metadata[key]
 
     if return_path:
-        return image, metadata, path
+        return images, metadata, path
     else:
-        return image, metadata
+        return images, metadata
+
+
+"""
+*** Old version of load_image... retain until any bugs fixed in new one.
+"""
+# def load_image(
+#         path=None,
+#         display_image=True,
+#         images_from_stack=None,
+#         dset=None,
+#         return_path=False,
+#         norm_image=True,
+#         full_metadata=False,
+# ):
+#     """Select image from 'Open File' dialog box, import and (optionally) plot
+
+#     Parameters
+#     ----------
+#     path : str or None
+#         The location of the image to load or the path to the folder containing
+#         the desired image. If only a directory is given, the "Open file"
+#         dialog box will still open allowing you to select an image file.
+
+#     display_image : bool
+#         If True, plots image (or first image if a series is imported).
+#         Default: True
+
+#     images_from_stack : None or 'all' or int or list-like
+#         If file at path contains a stack of images, this argument controls
+#         importing some or all of the images.
+#         Default: None: import only the first image of the stack.
+#         'all' : import all images as a 3d numpy array.
+
+#     dset : str or int
+#         If more than one dataset in the file, the title or index of the desired
+#         dataset (for Velox .emd files) or the dataset number for all other
+#         filetypes.
+
+#     full_metadata : bool
+#         For emd files ONLY, whether to load the entire metadata as nested
+#         dictionaries using JSON. If False, loads standard metadata using
+#         ncempy reader (including pixel size). If True, all metadata available
+#         in the file is loaded. It is a lot of metadata!
+#         Default: False
+
+#     Returns
+#     -------
+#     image : ndarray
+#         The imported image
+
+#     metadata : dict
+#         The metadata available in the original file
+
+#     """
+
+#     if path is None:
+#         path, _ = qfd.getOpenFileName(
+#             caption='Select an image to load...',
+#             filter="Images (*.png *.jpg *.tif *.dm4 *.dm3 *.emd *.ser)"
+#         )
+
+#         print(f'path to imported image: {path}')
+
+#     elif path[-4:] in ['.dm4', '.dm3', '.emd', '.ser', '.tif', '.png', '.jpg']:
+#         pass
+
+#     else:
+#         path, _ = qfd.getOpenFileName(
+#             caption='Select an image to load...',
+#             directory=path,
+#             filter="Images (*.png *.jpg *.tif *.dm4 *.dm3 *.emd *.ser)"
+#         )
+
+#     if path[-3:] in ['dm4', 'dm3']:
+
+#         dm_file = dmReader(path)
+#         image = (dm_file['data'])
+#         metadata = {key: val for key, val in dm_file.items() if key != 'data'}
+
+#     elif path[-3:] == 'emd':
+#         # Load emd files using hyperspy (extracts dataset names for files with
+#         # multiple datasets)
+
+#         emd = hs.load(path)
+#         if type(emd) != list:
+#             dsets = [emd.metadata.General.title]
+#             image = np.array(emd)
+#             print('Loaded only dataset: ', dsets[0])
+#             dset_ind = 0
+#         else:
+#             dsets = [emd[i].metadata.General.title for i in range(len(emd))]
+#             print('Datasets found: ', ', '.join(dsets))
+
+#             # if dset == 'all':
+#             #     dsets_to_load = dsets
+#             # else:
+#             #     dsets_to_load = np.isin(dsets, dset)
+
+#             # if len(dsets_to_load) == 0:
+#             #     raise Exception('No matching dataset(s) found to load.')
+
+#             if type(dset) == str and np.isin(dset, dsets).item():
+#                 dset_ind = np.argwhere(np.array(dsets) == dset).item()
+#             elif type(dset) == int:
+#                 dset_ind = dset
+#             # If dset not specified try to load the HAADF
+#             elif np.isin('HAADF', dsets).item():
+#                 dset_ind = np.argwhere(np.array(dsets) == 'HAADF').item()
+#             # Otherwise import the last dataset
+#             else:
+#                 dset_ind = len(dsets) - 1
+
+#             print(f'{dsets[dset_ind]} image loaded.')
+
+#             image = np.array(emd[dset_ind])
+
+#         # Change DPC vector images from complex type to an image stack
+#         if image.dtype == 'complex64':
+#             image = np.stack([np.real(image), np.imag(image)])
+
+#         # Get metadata using ncempy (because it loads more informative metadata
+#         # and allows loading everyting using JSON)
+#         try:
+#             trap = io.StringIO()
+#             with redirect_stdout(trap):  # To suppress printing from emdReader
+#                 emd_file = emdReader(path, dsetNum=dset_ind)
+
+#             # image = emd_file['data']
+#             metadata = {
+#                 key: val for key, val in emd_file.items() if key != 'data'
+#             }
+
+#         except IndexError as ie:
+#             raise ie
+#         except TypeError:
+
+#             try:
+#                 # Need to remove EDS datasets from the list and get the correct
+#                 # index as spectra are not seen by ncempy functions
+#                 dset_label = dsets[dset_ind]
+#                 dsets = [i for i in dsets if i != 'EDS']
+#                 dset_ind = np.argwhere(np.array(dsets) == dset_label).item()
+
+#                 emd = fileEMDVelox(path)
+#                 if full_metadata is False:
+#                     _, metadata = emd.get_dataset(dset_ind)
+
+#                 elif full_metadata is True:
+#                     group = emd.list_data[dset_ind]
+#                     tempMetaData = group['Metadata'][:, 0]
+#                     validMetaDataIndex = np.where(tempMetaData > 0)
+#                     metaData = tempMetaData[validMetaDataIndex].tobytes()
+#                     # Interpret as UTF-8 encoded characters and load as JSON
+#                     metadata = json.loads(metaData.decode('utf-8', 'ignore'))
+
+#             except IndexError as ie:
+#                 raise ie
+#             except:
+#                 raise Exception('Unknown file type.')
+
+#         metadata['imageType'] = dsets[dset_ind]
+
+#     elif path[-3:] == 'ser':
+#         ser_file = serReader(path, dsetNum=dset)
+#         image = ser_file['data']
+#         metadata = {
+#             key: val for key, val in ser_file.items() if key != 'data'
+#         }
+
+#     else:
+#         image = imageio.volread(path)
+#         metadata = image.meta
+
+#     h, w = image.shape[-2:]
+
+#     if images_from_stack is None and len(image.shape) == 3:
+#         image = image[0, :, :]
+
+#     elif images_from_stack == 'all':
+#         pass
+#     elif (type(images_from_stack) == list
+#           or type(images_from_stack) == int):
+#         image = image[images_from_stack, :, :]
+
+#     # Norm the image(s)
+#     if norm_image:
+#         image = image_norm(image)
+
+#     # Make image dimensions even length
+#     if len(image.shape) == 2:
+#         image = image[:int((h//2)*2), :int((w//2)*2)]
+#         image_ = image
+
+#     if len(image.shape) == 3:
+#         image = image[:, :int((h//2)*2), :int((w//2)*2)]
+#         image_ = image[0, :, :]
+
+#     if display_image is True:
+#         fig, axs = plt.subplots()
+#         axs.imshow(image_, cmap='gray')
+#         axs.set_xticks([])
+#         axs.set_yticks([])
+
+#     if return_path:
+#         return image, metadata, path
+#     else:
+#         return image, metadata
 
 
 def image_norm(image):

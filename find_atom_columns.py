@@ -319,7 +319,7 @@ class HRImage:
                 axis=1)
             ).T
 
-            lattice_rot.at_cols[['x_ref', 'y_ref']] = (
+            lattice_rot.at_cols[['x_fit', 'y_fit']] = (
                 (dir_struct_matrix @ xy_fit).T[:, :2] + origin_shift
             )
 
