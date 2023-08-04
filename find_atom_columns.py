@@ -60,6 +60,7 @@ from scipy.ndimage import (
 
 from skimage.draw import polygon2mask
 from skimage.feature import hessian_matrix_det
+from skimage.transform import (downscale_local_mean, rescale)
 
 from SingleOrigin.utils import (
     image_norm,
@@ -1385,15 +1386,28 @@ class AtomicColumnLattice:
 
         fft_der = image_norm(-gaussian_laplace(self.fft, sigma))
 
-        masks, num_masks, slices, spots = watershed_segment(
-            fft_der,
-            local_thresh_factor=0.95
+        # Downsample for speed
+        if np.max([self.h, self.w]) > 2000:
+            fft_der_ds = downscale_local_mean(fft_der, (2, 2))
+        else:
+            fft_der_ds = fft_der
+        masks, num_masks, _, spots = watershed_segment(
+            fft_der_ds,
+            local_thresh_factor=0,
+            buffer=2*sigma
         )
 
-        im_std = std_local(self.fft, sigma)
+        # Resample
+        if np.max([self.h, self.w]) > 2000:
+            masks = rescale(masks, (2, 2), order=0)
+            spots.loc[:, 'x':'y'] *= 2
+
+        # im_std = std_local(self.fft, sigma)
 
         spots['stdev'] = [
-            im_std[y, x] for [x, y]
+            np.std(self.fft[int(y-sigma):int(y+sigma+1),
+                            int(x-sigma):int(x+sigma+1)])
+            for [x, y]
             in np.around(spots.loc[:, 'x':'y']).to_numpy(dtype=int)
         ]
 
@@ -3587,7 +3601,7 @@ class AtomicColumnLattice:
             the major and minor axes to measure additional statistical
             parameters of the distributions.
             Default: 'moments'
-        group_dist : scalar or None
+        sigma_group : scalar or None
             The maximum separation distance used for grouping close peaks for
             simultaneous fitting. This is necessary if peaks are close enough
             to have overlapping tails. Must use Gaussian fitting to account for
@@ -3619,11 +3633,17 @@ class AtomicColumnLattice:
                                                          'sig_maj', 'sig_min',
                                                          'theta', 'ecc',
                                                          'peak_max'])
-            pcf_sm = gaussian_filter(
-                vpcf,
-                sigma=sigma,
-                truncate=3
-            )
+            if sigma is not None:
+                pcf_sm = gaussian_filter(
+                    vpcf,
+                    sigma=sigma,
+                    truncate=3,
+                    mode='constant',
+                )
+
+            else:
+                pcf_sm = copy.deepcopy(vpcf)
+                sigma = 2
 
             masks_indiv, n_peaks, _, peaks = watershed_segment(
                 pcf_sm,
@@ -3680,8 +3700,6 @@ class AtomicColumnLattice:
                     group_masks,
                     0
                 )
-
-                # n_peaks = labels.shape[0]
 
             if method == 'moments':
                 for i, label in tqdm(enumerate(labels)):
@@ -3877,7 +3895,7 @@ class AtomicColumnLattice:
                     '"colormap_range" must be: listlike of shape (2,) or None'
                 )
 
-        corners = np.array([[0, 0], [1, 0], [1, -1], [0, -1]])
+        corners = np.array([[0, 0], [1, 0], [1, 1], [0, 1]])
 
         # Set up Figure and gridspec
         if vpcfs_to_plot == 'all':
@@ -3964,9 +3982,11 @@ class AtomicColumnLattice:
                 marker='+')
 
             cell_box = np.array(
-                [origin + corner @ self.a_2d / d
+                [origin + np.sum(corner * self.a_2d / d, axis=1)
+                 * np.array([1, -1])
                  for corner in corners]
             )
+            print(cell_box)
 
             label = key
             axs[i].text(

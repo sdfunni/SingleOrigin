@@ -58,11 +58,10 @@ from ncempy.io.emdVelox import fileEMDVelox
 from ncempy.io.emd import emdReader
 
 from skimage.segmentation import watershed
-# from cv2 import watershed
 from skimage.measure import (moments, moments_central)
 
 from tifffile import imwrite
-import time
+# import time
 
 # %%
 
@@ -385,7 +384,7 @@ def load_image(
         path=None,
         display_image=True,
         images_from_stack='all',
-        load_dset=0,
+        dsets_to_load=0,
         return_path=False,
         norm_image=True,
         full_metadata=False,
@@ -409,7 +408,7 @@ def load_image(
         Default: None: import only the first image of the stack.
         'all' : import all images as a 3d numpy array.
 
-    load_dset : str, or int, or list of strings
+    dsets_to_load : str, or int, or list of strings
         If more than one dataset in the file, the title of the desired
         dataset (for Velox .emd files) or the dataset number (for all other
         filetypes). For .emd files with multiple datasets, passing a list will
@@ -451,10 +450,14 @@ def load_image(
             filter="Images (*.png *.jpg *.tif *.dm4 *.dm3 *.emd *.ser)"
         )
 
-    if ((type(load_dset) == int) | (type(load_dset) == str)) & (load_dset != 'all'):
-        load_dset = [load_dset]
+    if ((type(dsets_to_load) == int) | (type(dsets_to_load) == str)) \
+            & (dsets_to_load != 'all'):
 
-    if (type(load_dset) == list) & (len(load_dset) > 1) & (path[-3:] != 'emd'):
+        dsets_to_load = [dsets_to_load]
+
+    if (type(dsets_to_load) == list) & (len(dsets_to_load) > 1) \
+            & (path[-3:] != 'emd'):
+
         raise Exception(
             'Loading multiple datasets is only implimented for .emd files. '
             + 'Specify a single dataset for this file or pass None to load '
@@ -475,38 +478,70 @@ def load_image(
 
         emd = hs.load(path)
         if type(emd) != list:
-            dsets = [emd.metadata.General.title]
+            dsets = np.array([emd.metadata.General.title])
+            # dsets_to_load = dsets
             # images = {dsets[0]: np.array(emd)}
             # print('Loaded only dataset: ', dsets[0])
             # dset_ind = 0
         else:
-            dsets = [emd[i].metadata.General.title for i in range(len(emd))]
+            dsets = np.array([emd[i].metadata.General.title
+                              for i in range(len(emd))])
+
+            # # Check for and fix non-unique dataset names
+            # unique_labels, inverse, counts = np.unique(
+            #     dsets,
+            #     return_inverse=True,
+            #     return_counts=True,
+            # )
+            # non_unique = np.argwhere(counts > 1)
+
+            # for i in non_unique:
+            #     label = unique_labels[i].item()
+            #     inds_to_fix = np.argwhere(inverse == i)
+            #     for i, ind in enumerate(inds_to_fix):
+            #         dsets[ind.item()] = label + f'{i}'
+
             print('Datasets found: ', ', '.join(dsets))
 
-            # Get list of all datasets to load if "all" specified
-            if load_dset == 'all':
-                load_dset = dsets
+            # Get list of all datasets to load if "all" specified.
+            # Remove EDS datasets because they cause problems.
+            # This still allows loading of elemental maps from EDS
+            if dsets_to_load == 'all':
+                dsets_to_load = dsets[dsets != 'EDS']
+                dsets_to_load_inds = [i for i, label in enumerate(dsets)
+                                      if label != 'EDS']
 
             # Otherwise get list of requested datasets that are in the file
             else:
-                num_requested = len(load_dset)
-                load_dset = [dset_ for dset_ in load_dset
-                             if dset_ in dsets]
-                num_avail = len(load_dset)
+                num_requested = len(dsets_to_load)
 
-                if len(load_dset) == 0:
+                dsets_to_load = [dset_ for dset_ in dsets_to_load
+                                 if dset_ in dsets]
+
+                dsets_to_load_inds = [np.argwhere(dsets == dset_).item()
+                                      for dset_ in dsets_to_load]
+
+                num_avail = len(dsets_to_load)
+
+                if len(dsets_to_load) == 0:
                     raise Exception('No matching dataset(s) found to load.')
                 elif num_requested > num_avail:
                     print(
                         'Some datasets not available. Loading: ',
-                        *load_dset
+                        *dsets_to_load
                     )
 
         images = {}
         metadata = {}
-        for dset_ in load_dset:
-            dset_ind = np.argwhere(np.array(dsets) == dset_).item()
-            images[dset_] = np.array(emd[dset_ind])
+        for i, dset_ in enumerate(dsets_to_load):
+            print(dset_)
+            if type(emd) != list:
+                images[dset_] = np.array(emd)
+                dset_ind = 0
+            else:
+                dset_ind = dsets_to_load_inds[i]
+                images[dset_] = np.array(emd[dset_ind])
+                print(images[dset_].shape)
 
             # Change DPC vector images from complex type to an image stack
             if images[dset_].dtype == 'complex64':
@@ -532,17 +567,17 @@ def load_image(
                 try:
                     # Need to remove EDS datasets from the list and get the
                     # correct index as spectra are not seen by ncempy functions
-                    dset_label = dsets[dset_ind]
-                    dsets = [i for i in dsets if i != 'EDS']
-                    dset_ind = np.argwhere(
-                        np.array(dsets) == dset_label).item()
+                    # dset_label = dsets[dset_ind]
+                    # dsets = [i for i in dsets if i != 'EDS']
+                    # dset_ind = np.argwhere(
+                    #     np.array(dsets) == dset_label).item()
 
                     emd_vel = fileEMDVelox(path)
                     if full_metadata is False:
-                        _, metadata[dset_] = emd_vel.get_dataset(dset_ind)
+                        _, metadata[dset_] = emd_vel.get_dataset(i)
 
                     elif full_metadata is True:
-                        group = emd_vel.list_data[dset_ind]
+                        group = emd_vel.list_data[i]
                         tempMetaData = group['Metadata'][:, 0]
                         validMetaDataIndex = np.where(tempMetaData > 0)
                         metaData = tempMetaData[validMetaDataIndex].tobytes()
@@ -553,15 +588,21 @@ def load_image(
 
                 except IndexError as ie:
                     raise ie
+
                 except:
-                    raise Exception('Unknown file type.')
+                    warnings.warn(
+                        'Missing metadata. Try "full_metadata=True" to see ' +
+                        'available details.'
+                    )
+                    metadata[dset_] = {'pixelSize': [1, 1],
+                                       'pixelUnit': ['pixel', 'pixel']}
 
         metadata['imageType'] = dsets[dset_ind]
 
     elif path[-3:] == 'ser':
-        ser_file = serReader(path, dsetNum=load_dset)
-        images = {load_dset: ser_file['data']}
-        metadata = {load_dset: {
+        ser_file = serReader(path, dsetNum=dsets_to_load)
+        images = {dsets_to_load: ser_file['data']}
+        metadata = {dsets_to_load: {
             key: val for key, val in ser_file.items() if key != 'data'
         }}
 
@@ -572,7 +613,7 @@ def load_image(
     for key in images.keys():
         h, w = images[key].shape[-2:]
 
-        if images_from_stack == 'all':
+        if ((images_from_stack == 'all') or (len(images[key].shape) <= 2)):
             pass
         elif (type(images_from_stack) == list
               or type(images_from_stack) == int):
@@ -1818,24 +1859,10 @@ def watershed_segment(
     if type(sigma) in (int, float, tuple):
         img_der = image_norm(-gaussian_laplace(img_der, sigma))
 
-    local_max = detect_peaks(img_der, min_dist=min_dist)
-
-    # Remove peaks at edges
-    frame_edge = np.zeros((h, w), dtype=np.int64)
-    frame_edge[1:-1, 1:-1] = 1
-    local_max *= frame_edge
-    local_max = label(local_max)[0]
+    local_max = label(detect_peaks(img_der, min_dist=min_dist))[0]
+    # local_max = label(local_max)[0]
 
     masks = watershed(-img_der, local_max, watershed_line=watershed_line)
-    # img_der = (image_norm(-img_der) * (2**8 - 1)).astype(np.uint8)
-    # img_der_3 = np.zeros((h, w, 3), dtype=np.uint8)
-    # img_der_3[:, :, 0] = img_der
-    # img_der_3[:, :, 1] = img_der
-    # img_der_3[:, :, 2] = img_der
-
-    # masks = np.squeeze(watershed(img_der_3, copy.deepcopy(local_max)))
-
-    # masks[masks <= 0] = 0
 
     slices = find_objects(masks)
     num_masks = int(np.max(masks))

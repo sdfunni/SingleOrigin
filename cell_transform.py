@@ -149,7 +149,7 @@ class UnitCell():
             coord_max_precision = 2
 
         # Make array of uvw coordinates and shift into the 0-1 unit cell
-        xyz = np.array(
+        xyz_motif = np.array(
             [[i.split('(', 1)[0] for i in Crystal['_atom_site_fract_x'][0]],
              [i.split('(', 1)[0] for i in Crystal['_atom_site_fract_y'][0]],
              [i.split('(', 1)[0] for i in Crystal['_atom_site_fract_z'][0]]
@@ -182,7 +182,7 @@ class UnitCell():
             site_frac = np.ones((xyz.shape[0], 1))
 
         atoms = pd.DataFrame(
-            {'u': xyz[:, 0], 'v': xyz[:, 1], 'w': xyz[:, 2],
+            {'u': xyz_motif[:, 0], 'v': xyz_motif[:, 1], 'w': xyz_motif[:, 2],
              'elem': elem[:, 0],
              'symbol': symbol[:, 0],
              'site_frac': site_frac[:, 0]
@@ -232,21 +232,27 @@ class UnitCell():
                           + 'structure to ensure accuracy.')
         # Generate all atoms in unit cell using symmetry related positions
         if len(symm_eq_pos) > 1:
+            # Loop through motif basis positions
             for n, atom in atoms.iterrows():
                 xyz0 = np.array([atom.u, atom.v, atom.w])
 
                 for oper in symm_eq_pos:
-                    xyz_ = np.array(2*np.ones(3))
-                    while np.allclose(xyz0, xyz_, atol=0.1) is False:
-                        if xyz_[0] == 2:
-                            xyz_ = xyz0.copy()
-                        [x, y, z] = xyz_
-                        xyz_ = np.array(
-                            [eval(oper.split(',')[0]),
-                             eval(oper.split(',')[1]),
-                             eval(oper.split(',')[2])]
-                        ) % 1
+                    # Loop through symmetry equivalent position operators
 
+                    [x, y, z] = xyz0
+                    xyz_ = np.array(
+                        [eval(oper.split(',')[0]),
+                         eval(oper.split(',')[1]),
+                         eval(oper.split(',')[2])]
+                    ) % 1
+
+                    duplicate = np.any([
+                        np.allclose(xyz, xyz_)
+                        for xyz in atoms.loc[:, 'u':'w'].to_numpy(dtype=float)
+                    ])
+
+                    if not duplicate:
+                        # If not a duplicate, add position to DataFrame
                         new_pos = atom.copy()
                         [new_pos.at['u'], new_pos.at['v'], new_pos.at['w']] = [
                             *xyz_]
@@ -268,6 +274,7 @@ class UnitCell():
         atoms = atoms.sort_values(['u', 'v', 'w'])
         atoms.reset_index(inplace=True, drop=True)
 
+        # Calculate metric tensors
         g = metric_tensor(
             self.a, self.b, self.c,
             self.alpha, self.beta, self.gamma
@@ -286,12 +293,14 @@ class UnitCell():
              ]
         )
 
+        # Add Cartesian position vectors to DataFrame
         atoms.insert(atoms.shape[1], 'x', 0)
         atoms.insert(atoms.shape[1], 'y', 0)
         atoms.insert(atoms.shape[1], 'z', 0)
         atoms[['x', 'y', 'z']] = atoms.loc[:, 'u':'w'].to_numpy() @ self.a_3d.T
         atoms.reset_index(drop=True, inplace=True)
 
+        # Save data as object attributes
         self.atoms = atoms
         self.at_cols = None
         self.a_2d = None
