@@ -3917,7 +3917,6 @@ class AtomicColumnLattice:
                 gs_inds = [[row, col]
                            for row in range(nrows)
                            for col in range(ncols)]
-                print(nrows, ncols)
 
         else:
             vpcfs_found = np.isin(vpcfs_to_plot, list(self.vpcfs.keys()))
@@ -3986,7 +3985,6 @@ class AtomicColumnLattice:
                  * np.array([1, -1])
                  for corner in corners]
             )
-            print(cell_box)
 
             label = key
             axs[i].text(
