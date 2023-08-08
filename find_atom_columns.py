@@ -1924,7 +1924,7 @@ class AtomicColumnLattice:
             image_crop = image_crop[int(h/2)-crop_h:int(h/2)+crop_h,
                                     int(w/2)-crop_w:int(w/2)+crop_w]
 
-        min_scale = 1
+        min_scale = 2
         max_scale = 30
         scale_step = 2
 
@@ -2005,9 +2005,9 @@ class AtomicColumnLattice:
         """
 
         self.pixel_size_est = self.get_est_pixel_size()
-
+        print('selecting scale')
         self.select_scale()
-
+        print('scale selected')
         if buffer is not None:
             self.get_roi_mask_polygon(
                 vertices=np.array([[buffer, buffer],
@@ -2489,19 +2489,6 @@ class AtomicColumnLattice:
         if peak_grouping_filter == 'auto':
             peak_grouping_filter = self.sigma
 
-            # if ((type(self.probe_fwhm) == float)
-            #         | (type(self.probe_fwhm) == int)):
-
-            #     peak_grouping_filter = (
-            #         self.probe_fwhm / self.pixel_size_est * 0.5
-            #     )
-
-            # else:
-            #     raise Exception(
-            #         '"probe_fwhm" must be defined for the class instance '
-            #         + 'to enable "peak_grouping_filter" auto calculation.'
-            #     )
-
         elif (
             (type(peak_grouping_filter) == float or
              type(peak_grouping_filter) == int)
@@ -2549,7 +2536,7 @@ class AtomicColumnLattice:
             -gaussian_laplace(
                 self.image,
                 peak_sharpening_filter,
-                truncate=4
+                truncate=16
             )
         )
 
@@ -2640,7 +2627,7 @@ class AtomicColumnLattice:
 
         """*** OR now we will just throw them out???"""
         if pos_toler is None:
-            pos_toler = self.sigma
+            pos_toler = peak_sharpening_filter
         else:
             pos_toler /= self.pixel_size_est
 
@@ -2648,7 +2635,7 @@ class AtomicColumnLattice:
                       > pos_toler
                       ).reshape((-1, 1))
         pos_errors = np.concatenate((pos_errors, pos_errors), axis=1)
-        xy_peak = np.where(pos_errors, np.nan, xy_peak)
+        xy_peak = np.where(pos_errors, xy_ref, xy_peak)
 
         # t += [time.time()]
         # print(f'Step 5 (check pos errors): {(t[-1]-t[-2]) :.{2}f} sec')

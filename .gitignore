@@ -161,3 +161,4 @@ SingleOrigin/utils 2.py
 SingleOrigin-2.3.0.tar.gz
 *.icloud
 find_dp_peaks.py
+*.gz
