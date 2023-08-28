@@ -277,7 +277,6 @@ class DataCube:
 
         self.masks = masks
         xy_peaks = peaks.loc[:, 'x':'y'].to_numpy()
-        print(xy_peaks.shape)
 
         if graphical_picking or (pick_labels is None):
             basis_picks = pick_points(
@@ -292,7 +291,6 @@ class DataCube:
             )
 
         else:
-            print('input selected')
             basis_picks = xy_peaks[np.array(pick_labels), :]
 
         if graphical_picking or (pick_labels is not None):
@@ -582,7 +580,6 @@ class DataCube:
         plots = []
 
         for i, comp in enumerate(keys):
-            print(comp == 'theta')
             label = r'$\circ$' if comp == 'theta' else '%'
             plots += [axs[i].imshow(
                 self.strain_map[comp],
