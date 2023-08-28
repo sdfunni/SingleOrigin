@@ -16,7 +16,7 @@
     along with this program.  If not, see https://www.gnu.org/licenses"""
 
 
-__version__ = "2.4.4"
+__version__ = "2.5"
 
 from SingleOrigin.utils import (
     metric_tensor,
@@ -29,38 +29,48 @@ from SingleOrigin.utils import (
     TwoTheta,
     elec_wavelength,
     select_folder,
+    select_file,
     load_image,
     image_norm,
     write_image_array_to_tif,
-    img_equ_ellip,
-    img_ellip_param,
-    gaussian_2d,
-    gaussian_circ_ss,
-    gaussian_ellip_ss,
-    fit_gaussian_ellip,
-    fit_gaussian_circ,
-    pcf_radial,
-    v_pcf,
-    detect_peaks,
-    disp_vect_sum_squares,
-    fit_lattice,
-    watershed_segment,
     band_pass_filter,
-    get_phase_from_com,
     fast_rotate_90deg,
-    fft_amplitude_area,
     std_local,
     binary_find_largest_rectangle,
     binary_find_smallest_rectangle,
     fft_square,
     get_fft_pixel_size,
+    get_feature_size,
+    detect_peaks,
+    watershed_segment,
+    img_equ_ellip,
+    img_ellip_param,
+    gaussian_2d,
+    gaussian_ellip_ss,
+    gaussian_circ_ss,
+    fit_gaussian_ellip,
+    fit_gaussian_circ,
+    pack_data_prefit,
+    fit_gaussian_group,
+    cft,
+    find_cepstrum_peak,
+    pcf_radial,
+    v_pcf,
+    pick_points,
+    register_lattice_to_peaks,
+    plot_basis,
+    disp_vect_sum_squares,
+    fit_lattice,
+    fft_amplitude_area,
 )
 
 from SingleOrigin.cell_transform import UnitCell
 
 from SingleOrigin.find_atom_columns import (
     HRImage,
-    AtomicColumnLattice
+    AtomicColumnLattice,
 )
 
 from SingleOrigin.reciprocal_lattice_analyzer import ReciprocalImage
+
+from SingleOrigin.nbed4dstem import DataCube

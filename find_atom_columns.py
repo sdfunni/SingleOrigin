@@ -20,6 +20,7 @@ import copy
 import time
 from tqdm import tqdm
 import psutil
+import types
 
 from joblib import Parallel, delayed
 
@@ -47,7 +48,6 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib_scalebar.scalebar import ScaleBar
 
 from scipy.optimize import minimize
-from scipy.interpolate import make_interp_spline
 from scipy.ndimage import (
     gaussian_filter,
     gaussian_laplace,
@@ -59,7 +59,6 @@ from scipy.ndimage import (
 )
 
 from skimage.draw import polygon2mask
-from skimage.feature import hessian_matrix_det
 from skimage.transform import (downscale_local_mean, rescale)
 
 from SingleOrigin.utils import (
@@ -67,7 +66,8 @@ from SingleOrigin.utils import (
     img_ellip_param,
     gaussian_2d,
     fit_gaussian_ellip,
-    fit_gaussian_circ,
+    pack_data_prefit,
+    fit_gaussian_group,
     detect_peaks,
     watershed_segment,
     std_local,
@@ -75,8 +75,10 @@ from SingleOrigin.utils import (
     v_pcf,
     fit_lattice,
     binary_find_smallest_rectangle,
+    get_feature_size
 )
 
+fit_gaussian_group.func_defaults = (None, True, False, True)
 # %%
 
 
@@ -283,7 +285,7 @@ class HRImage:
             lattice_rot.image = rot_.image
             lattice_rot.roi_mask = rotate(lattice_rot.roi_mask,
                                           np.degrees(angle))
-            # lattice_rot.fit_masks = None
+            # lattice_rot.peak_masks = None
             # lattice_rot.group_masks = None
             lattice_rot.at_cols_uncropped = None
 
@@ -488,11 +490,11 @@ class HRImage:
         )
 
         if plot_masked_image is True:
-            fit_masks = np.sum(np.array([lattice.fit_masks
+            peak_masks = np.sum(np.array([lattice.peak_masks
                                          for lattice in
                                          self.latt_dict.values()]),
-                               axis=0)
-            axs.imshow(self.image * fit_masks, cmap='gray')
+                                axis=0)
+            axs.imshow(self.image * peak_masks, cmap='gray')
         else:
             axs.imshow(self.image, cmap='gray')
         axs.set_xticks([])
@@ -1030,7 +1032,7 @@ class AtomicColumnLattice:
     x0, y0 : The image coordinates of the origin of the reference lattice
         (in pixels).
 
-    fit_masks : The last set of masks used for fitting  atom columns. Has
+    peak_masks : The last set of masks used for fitting  atom columns. Has
         the same shape as image.
 
     roi_mask : ndarray or None
@@ -1124,7 +1126,7 @@ class AtomicColumnLattice:
         self.at_cols = pd.DataFrame()
         self.at_cols_uncropped = pd.DataFrame()
         self.x0, self.y0 = np.nan, np.nan
-        self.fit_masks = np.zeros(image.shape)
+        self.peak_masks = np.zeros(image.shape)
         self.roi_mask = np.ones(image.shape)
         self.a1, self.a2 = None, None
         self.a1_star, self.a2_star = None, None
@@ -1281,6 +1283,7 @@ class AtomicColumnLattice:
 
         recip_vects = norm(xy - origin, axis=1)
         min_recip_vect = np.min(recip_vects[recip_vects > 0])
+        print(min_recip_vect)
         window = min(min_recip_vect*10, U)
 
         fig2, ax = plt.subplots(figsize=(10, 10))
@@ -1402,8 +1405,6 @@ class AtomicColumnLattice:
             masks = rescale(masks, (2, 2), order=0)
             spots.loc[:, 'x':'y'] *= 2
 
-        # im_std = std_local(self.fft, sigma)
-
         spots['stdev'] = [
             np.std(self.fft[int(y-sigma):int(y+sigma+1),
                             int(x-sigma):int(x+sigma+1)])
@@ -1416,8 +1417,8 @@ class AtomicColumnLattice:
         xy = spots_.loc[:, 'x':'y'].to_numpy(dtype=float)
 
         recip_vects = norm(xy - origin, axis=1)
-        max_recip_vect = np.max(recip_vects)
-        window = min(max_recip_vect*1.5, U)
+        min_recip_vect = np.min(recip_vects[recip_vects > 0])
+        window = min(min_recip_vect*5, U)
 
         self.recip_latt = spots_
 
@@ -1524,7 +1525,7 @@ class AtomicColumnLattice:
         """
 
         if self.sigma is None:
-            self.select_scale()
+            self.sigma = get_feature_size(self.image)
 
         image_std = image_norm(gaussian_filter(
             std_local(self.image, r),
@@ -1888,61 +1889,6 @@ class AtomicColumnLattice:
 
         return min_dist
 
-    def select_scale(self):
-        """
-        Select appropriate image scale value: the approximate size of atom
-        columns in the image ROI.
-
-        Select scale for the image ROI based on the highest maximum of the
-        determinant of the Hessian (as applied to the central 1024x1024 region
-        of the image if larger than 1k). Stores the determined scale / 2 as
-        self.sigma. This parameter is used for the automatic filtering value in
-        other class methods.
-
-        Parameters
-        ----------
-        None.
-
-        Returns
-        -------
-        None.
-
-        """
-
-        if np.min(self.roi_mask) == 0:
-            _, _, sl = binary_find_smallest_rectangle(self.roi_mask)
-            image_crop = self.image[sl]
-        else:
-            image_crop = self.image
-
-        h, w = image_crop.shape
-        if h * w > 1024**2:
-            crop_factor = 1024/np.sqrt(h*w)
-            crop_h = int(h * crop_factor / 2)
-            crop_w = int(w * crop_factor / 2)
-
-            image_crop = image_crop[int(h/2)-crop_h:int(h/2)+crop_h,
-                                    int(w/2)-crop_w:int(w/2)+crop_w]
-
-        min_scale = 2
-        max_scale = 30
-        scale_step = 2
-
-        scale = np.arange(min_scale, max_scale, scale_step)
-        hess_max = np.array([
-            np.max(hessian_matrix_det(image_crop, sigma=i))
-            for i in scale
-        ])
-
-        spl = make_interp_spline(scale, hess_max, k=2)
-        scale_interp = np.linspace(min_scale, max_scale, 117)
-        hess_max_interp = spl(scale_interp).T
-        scale_max = scale_interp[np.argmax(hess_max_interp)]
-
-        sigma = np.around(scale_max/2, decimals=1)
-
-        self.sigma = sigma
-
     def define_reference_lattice(
             self,
             LoG_sigma=None,
@@ -1963,7 +1909,7 @@ class AtomicColumnLattice:
         ----------
         LoG_sigma : scalar
             The Laplacian of Gaussian sigma value to use for peak sharpening.
-            If None, calculated using select_scale().
+            If None, calculated using get_feature_size().
             Default None.
 
         zoom_factor : scalar
@@ -2005,9 +1951,15 @@ class AtomicColumnLattice:
         """
 
         self.pixel_size_est = self.get_est_pixel_size()
-        print('selecting scale')
-        self.select_scale()
-        print('scale selected')
+
+        if np.min(self.roi_mask) == 0:
+            _, _, sl = binary_find_smallest_rectangle(self.roi_mask)
+            image_crop = self.image[sl]
+        else:
+            image_crop = self.image
+
+        scale = get_feature_size(image_crop)
+
         if buffer is not None:
             self.get_roi_mask_polygon(
                 vertices=np.array([[buffer, buffer],
@@ -2390,14 +2342,14 @@ class AtomicColumnLattice:
             The Laplacian of Gaussian sigma value to use for peak sharpening
             for defining peak regions via the Watershed segmentation method.
             Should be approximately pixel_size_est / probe_fwhm / 2.
-            If 'auto', sigma found using select_scale().
+            If 'auto', sigma found using get_feature_size().
             Default 'auto'.
 
         peak_grouping_filter : scalar, 'auto' or None
             The Gaussian sigma value to use for peak grouping by blurring,
             then creating image segment regions with watershed method.
             Should be approximately pixel_size_est / probe_fwhm * 0.5.
-            If 'auto', sigma found using select_scale().
+            If 'auto', sigma found using get_feature_size().
             If simultaneous fitting of close atom columns is not desired, set
             to None.
             Default: 'auto'.
@@ -2504,20 +2456,6 @@ class AtomicColumnLattice:
 
         if peak_sharpening_filter == 'auto':
             peak_sharpening_filter = self.sigma * 0.75
-            # if (
-            #     (type(self.probe_fwhm) == float)
-            #     | (type(self.probe_fwhm) == int)
-            # ):
-
-            #     peak_sharpening_filter = (
-            #         self.probe_fwhm / self.pixel_size_est * 0.5
-            #     )
-
-            # else:
-            #     raise Exception(
-            #         '"probe_fwhm" must be defined for the class instance to '
-            #         + 'enable "peak_sharpening_filter" auto calculation.'
-            #     )
 
         elif (
             (type(peak_sharpening_filter) is float or
@@ -2569,23 +2507,34 @@ class AtomicColumnLattice:
             pos_bound_dist = min_dist/2
         elif pos_bound_dist is None:
             pos_bound_dist = np.inf
-        elif np.isin(type(pos_bound_dist), [float, int]).item():
+        elif (np.isin(type(pos_bound_dist), [float, int]).item() &
+              pos_bound_dist > 0):
             pos_bound_dist = pos_bound_dist / self.pixel_size_est
         else:
             raise Exception(
-                "'pos_bound_dist' must be 'auto', a scalar or None."
+                "'pos_bound_dist' must be 'auto', a positive scalar or None."
             )
+
+        """Define modified fitting function based on the passed/determined
+        arguments"""
+
+        fit_gaussian_group.func_defaults = (
+            pos_bound_dist,
+            use_circ_gauss,
+            use_bounds,
+            use_background_param
+        )
 
         t += [time.time()]
         print(f'Step 1 (Initial checks): {(t[-1]-t[-2]) :.{2}f} sec')
 
         """Use Watershed segmentation with LoG filtering to generate fitting
         masks"""
-        fit_masks, num_fit_masks, slices_LoG, xy_peak = watershed_segment(
+        peak_masks, num_peak_masks, slices_LoG, xy_peak = watershed_segment(
             img_LoG,
             local_thresh_factor=local_thresh_factor,
             watershed_line=watershed_line,
-            min_dist=min_dist
+            min_dist=min_dist/2
         )
 
         t += [time.time()]
@@ -2602,10 +2551,10 @@ class AtomicColumnLattice:
             )
 
             t += [time.time()]
-            print(f'Step  (grouping masks): {(t[-1]-t[-2]) :.{2}f} sec')
+            print(f'Step 3 (grouping masks): {(t[-1]-t[-2]) :.{2}f} sec')
 
         else:
-            group_masks = fit_masks
+            group_masks = peak_masks
             t += [time.time()]
             print('Step 3 (grouping masks) was skipped.')
 
@@ -2618,8 +2567,6 @@ class AtomicColumnLattice:
         )
         xy_peak = np.array([xy_peak[ind, :] for ind in inds])
         slices_LoG = [slices_LoG[ind] for ind in inds]
-
-        # t += [time.time()]
 
         """If the difference between detected peak position and reference
         position is greater than the position tolerance, the reference is taken
@@ -2637,13 +2584,10 @@ class AtomicColumnLattice:
         pos_errors = np.concatenate((pos_errors, pos_errors), axis=1)
         xy_peak = np.where(pos_errors, xy_ref, xy_peak)
 
-        # t += [time.time()]
-        # print(f'Step 5 (check pos errors): {(t[-1]-t[-2]) :.{2}f} sec')
-
         """Find corresponding mask (from both LoG and Gauss filtering) for each
         peak"""
-        fit_masks_to_peaks = map_coordinates(
-            fit_masks,
+        peak_masks_to_peaks = map_coordinates(
+            peak_masks,
             np.flipud(xy_peak.T),
             order=0
         ).astype(int)
@@ -2655,40 +2599,39 @@ class AtomicColumnLattice:
                 order=0
             ).astype(int)
         else:
-            group_masks_to_peaks = fit_masks_to_peaks
+            group_masks_to_peaks = peak_masks_to_peaks
 
-        LoG_masks_used = np.unique(fit_masks_to_peaks)
-        Gauss_masks_used = np.unique(group_masks_to_peaks)
+        peak_masks_used = np.unique(peak_masks_to_peaks)
+        group_masks_used = np.unique(group_masks_to_peaks)
 
         """Throw out masks which do not correspond to at least one reference
             lattice point"""
-        fit_masks = np.where(
-            np.isin(fit_masks, LoG_masks_used),
-            fit_masks,
+        peak_masks = np.where(
+            np.isin(peak_masks, peak_masks_used),
+            peak_masks,
             0
         )
-        self.fit_masks = np.where(fit_masks >= 1, 1, 0)
+        self.peak_masks = np.where(peak_masks >= 1, 1, 0)
 
         if peak_grouping_filter is not None:
             group_masks = np.where(
-                np.isin(group_masks, Gauss_masks_used),
+                np.isin(group_masks, group_masks_used),
                 group_masks,
                 0
             )
             self.group_masks = np.where(group_masks >= 1, 1, 0)
         else:
-            group_masks = fit_masks
-            self.group_masks = self.fit_masks
+            group_masks = peak_masks
+            self.group_masks = self.peak_masks
 
         """Find sets of reference columns for each grouping mask"""
-        peak_groupings = [
-            [mask_num,
-             np.argwhere(group_masks_to_peaks == mask_num).flatten()]
-            for mask_num in Gauss_masks_used if mask_num != 0
+        peak_groups = [
+            np.argwhere(group_masks_to_peaks == mask_num).flatten()
+            for mask_num in group_masks_used if mask_num != 0
         ]
 
         group_sizes, counts = np.unique(
-            [match[1].shape[0] for match in peak_groupings],
+            [len(group) for group in peak_groups],
             return_counts=True
         )
 
@@ -2697,21 +2640,10 @@ class AtomicColumnLattice:
             for i, size in enumerate(group_sizes):
                 print(f'{counts[i]}x {size}-column groups')
 
-        at_cols_inds = at_cols.index.to_numpy(dtype=float)
-        self.at_cols_inds = at_cols_inds
-
-        t += [time.time()]
-        print(f'Step 4 (match masks to lattice ): {(t[-1]-t[-2]) :.{2}f} sec')
-        # print(
-        #     'Step 6(match masks and points 2): '
-        #     + f'{int((t[-1]-t[-2]) // 60)} min '
-        #     + f'{(t[-1]-t[-2]) % 60 :.{1}f} sec'
-        # )
-
         """Find min & max slice indices for each group of fitting masks"""
         group_fit_slices = [
             [slices_LoG[ind] for ind in inds]
-            for [_, inds] in peak_groupings
+            for inds in peak_groups
         ]
 
         group_fit_slices = [np.array(
@@ -2728,297 +2660,60 @@ class AtomicColumnLattice:
         ]
 
         """Pack image slices and metadata together for the fitting routine"""
-        args_packed = [
-            [self.image[group_slices[counter][0],
-                        group_slices[counter][1]
-                        ],
-             fit_masks[group_slices[counter][0],
-                       group_slices[counter][1]
-                       ],
-             fit_masks_to_peaks[inds_],
-             [group_slices[counter][1].start,
-              group_slices[counter][0].start
-              ],
-             xy_peak[inds_, :].reshape((-1, 2)),
-             at_cols_inds[inds_],
-             group_mask_num]
-            for counter, [group_mask_num, inds_]
-            in enumerate(peak_groupings)
-        ]
+
+        args_packed = pack_data_prefit(
+            data=self.image,
+            slices=group_slices,
+            masks=peak_masks,
+            xy_peaks=xy_peak,
+            peak_mask_index=peak_masks_to_peaks,
+            peak_groups=peak_groups,
+        )
 
         self.args_packed = args_packed
 
+        at_cols_inds = at_cols.index.to_numpy(dtype=float)
+        self.at_cols_inds = at_cols_inds
+
+        unpacking_inds = [at_cols_inds[inds] for inds in peak_groups]
+
+        self.unpacking_inds = unpacking_inds
+
         t += [time.time()]
-        print(f'Step 5 (Final prep): {(t[-1]-t[-2]) % 60 :.{2}f} sec')
-
-        """Define column fitting function for image slices"""
-
-        def fit_column(args):
-            [img_sl,
-             mask_sl,
-             log_mask_num,
-             xy_start,
-             xy_peak,
-             inds,
-             _] = args
-
-            num = xy_peak.shape[0]
-            masks = np.where(np.isin(mask_sl, log_mask_num), mask_sl, 0)
-
-            img_msk = img_sl * np.where(masks > 0, 1, 0)
-
-            if num == 1:
-                [x0, y0] = (xy_peak - xy_start).flatten()
-                _, _, _, theta, sig_1, sig_2 = img_ellip_param(img_msk)
-
-                sig_replace = 3
-                if sig_1 <= 1:
-                    sig_1 = sig_2 = sig_replace
-                elif sig_2 <= 1:
-                    sig_2 = sig_replace
-
-                if sig_1/sig_2 > 3:
-                    sig_1 = sig_2
-                    theta = 0
-
-                sig_rat = sig_1/sig_2
-                I0 = (
-                    np.average(img_msk[img_msk != 0])
-                    - np.std(img_msk[img_msk != 0])
-                )
-                A0 = np.max(img_msk) - I0
-
-                if use_circ_gauss:
-                    if use_bounds:
-                        bounds = [
-                            (x0-pos_bound_dist/2, x0+pos_bound_dist),
-                            (y0-pos_bound_dist/2, y0+pos_bound_dist),
-                            (1, None),
-                            (0, 1.2),
-                        ] * num + [(0, None)]
-                        method = 'L-BFGS-B'
-
-                        if not use_background_param:
-                            bounds[-1] = (0, 0)
-
-                    else:
-                        bounds = None
-                        method = 'BFGS'
-
-                    p0 = np.array(
-                        [x0, y0, np.mean([sig_1, sig_2]),  A0, I0]
-                    )
-
-                    params = fit_gaussian_circ(
-                        img_msk,
-                        p0,
-                        masks,
-                        method=method,
-                        bounds=bounds
-                    )
-
-                else:
-                    if use_bounds:
-                        bounds = [
-                            (x0 - pos_bound_dist/2, x0 + pos_bound_dist),
-                            (y0 - pos_bound_dist/2, y0 + pos_bound_dist),
-                            (1, None),
-                            (1, None),
-                            (None, None),
-                            (0, 1.2),
-                        ] * num + [(0, None)]
-                        method = 'L-BFGS-B'
-
-                        if not use_background_param:
-                            bounds[-1] = (0, 0)
-
-                    else:
-                        bounds = None
-                        method = 'BFGS'
-
-                    p0 = np.array(
-                        [x0, y0, sig_1, sig_rat,  np.radians(theta), A0, I0]
-                    )
-
-                    params = fit_gaussian_ellip(
-                        img_msk,
-                        p0,
-                        masks,
-                        method=method,
-                        bounds=bounds
-                    )
-
-                params = np.array(
-                    [params[:, 0] + xy_start[0],
-                     params[:, 1] + xy_start[1],
-                     params[:, 2],
-                     params[:, 2]/params[:, 3],
-                     np.degrees(params[:, 4]),
-                     params[:, 5],
-                     params[:, 6]]
-                ).T
-
-            if num > 1:
-                x0y0 = xy_peak - xy_start
-                x0 = x0y0[:, 0]
-                y0 = x0y0[:, 1]
-
-                sig_1 = []
-                sig_2 = []
-                sig_rat = []
-                theta = []
-                I0 = []
-                A0 = []
-
-                for i, mask_num in enumerate(log_mask_num):
-                    mask = np.where(masks == mask_num, 1, 0)
-                    masked_sl = img_sl * mask
-                    _, _, _, theta_, sig_1_, sig_2_ = (
-                        img_ellip_param(masked_sl))
-
-                    sig_replace = 3
-                    if sig_1_ <= 1:
-                        sig_1_ = sig_2_ = sig_replace
-                    elif sig_2_ <= 1:
-                        sig_2_ = sig_replace
-
-                    if sig_1_/sig_2_ > 3:
-                        sig_1_ = sig_2_
-                        theta_ = 0
-
-                    sig_1 += [sig_1_]
-                    sig_2 += [sig_2_]
-                    sig_rat += [sig_1_ / sig_2_]
-                    theta += [np.radians(theta_)]
-                    I0 += [(np.average(masked_sl[masked_sl != 0])
-                            - np.std(masked_sl[masked_sl != 0]))]
-                    A0 += [np.max(masked_sl) - I0[i]]
-
-                if use_circ_gauss:
-                    if use_bounds:
-                        bounds = [
-                            (None, None),
-                            (None, None),
-                            (1, None),
-                            (0, 1.2),
-                        ] * num + [(0, None)]
-                        for i in range(num):
-                            if pos_bound_dist == np.inf:
-                                break
-                            bounds[i*4] = (x0[i] - pos_bound_dist,
-                                           x0[i] + pos_bound_dist)
-                            bounds[i*4 + 1] = (y0[i] - pos_bound_dist,
-                                               y0[i] + pos_bound_dist)
-
-                        method = 'L-BFGS-B'
-
-                        if not use_background_param:
-                            bounds[-1] = (0, 0)
-
-                    else:
-                        bounds = None
-                        method = 'BFGS'
-
-                    p0 = np.array(
-                        [x0, y0, np.mean([sig_1, sig_2], axis=0), A0]
-                    ).T
-
-                    p0 = np.append(p0.flatten(), np.mean(I0))
-
-                    params = fit_gaussian_circ(
-                        img_msk,
-                        p0,
-                        masks,
-                        method=method,
-                        bounds=bounds
-                    )
-
-                else:
-                    if use_bounds:
-                        bounds = [
-                            (None, None),
-                            (None, None),
-                            (1, None),
-                            (1, None),
-                            (None, None),
-                            (0, 1.2),
-                        ] * num + [(0, None)]
-
-                        for i in range(num):
-                            if pos_bound_dist == np.inf:
-                                break
-                            bounds[i*6] = (x0[i] - pos_bound_dist,
-                                           x0[i] + pos_bound_dist)
-                            bounds[i*6 + 1] = (y0[i] - pos_bound_dist,
-                                               y0[i] + pos_bound_dist)
-
-                        method = 'L-BFGS-B'
-
-                        if not use_background_param:
-                            bounds[-1] = (0, 0)
-
-                    else:
-                        bounds = None
-                        method = 'BFGS'
-
-                    p0 = np.array(
-                        [x0, y0, sig_1, sig_rat, theta, A0]
-                    ).T
-
-                    p0 = np.append(p0.flatten(), np.mean(I0))
-
-                    params = fit_gaussian_ellip(
-                        img_msk,
-                        p0,
-                        masks,
-                        method=method,
-                        bounds=bounds
-                    )
-
-                params = np.array(
-                    [params[:, 0] + xy_start[0],
-                     params[:, 1] + xy_start[1],
-                     params[:, 2],
-                     params[:, 2]/params[:, 3],
-                     np.degrees(params[:, 4]),
-                     params[:, 5],
-                     params[:, 6]]
-                ).T
-
-            return params
+        print(f'Step 4 (Final prep): {(t[-1]-t[-2]) % 60 :.{2}f} sec')
 
         """Run fitting routine"""
         print('Fitting atom columns...')
-        t0 = time.time()
+
         if parallelize is True:
             """Large data set: use parallel processing"""
             print('Using parallel processing')
-            n_jobs = psutil.cpu_count(logical=False)
+            n_jobs = psutil.cpu_count(logical=True)
 
             results_ = Parallel(n_jobs=n_jobs)(
-                delayed(fit_column)(arg) for arg in tqdm(args_packed)
+                delayed(fit_gaussian_group)(
+                    *args,
+                ) for args in tqdm(args_packed)
             )
 
         else:
             """Small data set: use serial processing"""
             print('Using serial processing')
 
-            results_ = [fit_column(arg) for arg in tqdm(args_packed)]
+            results_ = [fit_gaussian_group(
+                *args,
+            ) for args in tqdm(args_packed)]
 
         results = np.concatenate([np.concatenate(
             (result,
-             args_packed[i][5].reshape(-1, 1)),
+             unpacking_inds[i].reshape(-1, 1)),
             axis=1
         )
             for i, result in enumerate(results_)]
         )
 
-        t_elapse = time.time() - t0
-
-        print(
-            f'Done. Fitting time: {int(t_elapse // 60)} min '
-            + f'{t_elapse % 60 :.{1}f} sec'
-        )
+        t += [time.time()]
+        print(f'Step 5 (Fitting): {(t[-1]-t[-2]) % 60 :.{2}f} sec')
 
         """Post-process results"""
 
@@ -3095,6 +2790,9 @@ class AtomicColumnLattice:
             np.around(self.at_cols.x_ref.to_numpy()).astype(int)
         ] == 1
         ]
+        t += [time.time()]
+        print(f'Step 6 (Post-processing): {(t[-1]-t[-2]) % 60 :.{2}f} sec',
+              '\n Done.')
 
     def show_masks(
             self,
@@ -3122,7 +2820,7 @@ class AtomicColumnLattice:
         """
 
         if mask_to_show == 'fitting':
-            mask = self.fit_masks
+            mask = self.peak_masks
         elif mask_to_show == 'grouping':
             mask = self.group_masks
         else:
@@ -3394,7 +3092,7 @@ class AtomicColumnLattice:
                     color='black', s=4)
 
         r = self.residuals.flatten()
-        data = self.image * self.fit_masks
+        data = self.image * self.peak_masks
         data[:self.buffer, :] = 0
         data[-self.buffer:, :] = 0
         data[:, :self.buffer] = 0
@@ -3735,10 +3433,9 @@ class AtomicColumnLattice:
                         mask = np.where(masks_indiv == mask_num, 1, 0)
                         peak_masked = mask * self.vpcfs[key]
 
-                        x0, y0, ecc, theta, sig_maj, sig_min = \
-                            img_ellip_param(
-                                peak_masked
-                            )
+                        x0, y0, ecc, theta, sig_maj, sig_min = img_ellip_param(
+                            peak_masked
+                        )
 
                         p0 += [
                             x0,

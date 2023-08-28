@@ -35,7 +35,6 @@ from skimage.transform import (downscale_local_mean, rescale)
 from SingleOrigin.utils import (
     image_norm,
     watershed_segment,
-    std_local,
     fit_lattice,
     absolute_angle_bt_vectors,
 )
@@ -75,7 +74,7 @@ class ReciprocalImage:
             self,
             image,
             pixel_size,
-            pixel_units,
+            pixel_units=r'/AA',
             origin=None,
             fft_or_dp='fft',
     ):
@@ -100,15 +99,21 @@ class ReciprocalImage:
         a1_order=1,
         a2_order=1,
         sigma=3,
+        min_dist=5,
+        buffer=5,
         thresh_factor_std=1,
         thresh_abs=0.1,
+        peak_thresh_factor=0.1,
         max_order=5,
         origin=None,
+        a_star=None,
+        show_fit=True,
+        verbose=True,
     ):
         """Find peaks in a reciprocal lattice image (i.e. FFT or diffraction
         pattern) and get the reciprocal lattice parameters.
 
-        Peaks locations are determined by center-of-mass applied to the 
+        Peaks locations are determined by center-of-mass applied to the
         surrounding region as found using the watershed method. A best-fit
         lattice is then registered to the set of located peaks. This procedure
         results in a high precision measurement of the lattice parameters from
@@ -153,39 +158,55 @@ class ReciprocalImage:
         elif self.fft_or_dp == 'dp':
             if origin is None:
                 n_picks = 3
-                fix_origin = False
-            else:
+            elif a_star is None:
                 n_picks = 2
-                fix_origin = True
-            pwr_factor = 1
+            else:
+                n_picks = 0
+
+            fix_origin = False
+            pwr_factor = 0.5
         else:
             raise Exception(
                 "'fft_or_dp' must be 'fft' or 'dp'."
             )
 
-        image_der = image_norm(-gaussian_laplace(
-            gaussian_filter(self.image, 1), sigma))
-
-        # masks, num_masks, slices, spots = watershed_segment(image_der)
-
         # Downsample for speed
         if np.max([self.h, self.w]) > 2000:
+            print('Downsampling...')
             factor = int(np.max([self.h, self.w])/1e3)
             image_ds = downscale_local_mean(self.image, (factor, factor))
-            image_der_ds = image_norm(-gaussian_laplace(
-                gaussian_filter(image_ds, 1), sigma/factor))
+            if sigma > 0:
+                image_der = image_norm(-gaussian_laplace(
+                    gaussian_filter(image_ds, 1), sigma/factor))
+            else:
+                image_der = self.image
         else:
-            image_der_ds = image_der
+            if sigma > 0:
+                image_der = image_norm(-gaussian_laplace(
+                    gaussian_filter(self.image, 1), sigma))
+            else:
+                image_der = self.image
         masks, num_masks, _, spots = watershed_segment(
-            image_der_ds,
+            image_der,
             local_thresh_factor=0,
-            buffer=2*sigma
+            max_thresh_factor=peak_thresh_factor,
+            buffer=buffer,
+            min_dist=min_dist
         )
 
         # Upsample
         if np.max([self.h, self.w]) > 2000:
             masks = rescale(masks, (factor, factor), order=0)
             spots.loc[:, 'x':'y'] *= factor
+
+        # Remove edge pixels:
+        if buffer > 0:
+            spots = spots[
+                ((spots.x >= buffer) &
+                 (spots.x <= self.w - buffer) &
+                 (spots.y >= buffer) &
+                 (spots.y <= self.h - buffer))
+            ].reset_index(drop=True)
 
         spots['stdev'] = [
             np.std(image_der[int(y-sigma):int(y+sigma+1),
@@ -196,53 +217,57 @@ class ReciprocalImage:
 
         thresh = 0.003 * thresh_factor_std
 
-        spots = spots[
-            (spots.loc[:, 'stdev'] > thresh) &
-            (spots.loc[:, 'max'] > thresh_abs)
-        ].reset_index(drop=True)
+        if thresh > 0 or thresh_abs > 0:
+            spots = spots[
+                (spots.loc[:, 'stdev'] > thresh) &
+                (spots.loc[:, 'max'] > thresh_abs)
+            ].reset_index(drop=True)
 
         xy = spots.loc[:, 'x':'y'].to_numpy(dtype=float)
-
         for i, xy_ in enumerate(xy):
             mask_num = masks[int(xy_[1]), int(xy_[0])]
             mask = np.where(masks == mask_num, 1, 0)
-            com = np.flip(center_of_mass(image_der*mask))
+            com = np.flip(center_of_mass(self.image*mask))
             spots.loc[i, ['x', 'y']] = com
 
         xy = spots.loc[:, 'x':'y'].to_numpy(dtype=float)
 
-        self.peaks = xy
+        if n_picks > 0:
+            fig, ax = plt.subplots(figsize=(10, 10))
+            ax.imshow((self.image)**(pwr_factor), cmap='gray')
+            ax.scatter(xy[:, 0], xy[:, 1], c='red', marker='+')
+            if self.fft_or_dp == 'fft':
+                ax.scatter(origin[0], origin[1], c='white', marker='+')
+                fig.suptitle(
+                    'Pick peaks for the a1* and a2* reciprocal basis vectors' +
+                    ' \n in that order).',
+                    fontsize=12,
+                    c='black',
+                )
 
-        fig, ax = plt.subplots(figsize=(10, 10))
-        ax.imshow((self.image)**(pwr_factor), cmap='gray')
-        ax.scatter(xy[:, 0], xy[:, 1], c='black', marker='+')
-        if self.fft_or_dp == 'fft':
-            ax.scatter(origin[0], origin[1], c='white', marker='+')
-            fig.suptitle(
-                'Pick peaks for the a1* and a2* reciprocal basis vectors \n' +
-                '(in that order).',
-                fontsize=12,
+            elif self.fft_or_dp == 'dp':
+                fig.suptitle(
+                    'Pick peaks for the origin, a1* and a2* reciprocal basis' +
+                    ' \n vectors (in that order).',
+                    fontsize=12,
+                    c='black',
+                )
 
-                c='black',
-            )
+            ax.set_xticks([])
+            ax.set_yticks([])
 
-        elif self.fft_or_dp == 'dp':
-            fig.suptitle(
-                'Pick peaks for the origin, a1* and a2* reciprocal basis \n' +
-                ' vectors (in that order).',
-                fontsize=12,
-                c='black',
-            )
+            if self.fft_or_dp == 'fft':
+                ax.set_xlim(np.min(xy[:, 0]) - 100, np.max(xy[:, 0]) + 100)
+                ax.set_ylim(np.max(xy[:, 1]) + 100, np.min(xy[:, 1]) - 100)
 
-        ax.set_xticks([])
-        ax.set_yticks([])
+            basis_picks_xy = np.array(plt.ginput(n_picks, timeout=30))
 
-        ax.set_xlim(np.min(xy[:, 0]) - 100, np.max(xy[:, 0]) + 100)
-        ax.set_ylim(np.max(xy[:, 1]) + 100, np.min(xy[:, 1]) - 100)
+            plt.close('all')
 
-        basis_picks_xy = np.array(plt.ginput(n_picks, timeout=30))
+        else:
+            basis_picks_xy = a_star + origin
 
-        # Match peaks to basis click points
+        # Match peaks to basis click points or passed a_star/origin data
         vects = np.array([xy - i for i in basis_picks_xy])
         inds = np.argmin(norm(vects, axis=2), axis=1)
         basis_picks_xy = xy[inds, :]
@@ -318,54 +343,56 @@ class ReciprocalImage:
 
         ratio = norm(self.a1_star)/norm(self.a2_star)
 
-        print(f'Reciproal lattice angle (degrees): {theta :.{3}f}')
-        print(f'Reciproal vector ratio (a1*/a2*): {ratio :.{5}f}')
-
-        plt.close('all')
+        if verbose:
+            print(f'Reciproal lattice angle (degrees): {theta :.{3}f}')
+            print(f'Reciproal vector ratio (a1*/a2*): {ratio :.{5}f}')
 
         # Plot refined basis
-        fig2, ax = plt.subplots(figsize=(10, 10))
-        ax.imshow(self.image, cmap='gray')
-        ax.scatter(
-            self.recip_latt.loc[:, 'x_ref'].to_numpy(dtype=float),
-            self.recip_latt.loc[:, 'y_ref'].to_numpy(dtype=float),
-            marker='+',
-            c='red'
-        )
-        ax.scatter(self.origin[0], self.origin[1], marker='+', c='white')
+        if show_fit:
+            fig2, ax = plt.subplots(figsize=(10, 10))
+            ax.imshow(self.image, cmap='plasma')
+            ax.scatter(
+                self.recip_latt.loc[:, 'x_ref'].to_numpy(dtype=float),
+                self.recip_latt.loc[:, 'y_ref'].to_numpy(dtype=float),
+                marker='+',
+                c='red'
+            )
+            ax.scatter(self.origin[0], self.origin[1], marker='+', c='white')
 
-        ax.arrow(
-            origin[0],
-            origin[1],
-            a1_star[0],
-            a1_star[1],
-            fc='red',
-            ec='white',
-            width=0.1,
-            length_includes_head=True,
-            head_width=2,
-            head_length=3
-        )
-        ax.arrow(
-            origin[0],
-            origin[1],
-            a2_star[0],
-            a2_star[1],
-            fc='green',
-            ec='white',
-            width=0.1,
-            length_includes_head=True,
-            head_width=2,
-            head_length=3
-        )
+            ax.arrow(
+                origin[0],
+                origin[1],
+                a1_star[0],
+                a1_star[1],
+                fc='red',
+                ec='white',
+                width=0.1,
+                length_includes_head=True,
+                head_width=2,
+                head_length=3
+            )
+            ax.arrow(
+                origin[0],
+                origin[1],
+                a2_star[0],
+                a2_star[1],
+                fc='green',
+                ec='white',
+                width=0.1,
+                length_includes_head=True,
+                head_width=2,
+                head_length=3
+            )
 
-        ax.set_xlim(np.min(self.recip_latt.loc[:, 'x_ref']) - 100,
-                    np.max(self.recip_latt.loc[:, 'x_ref']) + 100)
-        ax.set_ylim(np.max(self.recip_latt.loc[:, 'y_ref']) + 100,
-                    np.min(self.recip_latt.loc[:, 'y_ref']) - 100)
-        ax.set_xticks([])
-        ax.set_yticks([])
-        plt.title('Reciprocal Lattice Fit')
+            if self.fft_or_dp == 'fft':
+                ax.set_xlim(np.min(self.recip_latt.loc[:, 'x_ref']) - 100,
+                            np.max(self.recip_latt.loc[:, 'x_ref']) + 100)
+                ax.set_ylim(np.max(self.recip_latt.loc[:, 'y_ref']) + 100,
+                            np.min(self.recip_latt.loc[:, 'y_ref']) - 100)
+
+            ax.set_xticks([])
+            ax.set_yticks([])
+            plt.title('Reciprocal Lattice Fit')
 
     def get_reciprocal_vector_length(self, from_origin=True):
 
@@ -487,4 +514,5 @@ class ReciprocalImage:
         -------
         ...
 
+        TODO : WRITE THIS FUNCTION.
         """

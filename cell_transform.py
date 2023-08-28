@@ -114,18 +114,19 @@ class UnitCell():
 
     def __init__(
             self,
-            path='',
+            path=None,
             origin_shift=[0, 0, 0]
     ):
 
-        if path[-4:] == '.cif':
-            path = path
-        else:
+        if path is None:
+            print('Pick an appropriate .cif...')
             path, _ = qfd.getOpenFileName(
-                caption='Select a .cif file...',
-                directory=path,
                 filter='*.cif'
             )
+        elif type(path) is str:
+            pass
+        else:
+            raise Exception('"Path" must be None or a string.')
 
         cif_data = copy.deepcopy(ReadCif(path))
         Crystal = cif_data.dictionary[
