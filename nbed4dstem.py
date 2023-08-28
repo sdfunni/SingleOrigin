@@ -104,6 +104,7 @@ class DataCube:
         For 'fft', the correct origin will be determined from datacube.shape.
         Ensure the datacube has not been manipulated in any way to change the
         correct origin for 'fft'.
+        Default: 'fft'
 
     show_mean_image : bool
         Whether to display the mean image after initiation of the DataCube
@@ -133,7 +134,7 @@ class DataCube:
         image_pixel_size=None,
         origin=None,
         fix_origin=False,
-        origin_type='exp',
+        origin_type='fft',
         show_mean_image=True,
         get_ewpc=True,
     ):
