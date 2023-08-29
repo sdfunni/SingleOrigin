@@ -70,17 +70,22 @@ Set up analysis on the mean EWPC
 """
 
 basis_picks = datacube.initalize_cepstral_analysis(
-    pick_basis_order=(2, 1),        # Pick 2nd along 1st direction,
+    pick_basis_order=(1, 1),        # Pick 2nd along 1st direction,
                                     # 1st peak along 2nd direction.
     use_only_basis_peaks=False,     # Use all peaks in the specified range
     measure_basis_order=(2, 1),     # Use 2nd, 1st peaks for measurements
     r_max=30,                       # Max radius peak considered
     r_min=5,                        # Min radius peak considered
-    graphical_picking=True,         # Choose peak by clicking in plot
+    graphical_picking=False,        # Choose peak by clicking in plot
+                                    # If true plots w/ labels
     min_order=1,                    # Min order of peak to attempt to find
     max_order=2,                    # Max order of peak to attempt to find
     scaling='pwr',                  # Contrast scaling type for display
     power=0.2,                      # Power to use for contrast scaling
+    # pick_labels=[223, 269]          # Choose basis peaks by label #
+                                    # If not passed, and graphical_picking is
+                                    # False, plots with labels so you can
+                                    # decide which to use.
 )
 
 # %%
