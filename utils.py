@@ -669,213 +669,6 @@ def load_image(
         return images, metadata
 
 
-"""
-*** Old version of load_image... retain until any bugs fixed in new one.
-"""
-# def load_image(
-#         path=None,
-#         display_image=True,
-#         images_from_stack=None,
-#         dset=None,
-#         return_path=False,
-#         norm_image=True,
-#         full_metadata=False,
-# ):
-#     """Select image from 'Open File' dialog box, import and (optionally) plot
-
-#     Parameters
-#     ----------
-#     path : str or None
-#         The location of the image to load or the path to the folder containing
-#         the desired image. If only a directory is given, the "Open file"
-#         dialog box will still open allowing you to select an image file.
-
-#     display_image : bool
-#         If True, plots image (or first image if a series is imported).
-#         Default: True
-
-#     images_from_stack : None or 'all' or int or list-like
-#         If file at path contains a stack of images, this argument controls
-#         importing some or all of the images.
-#         Default: None: import only the first image of the stack.
-#         'all' : import all images as a 3d numpy array.
-
-#     dset : str or int
-#         If more than one dataset in the file, the title or index of the desired
-#         dataset (for Velox .emd files) or the dataset number for all other
-#         filetypes.
-
-#     full_metadata : bool
-#         For emd files ONLY, whether to load the entire metadata as nested
-#         dictionaries using JSON. If False, loads standard metadata using
-#         ncempy reader (including pixel size). If True, all metadata available
-#         in the file is loaded. It is a lot of metadata!
-#         Default: False
-
-#     Returns
-#     -------
-#     image : ndarray
-#         The imported image
-
-#     metadata : dict
-#         The metadata available in the original file
-
-#     """
-
-#     if path is None:
-#         path, _ = qfd.getOpenFileName(
-#             caption='Select an image to load...',
-#             filter="Images (*.png *.jpg *.tif *.dm4 *.dm3 *.emd *.ser)"
-#         )
-
-#         print(f'path to imported image: {path}')
-
-#     elif path[-4:] in ['.dm4', '.dm3', '.emd', '.ser', '.tif', '.png', '.jpg']:
-#         pass
-
-#     else:
-#         path, _ = qfd.getOpenFileName(
-#             caption='Select an image to load...',
-#             directory=path,
-#             filter="Images (*.png *.jpg *.tif *.dm4 *.dm3 *.emd *.ser)"
-#         )
-
-#     if path[-3:] in ['dm4', 'dm3']:
-
-#         dm_file = dmReader(path)
-#         image = (dm_file['data'])
-#         metadata = {key: val for key, val in dm_file.items() if key != 'data'}
-
-#     elif path[-3:] == 'emd':
-#         # Load emd files using hyperspy (extracts dataset names for files with
-#         # multiple datasets)
-
-#         emd = hs.load(path)
-#         if type(emd) != list:
-#             dsets = [emd.metadata.General.title]
-#             image = np.array(emd)
-#             print('Loaded only dataset: ', dsets[0])
-#             dset_ind = 0
-#         else:
-#             dsets = [emd[i].metadata.General.title for i in range(len(emd))]
-#             print('Datasets found: ', ', '.join(dsets))
-
-#             # if dset == 'all':
-#             #     dsets_to_load = dsets
-#             # else:
-#             #     dsets_to_load = np.isin(dsets, dset)
-
-#             # if len(dsets_to_load) == 0:
-#             #     raise Exception('No matching dataset(s) found to load.')
-
-#             if type(dset) == str and np.isin(dset, dsets).item():
-#                 dset_ind = np.argwhere(np.array(dsets) == dset).item()
-#             elif type(dset) == int:
-#                 dset_ind = dset
-#             # If dset not specified try to load the HAADF
-#             elif np.isin('HAADF', dsets).item():
-#                 dset_ind = np.argwhere(np.array(dsets) == 'HAADF').item()
-#             # Otherwise import the last dataset
-#             else:
-#                 dset_ind = len(dsets) - 1
-
-#             print(f'{dsets[dset_ind]} image loaded.')
-
-#             image = np.array(emd[dset_ind])
-
-#         # Change DPC vector images from complex type to an image stack
-#         if image.dtype == 'complex64':
-#             image = np.stack([np.real(image), np.imag(image)])
-
-#         # Get metadata using ncempy (because it loads more informative metadata
-#         # and allows loading everyting using JSON)
-#         try:
-#             trap = io.StringIO()
-#             with redirect_stdout(trap):  # To suppress printing from emdReader
-#                 emd_file = emdReader(path, dsetNum=dset_ind)
-
-#             # image = emd_file['data']
-#             metadata = {
-#                 key: val for key, val in emd_file.items() if key != 'data'
-#             }
-
-#         except IndexError as ie:
-#             raise ie
-#         except TypeError:
-
-#             try:
-#                 # Need to remove EDS datasets from the list and get the correct
-#                 # index as spectra are not seen by ncempy functions
-#                 dset_label = dsets[dset_ind]
-#                 dsets = [i for i in dsets if i != 'EDS']
-#                 dset_ind = np.argwhere(np.array(dsets) == dset_label).item()
-
-#                 emd = fileEMDVelox(path)
-#                 if full_metadata is False:
-#                     _, metadata = emd.get_dataset(dset_ind)
-
-#                 elif full_metadata is True:
-#                     group = emd.list_data[dset_ind]
-#                     tempMetaData = group['Metadata'][:, 0]
-#                     validMetaDataIndex = np.where(tempMetaData > 0)
-#                     metaData = tempMetaData[validMetaDataIndex].tobytes()
-#                     # Interpret as UTF-8 encoded characters and load as JSON
-#                     metadata = json.loads(metaData.decode('utf-8', 'ignore'))
-
-#             except IndexError as ie:
-#                 raise ie
-#             except:
-#                 raise Exception('Unknown file type.')
-
-#         metadata['imageType'] = dsets[dset_ind]
-
-#     elif path[-3:] == 'ser':
-#         ser_file = serReader(path, dsetNum=dset)
-#         image = ser_file['data']
-#         metadata = {
-#             key: val for key, val in ser_file.items() if key != 'data'
-#         }
-
-#     else:
-#         image = imageio.volread(path)
-#         metadata = image.meta
-
-#     h, w = image.shape[-2:]
-
-#     if images_from_stack is None and len(image.shape) == 3:
-#         image = image[0, :, :]
-
-#     elif images_from_stack == 'all':
-#         pass
-#     elif (type(images_from_stack) == list
-#           or type(images_from_stack) == int):
-#         image = image[images_from_stack, :, :]
-
-#     # Norm the image(s)
-#     if norm_image:
-#         image = image_norm(image)
-
-#     # Make image dimensions even length
-#     if len(image.shape) == 2:
-#         image = image[:int((h//2)*2), :int((w//2)*2)]
-#         image_ = image
-
-#     if len(image.shape) == 3:
-#         image = image[:, :int((h//2)*2), :int((w//2)*2)]
-#         image_ = image[0, :, :]
-
-#     if display_image is True:
-#         fig, axs = plt.subplots()
-#         axs.imshow(image_, cmap='gray')
-#         axs.set_xticks([])
-#         axs.set_yticks([])
-
-#     if return_path:
-#         return image, metadata, path
-#     else:
-#         return image, metadata
-
-
 def image_norm(image):
     """Norm an image to 0-1
 
@@ -1892,7 +1685,7 @@ def fit_gaussian_circ(
         method='BFGS',
         bounds=None
 ):
-    """Fit an elliptical 2D Gaussain function to data.
+    """Fit a circular 2D Gaussain function to data.
 
     Fits a 2D, elliptical Gaussian to an image. Intensity values equal to zero
     are ignored.
@@ -2699,42 +2492,83 @@ def pick_points(
         xy_peaks,
         origin=None,
         graphical_picking=True,
-        pick_labels=None,
-        window=None,
-        timeout=15
+        window_size=None,
+        timeout=None,
 ):
+    """
+    Plot points on an image for selection by index or graphical picking.
+
+    Used for selecting coordinate points (x,y positions) within an image for
+    subsequent analysis tasks. Typically, these are data peaks that have been
+    detected and must be located accurately by a fitting algorithm.
+
+    Parameters
+    ----------
+    image : 2d array
+        The underlying image as a numpy array.
+    n_picks : int
+        The number of points to be chosen.
+    xy_peaks : array of shape (m,2)
+        The x,y coordinates of the full list of points from which to select the
+        picks.
+    origin : 2-tuple of scalars or None
+        The origin point. This will be plotted for reference, but has no other
+        function. If None, no origin is plotted.
+        Default: None
+    graphical_picking: bool
+        Whether to allow graphical picking with mouse clicks (if True). If
+        False, points are plotted with index labels according to their row
+        index in the xy_peaks array. This allows for subsequent programatic
+        selection instead of graphical picking.
+        Default: True
+    window_size : scalar
+        The size of the region to plot, centered around the middle of the
+        image. Useful to zoom in to the center of an FFT when most of the
+        information is contained in a small area.
+    timeout : scalar or None
+        Number of seconds to allow for graphical picking before closing the
+        plot window. If None, will not time out.
+        Default: None
+
+    Returns
+    -------
+    picks_xy : array of shape (n,2)
+        The x,y coordinates of the 'n' chosen data points.
+
+    """
 
     h, w = image.shape
     U = np.min([int(h/2), int(w/2)])
     fig, ax = plt.subplots(figsize=(10, 10))
-    if window is not None:
-        ax.set_ylim(bottom=U+window/2, top=U-window/2)
-        ax.set_xlim(left=U-window/2, right=U+window/2)
+    if window_size is not None:
+        ax.set_ylim(bottom=U+window_size/2, top=U-window_size/2)
+        ax.set_xlim(left=U-window_size/2, right=U+window_size/2)
     ax.imshow(image, cmap='gray')
     ax.scatter(xy_peaks[:, 0], xy_peaks[:, 1], c='red', s=8)
-    ax.scatter(origin[0], origin[1], c='white', s=16)
+    if origin is not None:
+        ax.scatter(origin[0], origin[1], c='white', s=16)
     ax.set_xticks([])
     ax.set_yticks([])
 
     if graphical_picking:
         if timeout is None:
             timeout = 0
-        basis_picks_xy = np.array(plt.ginput(n_picks, timeout=timeout))
+        picks_xy = np.array(plt.ginput(n_picks, timeout=timeout))
 
-        vects = np.array([xy_peaks - i for i in basis_picks_xy])
+        vects = np.array([xy_peaks - i for i in picks_xy])
         inds = np.argmin(norm(vects, axis=2), axis=1)
-        basis_picks_xy = xy_peaks[inds, :]
+        picks_xy = xy_peaks[inds, :]
 
         plt.close('all')
 
     else:
         inds = np.arange(xy_peaks.shape[0])
-        for i, label in enumerate(inds):
-            ax.annotate(label, (xy_peaks[i, 0], xy_peaks[i, 1]), color='white')
+        for i, ind in enumerate(inds):
+            ax.annotate(ind, (xy_peaks[i, 0], xy_peaks[i, 1]), color='white')
 
-        basis_picks_xy = None
+        picks_xy = None
 
-    return basis_picks_xy
+    return picks_xy
 
 
 def register_lattice_to_peaks(
@@ -2747,6 +2581,43 @@ def register_lattice_to_peaks(
         min_order=0,
         max_order=10,
 ):
+    """
+    Find peaks close to a an lattice defined by approximate basis vectors and
+    then refine the basis vectors to best match the selected peaks.
+
+    Parameters
+    ----------
+    basis : array of shape (2,2)
+        The array of approximate basis vectors. Each vector is an array row.
+    origin : array of shape (2,)
+        The (initial) origin point.
+    xy_peaks : array of shape (n,2)
+        The list of all peaks from which to determine those that best match the
+        initial lattice.
+    basis1_order, basis2_order : ints
+        The order of the peaks at the corresponding basis vectors.
+        Default: 1
+    fix_origin : bool
+        Whether the origin should be fixed or allowed to vary when refining the
+        lattice to best fit the peak positions.
+    min_order : int
+        The minimum order of points allowed in the lattice. e.g. if 2, first
+        order points are excluded from the search and fitting.
+        Default: 1
+    max_order : int
+        The maximum order of points allowed in the lattice. e.g if 5, only
+        points up to order 5 are included in the search and fitting.
+    Returns
+    -------
+    basis_vects : array of shape (2,2)
+        The refined basis vectors.
+    origin : array of shape (2,)
+        The refined origin or original origin if fix_origin==True.
+    lattice : pandas.DataFrame object
+        The dataframe of selected peak positions, their corresponding lattice
+        indices, and positions of the refined lattice points.
+
+    """
 
     # Generate lattice
     basis = basis / np.array([basis1_order, basis2_order], ndmin=2).T
@@ -2799,11 +2670,11 @@ def register_lattice_to_peaks(
     if not fix_origin:
         origin = params[4:]
 
-    lattice[['x_ref', 'y_ref']] = (
-        lattice.loc[:, 'h':'k'].to_numpy(dtype=float)
-        @ basis_vects
-        + origin
-    )
+        lattice[['x_ref', 'y_ref']] = (
+            lattice.loc[:, 'h':'k'].to_numpy(dtype=float)
+            @ basis_vects
+            + origin
+        )
 
     return basis_vects, origin, lattice
 
@@ -2815,15 +2686,40 @@ def plot_basis(
         lattice=None,
         return_fig=False,
 ):
+    """
+    Plot a lattice and its basis vectors on the corresponding image.
+
+    Parameters
+    ----------
+    image : 2d array
+        The underlying image as a numpy array.
+    basis_vects : array of shape (2,2)
+        The array of basis vectors. Each vector is an array row.
+    origin : array of shape (2,)
+        The (initial) origin point.
+    lattice : pandas.DataFrame object
+        The dataframe of selected peak positions, their corresponding lattice
+        indices, and positions of the refined lattice points.
+    return_fig: bool
+        Whether to return the fig and axes objects so they can be modified.
+        Default: False
+    Returns
+    -------
+    fig, axs : figure and axes objects (optional)
+        The resulting matplotlib figure and axes objects for possible
+        modification by the user.
+
+    """
 
     fig, ax = plt.subplots(figsize=(10, 10))
     ax.imshow(image, cmap='plasma')
-    ax.scatter(
-        lattice.loc[:, 'x_ref'].to_numpy(dtype=float),
-        lattice.loc[:, 'y_ref'].to_numpy(dtype=float),
-        marker='+',
-        c='red'
-    )
+    if lattice is not None:
+        ax.scatter(
+            lattice.loc[:, 'x_ref'].to_numpy(dtype=float),
+            lattice.loc[:, 'y_ref'].to_numpy(dtype=float),
+            marker='+',
+            c='red'
+        )
     ax.scatter(origin[0], origin[1], marker='+', c='white')
 
     ax.arrow(
