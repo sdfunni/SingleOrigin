@@ -285,8 +285,7 @@ class DataCube:
                 xy_peaks=xy_peaks,
                 origin=self.origin,
                 graphical_picking=graphical_picking,
-                window=None,
-                pick_labels=pick_labels,
+                window_size=None,
                 timeout=timeout
             )
 
