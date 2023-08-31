@@ -20,7 +20,7 @@ import copy
 import time
 from tqdm import tqdm
 import psutil
-import types
+# import types
 
 from joblib import Parallel, delayed
 
@@ -74,7 +74,7 @@ from SingleOrigin.utils import (
     fft_square,
     v_pcf,
     fit_lattice,
-    binary_find_smallest_rectangle,
+    # binary_find_smallest_rectangle,
     get_feature_size
 )
 
@@ -1952,13 +1952,13 @@ class AtomicColumnLattice:
 
         self.pixel_size_est = self.get_est_pixel_size()
 
-        if np.min(self.roi_mask) == 0:
-            _, _, sl = binary_find_smallest_rectangle(self.roi_mask)
-            image_crop = self.image[sl]
-        else:
-            image_crop = self.image
+        # if np.min(self.roi_mask) == 0:
+        #     _, _, sl = binary_find_smallest_rectangle(self.roi_mask)
+        #     image_crop = self.image[sl]
+        # else:
+        #     image_crop = self.image
 
-        scale = get_feature_size(image_crop)
+        # scale = get_feature_size(image_crop)
 
         if buffer is not None:
             self.get_roi_mask_polygon(

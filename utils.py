@@ -24,7 +24,7 @@ import json
 from contextlib import redirect_stdout
 
 import numpy as np
-from numpy.linalg import norm, lstsq
+from numpy.linalg import norm, lstsq, solve
 
 import pandas as pd
 
@@ -294,6 +294,37 @@ def IntPlAng(hkl_1, hkl_2, g):
     ))
 
     return theta
+
+
+def get_astar_2d_matrix(g1, g2, g):
+    """
+    Get the a reciprocal basis matrix for two g_hkl vectors
+
+    Parameters
+    ----------
+    g1, g2 : array_like of ints of shape (1,3) or (3,)
+        Miller indices of the lattice planes
+    g : 3x3 ndarray
+        The metric tensor
+
+    Returns
+    -------
+    a_star_2d : 2x2 array
+        The projected 2d reciprocal basis vector matrix (as row vectors).
+
+    """
+
+    a1_star = 1/IntPlSpc(g1, g)
+    a2_star = 1/IntPlSpc(g2, g)
+    alpha_star = np.radians(IntPlAng(g1, g2, g))
+
+    a_star_2d = np.array([
+        [a1_star, 0],
+        [a2_star*np.cos(alpha_star), a2_star*np.sin(alpha_star)]
+    ])
+    a_star_2d[abs(a_star_2d) <= 1e-10] = 0
+
+    return a_star_2d
 
 
 def TwoTheta(hkl, g, wavelength):
@@ -975,6 +1006,7 @@ def binary_find_smallest_rectangle(array):
 def fft_square(image,
                hanning_window=False,
                upsample_factor=None,
+               abs_val=True
                ):
     """Gets FFT with equal x & y pixel sizes
 
@@ -995,6 +1027,10 @@ def fft_square(image,
         the (optional) Hanning window. Hanning windowing is recommended to
         avoid artifacts if upsampling. For 4D STEM datasets, using large
         factors can be very slow and may max out available memory.
+    abs_val : bool
+        Whether to take return the absolute value of the FFT (if True). If
+        False, returns the complex-valued FFT.
+        Default: True
 
     Returns
     -------
@@ -1025,7 +1061,10 @@ def fft_square(image,
 
     fft = fftshift(fft2(image_square), axes=(-2, -1))
 
-    del image_square
+    if abs_val:
+        fft = np.abs(fft)
+
+    # del image_square
 
     return fft
 
@@ -1049,10 +1088,10 @@ def hann_2d(dim):
     """
     inds = np.arange(dim)
 
-    cent = (dim - 1)/2
+    origin = np.array([(dim - 1)/2] * 2, ndmin=3).T
 
-    r = np.array([[np.hypot(y - cent, x - cent) for x in inds] for y in inds]
-                 ) * 2*np.pi / (dim - 1)
+    r = norm(np.array(np.meshgrid(inds, inds)) - origin, axis=0
+             ) * 2*np.pi / (dim - 1)
 
     return np.where(r > np.pi, 0, np.cos(r) + 1)
 
@@ -1115,7 +1154,7 @@ def get_feature_size(image):
 
     min_scale = 2
     max_scale = 30
-    scale_step = 2
+    scale_step = 1
 
     scale = np.arange(min_scale, max_scale, scale_step)
     hess_max = np.array([
@@ -1124,7 +1163,7 @@ def get_feature_size(image):
     ])
 
     spl = make_interp_spline(scale, hess_max, k=2)
-    scale_interp = np.linspace(min_scale, max_scale, 117)
+    scale_interp = np.linspace(min_scale, max_scale, 1000)
     hess_max_interp = spl(scale_interp).T
     scale_max = scale_interp[np.argmax(hess_max_interp)]
 
@@ -2659,10 +2698,8 @@ def register_lattice_to_peaks(
     xy = lattice.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
 
     p0 = np.concatenate((basis.flatten(), origin))
-    print(p0)
 
     params = fit_lattice(p0, xy, M, fix_origin=fix_origin)
-    print(params)
 
     # Save data and report key values
     basis_vects = params[:4].reshape((2, 2))
@@ -2732,7 +2769,8 @@ def plot_basis(
         width=0.1,
         length_includes_head=True,
         head_width=2,
-        head_length=3
+        head_length=3,
+        label='1',
     )
     ax.arrow(
         origin[0],
@@ -2744,7 +2782,8 @@ def plot_basis(
         width=0.1,
         length_includes_head=True,
         head_width=2,
-        head_length=3
+        head_length=3,
+        label='2'
     )
 
     if return_fig:
@@ -2813,19 +2852,15 @@ def fit_lattice(p0, xy, M, fix_origin=False):
     """
 
     p0 = np.array(p0).flatten()
-    x0, y0 = p0[4:]
+    x0y0 = p0[4:]
 
     if fix_origin is True:
-        # bounds = [(None, None)] * 4 + [(x0, x0), (y0, y0)]
-
-        params = (lstsq(M, xy, rcond=-1)[0]).flatten()
+        params = (lstsq(M, xy - x0y0, rcond=-1)[0]).flatten()
     else:
-        # bounds = [(None, None)] * 6
-
+        # TODO : use linalg.lstsq w/ origin shift to solve for unfixed origin
         params = minimize(
             disp_vect_sum_squares,
             p0,
-            # bounds=bounds,
             args=(xy, M),
             method='L-BFGS-B',
         ).x

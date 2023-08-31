@@ -171,21 +171,22 @@ class ReciprocalImage:
             )
 
         # Downsample for speed
-        if np.max([self.h, self.w]) > 2000:
-            print('Downsampling...')
-            factor = int(np.max([self.h, self.w])/1e3)
-            image_ds = downscale_local_mean(self.image, (factor, factor))
-            if sigma > 0:
-                image_der = image_norm(-gaussian_laplace(
-                    gaussian_filter(image_ds, 1), sigma/factor))
-            else:
-                image_der = self.image
+        # if np.max([self.h, self.w]) > 2000:
+        #     print('Downsampling...')
+        #     factor = int(np.max([self.h, self.w])/1e3)
+        #     image_ds = downscale_local_mean(self.image, (factor, factor))
+        #     if sigma > 0:
+        #         image_der = image_norm(-gaussian_laplace(
+        #             gaussian_filter(image_ds, 1), sigma/factor))
+        #     else:
+        #         image_der = self.image
+
+        # else:
+        if sigma > 0:
+            image_der = image_norm(-gaussian_laplace(
+                gaussian_filter(self.image, 1), sigma))
         else:
-            if sigma > 0:
-                image_der = image_norm(-gaussian_laplace(
-                    gaussian_filter(self.image, 1), sigma))
-            else:
-                image_der = self.image
+            image_der = self.image
         masks, num_masks, _, spots = watershed_segment(
             image_der,
             local_thresh_factor=0,
@@ -195,9 +196,9 @@ class ReciprocalImage:
         )
 
         # Upsample
-        if np.max([self.h, self.w]) > 2000:
-            masks = rescale(masks, (factor, factor), order=0)
-            spots.loc[:, 'x':'y'] *= factor
+        # if np.max([self.h, self.w]) > 2000:
+        #     masks = rescale(masks, (factor, factor), order=0)
+        #     spots.loc[:, 'x':'y'] *= factor
 
         # Remove edge pixels:
         if buffer > 0:
@@ -325,7 +326,10 @@ class ReciprocalImage:
         # Save data and report key values
         self.a1_star = params[:2]
         self.a2_star = params[2:4]
-        self.origin = params[4:]
+        if len(params) == 6:
+            self.origin = params[4:]
+        else:
+            self.origin = origin
 
         self.a_star = np.array([self.a1_star, self.a2_star])
 
@@ -350,7 +354,7 @@ class ReciprocalImage:
         # Plot refined basis
         if show_fit:
             fig2, ax = plt.subplots(figsize=(10, 10))
-            ax.imshow(self.image, cmap='plasma')
+            ax.imshow(self.image**0.2, cmap='plasma')
             ax.scatter(
                 self.recip_latt.loc[:, 'x_ref'].to_numpy(dtype=float),
                 self.recip_latt.loc[:, 'y_ref'].to_numpy(dtype=float),

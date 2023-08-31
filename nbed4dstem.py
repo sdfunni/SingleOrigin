@@ -32,6 +32,7 @@ from joblib import Parallel, delayed
 import numpy as np
 from numpy.linalg import (
     norm,
+    inv,
     solve,
 )
 
@@ -39,7 +40,8 @@ from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle, Circle
 
 from SingleOrigin.utils import (
-    watershed_segment,
+    # watershed_segment,
+    detect_peaks,
     get_feature_size,
     pick_points,
     register_lattice_to_peaks,
@@ -48,7 +50,12 @@ from SingleOrigin.utils import (
     find_cepstrum_peak,
     hann_2d,
     fit_lattice,
+    metric_tensor,
+    get_astar_2d_matrix,
+    rotation_angle_bt_vectors
 )
+
+from SingleOrigin.cell_transform import UnitCell
 
 
 class DataCube:
@@ -71,13 +78,24 @@ class DataCube:
 
     scan_pixel_size : scalar, 2-tuple of scalars or None
         The calibrated scan pixel size for the instrument, experimental
-        parameters, etc. This (these) values are applied to axes -4, -3.
+        parameters, etc. This (these) values are applied to axes -4, -3
+        (typically the first two axes).
         Default: None.
 
-    image_pixel_size : scalar, 2-tuple of scalars or None
-        The calibrated scan pixel size for the instrument, experimental
-        parameters, etc. This (these) values are applied to axes -2, -1.
+    dp_pixel_size : scalar, 2-tuple of scalars or None
+        The calibrated diffraction pattern pixel size for the instrument,
+        experimental parameters, etc. This is usually the diffraction image,
+        so should be  in 1/Angstroms. This (these) values are applied to
+        axes -2, -1.
         Default: None.
+
+    dp_rotation : scalar
+        The relative rotation angle from the horizontal detector direction to
+        the horizontal scan direction (clockwise is + ). Alternatively, the
+        rotation required to align a direction in the diffraction pattern
+        with the same direction in the scanned image (counter-clockwise is + ).
+        Pass the angle in degrees.
+        Default: 0.
 
     origin : 2-tuple or None
         The initial guess for the origin (for direct experimental data) or the
@@ -123,6 +141,8 @@ class DataCube:
 
     """
 
+    # TODO : Add new / update attributess in docstring
+
     # TODO : Incorporate pixel size calibrations
 
     # TODO : Incorporate .cif structure for absolute strain reference
@@ -132,18 +152,21 @@ class DataCube:
         datacube,
         scan_pixel_size=None,
         image_pixel_size=None,
+        dp_rotation=0,
         origin=None,
         fix_origin=False,
         origin_type='fft',
         show_mean_image=True,
         get_ewpc=True,
+        upsample_factor=1,
     ):
         self.datacube = datacube  # copy.deepcopy(datacube)
         self.ndims = len(datacube.shape)
         self.data_mean = np.mean(datacube,
                                  axis=tuple(i for i in range(self.ndims-2)))
 
-        self.im_h, self.im_w = self.datacube.shape[-2:]
+        self.im_h, self.im_w = np.array(self.datacube.shape[-2:]
+                                        ) * upsample_factor
         self.scan_h, self.scan_w = self.datacube.shape[-4:-2]
         self.scan_pixel_size = scan_pixel_size
         self.image_pixel_size = image_pixel_size
@@ -151,13 +174,16 @@ class DataCube:
         self.fix_origin = fix_origin
         self.origin_type = origin_type
         self.ref_region = None
+        self.upsample_factor = upsample_factor
+        self.origin_shift = 0
 
         if get_ewpc:
             print('Calculating EWPC. This may take a moment...')
             minval = np.min(datacube)
             self.ewpc = np.abs(fft_square(
                 np.log(datacube - minval + 0.1),
-                hanning_window=True))  # .astype(np.float16)
+                hanning_window=True,
+                upsample_factor=upsample_factor))
             self.ewpc_mean = np.mean(
                 self.ewpc,
                 axis=tuple(i for i in range(self.ndims-2))
@@ -165,6 +191,9 @@ class DataCube:
             display_image = self.ewpc_mean
         else:
             display_image = self.data_mean
+
+        if upsample_factor is not None:
+            self.origin_shift = self.scan_w * (upsample_factor - 1) / 2
 
         if self.origin_type == 'fft':
             self.origin = (int(self.im_h/2), int(self.im_w/2))
@@ -192,8 +221,8 @@ class DataCube:
             pick_labels=None,
             min_order=0,
             max_order=10,
-            scaling=None,
-            power=0.2,
+            # scaling=None,
+            # power=0.2,
     ):
         """
         Initialize EWPC analysis by registring a lattice to the mean image.
@@ -250,37 +279,56 @@ class DataCube:
         """
 
         timeout = None
-        sigma = get_feature_size(self.ewpc_mean)
 
-        if scaling is None:
-            display_image = self.ewpc_mean
-        else:
-            if scaling == 'pwr':
-                display_image = self.ewpc_mean ** power
-            elif scaling == 'log':
-                display_image = np.log(self.ewpc_mean)
-            else:
-                raise Exception(
-                    'Scaling must be: None, "pwr", or "log".')
+        peaks = detect_peaks(self.ewpc_mean, min_dist=2, thresh=0)
+
+        # Find the maximum of the 2nd highest peak (ignores the central peak)
+        vmax = np.unique(peaks*self.ewpc_mean)[-2]
+
+        # Get feature size after applying vmax as a maximum threshold.
+        # This prevents the central peak from dominating the size determination
+        # vmax will also be used as the upper limit of the imshow cmap.
+        ewpc_thresh = np.where(self.ewpc_mean > vmax, 0, self.ewpc_mean)
+        min_dist = get_feature_size(ewpc_thresh) * 2
+        print(min_dist)
+
+        # if scaling is None:
+        #     display_image = self.ewpc_mean
+        # else:
+        #     if scaling == 'pwr':
+        #         display_image = self.ewpc_mean ** power
+        #     elif scaling == 'log':
+        #         display_image = np.log(self.ewpc_mean)
+        #     else:
+        #         raise Exception(
+        #             'Scaling must be: None, "pwr", or "log".')
 
         if self.origin is None:
             n_picks = 3
         else:
             n_picks = 2
 
-        masks, num_masks, slices, peaks = watershed_segment(
+        # masks, num_masks, slices, peaks = watershed_segment(
+        #     self.ewpc_mean,
+        #     sigma=0,
+        #     min_dist=min_dist,
+        #     local_thresh_factor=0,
+        # )
+
+        # Detect peaks and get x,y coordinates
+        peaks = detect_peaks(
             self.ewpc_mean,
-            sigma=sigma,
-            min_dist=np.ceil(sigma * 2),
-            local_thresh_factor=0,
+            min_dist=min_dist,
+            thresh=0.02*vmax,
         )
 
-        self.masks = masks
-        xy_peaks = peaks.loc[:, 'x':'y'].to_numpy()
+        xy_peaks = np.fliplr(np.argwhere(peaks))
+
+        # xy_peaks = peaks.loc[:, 'x':'y'].to_numpy()
 
         if graphical_picking or (pick_labels is None):
             basis_picks = pick_points(
-                display_image,
+                ewpc_thresh,
                 n_picks,
                 xy_peaks=xy_peaks,
                 origin=self.origin,
@@ -333,7 +381,7 @@ class DataCube:
                 lattice = lattice[lattice.loc[:, 'y_ref'] > self.origin[1]]
 
             fig, ax = plot_basis(
-                image=display_image,
+                image=ewpc_thresh,
                 basis_vects=self.basis,
                 origin=self.origin,
                 lattice=lattice,
@@ -352,11 +400,131 @@ class DataCube:
 
             self.lattice = lattice
 
-    def get_cepstral_strain(
+    def get_cepstral_basis(
             self,
             window_size=7,
+    ):
+        """
+        Get basis vectors for each scan pixel from the registered EWPC lattice.
+
+        Parameters
+        ----------
+        window_size : scalar
+            Window size of the mask used to find initial guess for peak
+            position in each EWPC pattern.
+            Default: 7
+        rotation : scalar
+            Rotation angle (in degrees) between the real space scan axes and
+            the detector axes. Positive is clockwise. This must incorporate
+            both normal image-detector rotation angle as well as any applied
+            scan rotation. Note that the scan rotation value may be opposite in
+            sign compared to the resulting image rotation.
+
+
+        """
+
+        t = [time.time()]
+        m = self.ewpc_mean.shape[0] / 2
+        p0 = self.basis.flatten().tolist() + list(self.origin)
+
+        lattice = copy.deepcopy(self.lattice)
+
+        xy_ref = np.around(lattice.loc[:, 'x_ref':'y_ref'].to_numpy()
+                           ).astype(int)
+        M = lattice.loc[:, 'h':'k'].to_numpy()
+
+        dxy = window_size//2
+
+        masks = np.zeros((xy_ref.shape[0], self.im_h, self.im_w))
+
+        for i, mask in enumerate(masks):
+            mask[xy_ref[i, 1]-dxy: xy_ref[i, 1] + dxy + 1,
+                 xy_ref[i, 0]-dxy: xy_ref[i, 0] + dxy + 1] = 1
+
+        t += [time.time()]
+        print(f'Step 1 (Initial setup): {(t[-1]-t[-2]) :.{2}f} sec')
+
+        x0y0 = np.array([[
+            [np.flip(np.unravel_index(np.argmax(im * mask),
+                                      (self.im_h, self.im_w)))
+             for mask in masks
+             ]
+            for im in row]
+            for row in self.ewpc
+        ]) / self.upsample_factor
+
+        t += [time.time()]
+        print(f'Step 2 (Find peaks): {(t[-1]-t[-2]) :.{2}f} sec')
+
+        def find_mult_ewpc_peaks(
+                coords,
+                log_dp,
+                xy_bound,
+        ):
+
+            results = [find_cepstrum_peak(coord, log_dp, xy_bound)
+                       for coord in coords]
+
+            return results
+
+        hann = hann_2d(self.datacube.shape[-1])
+        minval = np.min(self.datacube)
+
+        args_packed = [[x0y0[i, j],
+                        np.log(self.datacube[i, j] - minval + 0.1) * hann,
+                        dxy]
+                       for i in range(self.scan_h)
+                       for j in range(self.scan_w)]
+
+        t += [time.time()]
+        print(f'Step 3 (Pack data): {(t[-1]-t[-2]) :.{2}f} sec')
+
+        n_jobs = psutil.cpu_count(logical=True)
+
+        results = Parallel(n_jobs=n_jobs)(
+            delayed(find_mult_ewpc_peaks)(
+                *args,
+            ) for args in tqdm(args_packed)
+        )
+
+        t += [time.time()]
+        print(f'Step 4 (Measure peaks): {(t[-1]-t[-2]) :.{2}f} sec')
+
+        basis_vects = np.array([
+            fit_lattice(
+                p0,
+                np.array(xy) * self.upsample_factor,
+                M,
+                fix_origin=True,
+            )[:4].reshape((2, 2))
+            for xy in results
+        ]).reshape((self.scan_h, self.scan_w, 2, 2))
+
+        self.basis_vects_real_px = basis_vects
+
+        # Get reciprocal space basis (i.e. for the diffraction patterns)
+        self.basis_vects_recip_px = np.array([
+            [inv(basis.T) * m for basis in row]
+            for row in basis_vects])
+
+        # Get the mean real space basis vectors
+        self.basis_mean_real_px = np.mean(
+            self.basis_vects_real_px, axis=(0, 1)
+        )
+        # Get the mean reciprocal space basis
+        self.basis_mean_recip_px = np.mean(
+            self.basis_vects_recip_px, axis=(0, 1)
+        )
+
+        # TODO : If calibration given, also calculate in Angstroms / A ^ -1
+
+        t += [time.time()]
+        print(f'Step 5 (Register lattice): {(t[-1]-t[-2]) :.{2}f} sec')
+
+    def get_strain(
+            self,
             ref=None,
-            rotation=0,
+            rotation=None,
     ):
         """
         Get strain from the EWPC registered lattice points.
@@ -387,102 +555,24 @@ class DataCube:
 
         """
 
-        t = [time.time()]
-
-        p0 = self.basis.flatten().tolist() + list(self.origin)
-
-        lattice = copy.deepcopy(self.lattice)
-
-        xy_ref = np.around(lattice.loc[:, 'x_ref':'y_ref'].to_numpy()
-                           ).astype(int)
-        M = lattice.loc[:, 'h':'k'].to_numpy()
-
-        dxy = window_size//2
-
-        masks = np.zeros((xy_ref.shape[0], self.im_h, self.im_w))
-
-        for i, mask in enumerate(masks):
-            mask[xy_ref[i, 1]-dxy: xy_ref[i, 1] + dxy + 1,
-                 xy_ref[i, 0]-dxy: xy_ref[i, 0] + dxy + 1] = 1
-
-        t += [time.time()]
-        print(f'Step 1 (Initial setup): {(t[-1]-t[-2]) :.{2}f} sec')
-
-        x0y0 = np.array([[
-            [np.flip(np.unravel_index(np.argmax(im * mask),
-                                      (self.im_h, self.im_w)))
-             for mask in masks
-             ]
-            for im in row]
-            for row in self.ewpc
-        ])
-
-        t += [time.time()]
-        print(f'Step 2 (Find peaks): {(t[-1]-t[-2]) :.{2}f} sec')
-
-        def find_mult_ewpc_peaks(
-                coords,
-                log_dp,
-                xy_bound,
-        ):
-
-            results = [find_cepstrum_peak(coord, log_dp, xy_bound)
-                       for coord in coords]
-
-            return results
-
-        hann = hann_2d(self.im_h)
-        minval = np.min(self.datacube)
-
-        args_packed = [[x0y0[i, j],
-                        np.log(self.datacube[i, j] - minval + 0.1) * hann,
-                        dxy]
-                       for i in range(self.scan_h)
-                       for j in range(self.scan_w)]
-
-        t += [time.time()]
-        print(f'Step 3 (Pack data): {(t[-1]-t[-2]) :.{2}f} sec')
-
-        n_jobs = psutil.cpu_count(logical=True)
-
-        results = Parallel(n_jobs=n_jobs)(
-            delayed(find_mult_ewpc_peaks)(
-                *args,
-            ) for args in tqdm(args_packed)
-        )
-
-        t += [time.time()]
-        print(f'Step 4 (Measure peaks): {(t[-1]-t[-2]) :.{2}f} sec')
-
-        basis_vects = np.array([
-            fit_lattice(p0, xy, M, fix_origin=True)[:4].reshape((2, 2))
-            for xy in results
-        ]).reshape((self.scan_h, self.scan_w, 2, 2))
-
-        t += [time.time()]
-        print(f'Step 5 (Register lattice): {(t[-1]-t[-2]) :.{2}f} sec')
-
         if ref is None:
-            ref = np.mean(basis_vects, axis=(0, 1))
+            ref = self.basis_mean_real_px
 
         elif type(ref[0]) == slice:
             self.ref_region = np.array([[ref[1].start, ref[1].stop],
                                         [ref[0].start, ref[0].stop]])
-            ref = np.mean(basis_vects[ref], axis=(0, 1))
+            ref = np.mean(self.basis_vects_real_px[ref], axis=(0, 1))
 
         beta = np.array([
             [solve(ref, local_basis)
              for local_basis in row]
-            for row in basis_vects
-        ])  # .reshape((self.scan_h, self.scan_w, 2, 2))
+            for row in self.basis_vects_real_px
+        ])
 
         exx = (beta[:, :, 0, 0] - 1) * 100
         eyy = (beta[:, :, 1, 1] - 1) * 100
         exy = -(beta[:, :, 0, 1] + beta[:, :, 1, 0]) / 2 * 100
         theta = np.degrees((beta[:, :, 0, 1] - beta[:, :, 1, 0]) / 2)
-
-        t += [time.time()]
-        print(f'Step 6 (Calculate strain): {(t[-1]-t[-2]) :.{2}f} sec')
 
         if rotation is not None:
             strain = np.stack([exx,
@@ -507,9 +597,6 @@ class DataCube:
             'exy': exy,
             'theta': theta
         }
-
-        t += [time.time()]
-        print(f'Step 7 (Apply rotation): {(t[-1]-t[-2]) :.{2}f} sec')
 
         print('Done')
 
@@ -614,3 +701,73 @@ class DataCube:
                 axs[i].add_patch(rect)
 
         return fig, axs
+
+    def plot_dp_basis(self, dp_origin=None):
+
+        if dp_origin is None:
+            dp_origin = np.flip(np.unravel_index(np.argmax(self.data_mean),
+                                                 self.datacube.shape[-2:]))
+
+        fig, ax = plot_basis(
+            self.data_mean,
+            self.basis_mean_recip_px,
+            dp_origin,
+            return_fig=True)
+        ax.legend()
+
+    def calibrate_dp(self, g1, g2, cif_path):
+        """Calibrate detector pixel size from EWPC basis vectors.
+
+        Parameters
+        ----------
+        g1, g2 : array-like of shape (3,)
+            The [h,k,l] indices of the plane spacings described by the basis
+            vectors chosen for the EWPC analysis.
+        cif_path : str
+            Path to the .cif file describing the evaluated structure.
+
+        Returns
+        -------
+        beta : array of shape (2,2)
+            The transformation matrix from detector pixels to inverse
+            angstroms. Index [0,0] is the x-coordinate pixel size, [1,1] is the
+            y-coordinate pixel size and. [0,1] & [1,0] indices represent
+            shearing/rotation and should be neglidible (typically ~ 1e-5).
+            Additionally, x and y pixel sizes should be very close (differing
+            by ~ 1e-5 Angstroms^-1). Large values in either case indicates a
+            measurement error or that substantial distortion of the diffraction
+            pattern(s) is present.
+
+        """
+
+        alpha_meas = copy.copy(self.basis_mean_recip_px)
+        if np.cross(alpha_meas[0], alpha_meas[1]) < 0:
+            alpha_meas[0] *= -1
+
+        uc = UnitCell(cif_path)
+
+        lattice_params = [uc.a, uc.b, uc.c, uc.alpha, uc.beta, uc.gamma]
+
+        g = metric_tensor(*lattice_params)
+
+        a_star_2d = get_astar_2d_matrix(g1, g2, g)
+
+        theta1 = np.radians(rotation_angle_bt_vectors(
+            alpha_meas[0], a_star_2d[0])
+        )
+        theta2 = np.radians(rotation_angle_bt_vectors(
+            alpha_meas[1], a_star_2d[1])
+        )
+
+        theta = (theta1 + theta2) / 2
+
+        rot_mat = np.array([[np.cos(theta), -np.sin(theta)],
+                            [np.sin(theta), np.cos(theta)]])
+
+        a_star_t = a_star_2d @ rot_mat
+
+        # Get the transform from detector pixels to 1/Angstroms
+        # (i.e. the detector calibration)
+        beta = solve(alpha_meas, a_star_t)
+
+        return beta
