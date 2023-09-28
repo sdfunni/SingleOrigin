@@ -60,6 +60,7 @@ from scipy.ndimage import (
 
 from skimage.draw import polygon2mask
 from skimage.transform import (downscale_local_mean, rescale)
+from skimage.morphology import erosion
 
 from SingleOrigin.utils import (
     image_norm,
@@ -72,13 +73,11 @@ from SingleOrigin.utils import (
     watershed_segment,
     std_local,
     fft_square,
-    v_pcf,
+    get_vpcf,
     fit_lattice,
-    # binary_find_smallest_rectangle,
     get_feature_size
 )
 
-fit_gaussian_group.func_defaults = (None, True, False, True)
 # %%
 
 
@@ -164,7 +163,7 @@ class HRImage:
             image,
             pixel_size_cal=None,
     ):
-        self.image = image
+        self.image = copy.deepcopy(image)
         self.h, self.w = self.image.shape
         self.pixel_size_cal = pixel_size_cal
         self.latt_dict = {}
@@ -1216,9 +1215,6 @@ class AtomicColumnLattice:
                 graphical_picking=True
             )
             xy = self.recip_latt.loc[:, 'x':'y'].to_numpy()
-            print(basis_picks_xy)
-
-            print('done selecting', '\n')
 
         elif (len(spot_numbers) == 2) & (type(spot_numbers) == tuple):
             xy = self.recip_latt.loc[:, 'x':'y'].to_numpy()
@@ -1283,7 +1279,6 @@ class AtomicColumnLattice:
 
         recip_vects = norm(xy - origin, axis=1)
         min_recip_vect = np.min(recip_vects[recip_vects > 0])
-        print(min_recip_vect)
         window = min(min_recip_vect*10, U)
 
         fig2, ax = plt.subplots(figsize=(10, 10))
@@ -1379,7 +1374,8 @@ class AtomicColumnLattice:
 
         """
 
-        self.fft = fft_square(self.image, hanning_window=True)
+        self.fft = image_norm(fft_square(copy.deepcopy(self.image),
+                                         hann_window=True))
         m = (min(self.h, self.w) // 2) * 2
         U = int(m/2)
         if m > 1024:
@@ -1509,7 +1505,7 @@ class AtomicColumnLattice:
             Default: True
 
         buffer : int
-            Number of pixels to erode from the edges of the mask. Prevents
+            Number of pixels to erosion from the edges of the mask. Prevents
             retention of reference lattice points that are outside the actual
             lattice region.
             Default: 10.
@@ -1535,9 +1531,9 @@ class AtomicColumnLattice:
         if fill_holes:
             new_mask = binary_fill_holes(new_mask)
         if buffer:
-            new_mask = binary_erosion(
+            new_mask = erosion(
                 new_mask,
-                iterations=buffer
+                footprint=np.ones((3, 3))
             )
 
         self.roi_mask *= new_mask
@@ -1569,7 +1565,7 @@ class AtomicColumnLattice:
             Default: None.
 
         buffer : int
-            Number of pixels to erode from the edges of the mask. Prevents
+            Number of pixels to erosion from the edges of the mask. Prevents
             retention of reference lattice points that are outside the actual
             lattice region.
             Default: 0.
@@ -1625,9 +1621,9 @@ class AtomicColumnLattice:
 
         new_mask = polygon2mask(self.image.shape, vertices)
         if buffer:
-            new_mask = binary_erosion(
+            new_mask = erosion(
                 new_mask,
-                iterations=buffer
+                footprint=np.ones((3, 3))
             )
 
         if invert:
@@ -1952,14 +1948,6 @@ class AtomicColumnLattice:
 
         self.pixel_size_est = self.get_est_pixel_size()
 
-        # if np.min(self.roi_mask) == 0:
-        #     _, _, sl = binary_find_smallest_rectangle(self.roi_mask)
-        #     image_crop = self.image[sl]
-        # else:
-        #     image_crop = self.image
-
-        # scale = get_feature_size(image_crop)
-
         if buffer is not None:
             self.get_roi_mask_polygon(
                 vertices=np.array([[buffer, buffer],
@@ -1967,11 +1955,10 @@ class AtomicColumnLattice:
                                    [self.w-buffer, self.h-buffer],
                                    [buffer, self.h-buffer]]))
 
-        if (LoG_sigma is None):
-            # & ((type(self.probe_fwhm) == float)
-            #    | (type(self.probe_fwhm) == int))):
-            # LoG_sigma = self.probe_fwhm / self.pixel_size_est * 0.5
-            LoG_sigma = self.sigma * 0.75
+        if self.sigma == None:
+            self.sigma = get_feature_size(self.image)
+
+        LoG_sigma = self.sigma * 0.75
 
         if mask is not None:
             self.roi_mask = mask
@@ -2103,8 +2090,6 @@ class AtomicColumnLattice:
         if init_inc < 3:
             init_inc = 3
 
-        print('initial: ', init_inc)
-
         origin_ind = at_cols[
             (at_cols.u == self.basis_offset_frac[0]) &
             (at_cols.v == self.basis_offset_frac[1])
@@ -2127,7 +2112,7 @@ class AtomicColumnLattice:
         for i, mult in enumerate([1, 3, 9]):
             lim = mult * init_inc
 
-            print(f'Refinement iteration {i+1}')
+            # print(f'Refinement iteration {i+1}')
 
             # if lim > init_inc:
             at_cols_orig_type[['x_ref', 'y_ref']] = (
@@ -2179,8 +2164,8 @@ class AtomicColumnLattice:
             self.y0 = params[5]
 
             t += [time.time()]
-            print(f'{int((t[-1]-t[-2]) // 60)} min '
-                  + f'{(t[-1]-t[-2]) % 60 :.{2}f} sec')
+            # print(f'{int((t[-1]-t[-2]) // 60)} min '
+            #       + f'{(t[-1]-t[-2]) % 60 :.{2}f} sec')
 
         at_cols[['x_ref', 'y_ref']] = (
             at_cols.loc[:, 'u':'v'].to_numpy(dtype=float)
@@ -2439,7 +2424,7 @@ class AtomicColumnLattice:
             )
 
         if peak_grouping_filter == 'auto':
-            peak_grouping_filter = self.sigma
+            peak_grouping_filter = self.sigma * 0.75
 
         elif (
             (type(peak_grouping_filter) == float or
@@ -2474,16 +2459,17 @@ class AtomicColumnLattice:
             -gaussian_laplace(
                 self.image,
                 peak_sharpening_filter,
-                truncate=16
+                truncate=2
             )
         )
+        self.img_LoG = img_LoG
 
         if peak_grouping_filter is not None:
             img_gauss = image_norm(
                 gaussian_filter(
                     self.image,
                     peak_grouping_filter,
-                    truncate=4
+                    truncate=2
                 )
             )
 
@@ -2508,22 +2494,12 @@ class AtomicColumnLattice:
         elif pos_bound_dist is None:
             pos_bound_dist = np.inf
         elif (np.isin(type(pos_bound_dist), [float, int]).item() &
-              pos_bound_dist > 0):
+              (pos_bound_dist > 0)):
             pos_bound_dist = pos_bound_dist / self.pixel_size_est
         else:
             raise Exception(
                 "'pos_bound_dist' must be 'auto', a positive scalar or None."
             )
-
-        """Define modified fitting function based on the passed/determined
-        arguments"""
-
-        fit_gaussian_group.func_defaults = (
-            pos_bound_dist,
-            use_circ_gauss,
-            use_bounds,
-            use_background_param
-        )
 
         t += [time.time()]
         print(f'Step 1 (Initial checks): {(t[-1]-t[-2]) :.{2}f} sec')
@@ -2534,7 +2510,7 @@ class AtomicColumnLattice:
             img_LoG,
             local_thresh_factor=local_thresh_factor,
             watershed_line=watershed_line,
-            min_dist=min_dist/2
+            min_dist=min_dist * 0.75
         )
 
         t += [time.time()]
@@ -2668,6 +2644,10 @@ class AtomicColumnLattice:
             xy_peaks=xy_peak,
             peak_mask_index=peak_masks_to_peaks,
             peak_groups=peak_groups,
+            pos_bound_dist=pos_bound_dist,
+            use_circ_gauss=use_circ_gauss,
+            use_bounds=use_bounds,
+            use_background_param=use_background_param,
         )
 
         self.args_packed = args_packed
@@ -2790,6 +2770,7 @@ class AtomicColumnLattice:
             np.around(self.at_cols.x_ref.to_numpy()).astype(int)
         ] == 1
         ]
+
         t += [time.time()]
         print(f'Step 6 (Post-processing): {(t[-1]-t[-2]) % 60 :.{2}f} sec',
               '\n Done.')
@@ -2797,7 +2778,8 @@ class AtomicColumnLattice:
     def show_masks(
             self,
             mask_to_show='fitting',
-            display_masked_image=True
+            display_masked_image=True,
+            return_fig=False,
     ):
         """View the fitting or grouping masks. Useful for troubleshooting
             fitting problems.
@@ -2842,7 +2824,8 @@ class AtomicColumnLattice:
         ax.set_xticks([])
         ax.set_yticks([])
 
-        return fig, ax
+        if return_fig:
+            return fig, ax
 
     def refine_reference_lattice(
             self,
@@ -3235,7 +3218,7 @@ class AtomicColumnLattice:
                 sub1 *= pixel_size
                 sub2 *= pixel_size
 
-            self.vpcfs[pair_pair_str], origin = v_pcf(
+            self.vpcfs[pair_pair_str], origin = get_vpcf(
                 xlim=np.array(xlim)*a1_mag,
                 ylim=np.array(ylim)*a2_mag,
                 coords1=sub1,

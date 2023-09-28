@@ -14,14 +14,14 @@
 
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see https://www.gnu.org/licenses
-    
+
     This module impliments general EWPC method from: Padgett, E. et al. The
     exit-wave power-cepstrum transform for scanning nanobeam electron
     diffraction: robust strain mapping at subnanometer resolution and
     subpicometer precision. Ultramicroscopy 214, (2020).
     """
 
-import warnings
+# import warnings
 import psutil
 from tqdm import tqdm
 import copy
@@ -36,11 +36,13 @@ from numpy.linalg import (
     solve,
 )
 
+from sklearn.cluster import MiniBatchKMeans
+from skimage.morphology import erosion, disk
+
 from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle, Circle
 
 from SingleOrigin.utils import (
-    # watershed_segment,
     detect_peaks,
     get_feature_size,
     pick_points,
@@ -58,9 +60,11 @@ from SingleOrigin.utils import (
 from SingleOrigin.cell_transform import UnitCell
 
 
-class DataCube:
+class MeasureLattice:
+    #TODO: Modify to handle more data types, e.g. HR STEM image, FFT, single DP, etc.
+    
     """
-    Class for handling analysis of STEM data with 3 or more dimensions.
+    Class for lattice paremeter analysis.
 
     - Individual image or diffraction pattern (DP) space must be the final two
     dimensions (i.e. -2, -1).
@@ -103,26 +107,6 @@ class DataCube:
         dimensions.
         Default: None.
 
-    fix_origin : bool
-        If True, origin is allowed to vary for best fit of a lattice. If False,
-        the origin not allowed to vary. Fixing the origin is appropriate
-        for FFT processed data, while for experimental data, it should be
-        allowed to vary during fitting. The later case is a result, for
-        example, of beam shifting during scanning in 4D STEM. In the former
-        case, the origin is always at (h/2, w/2).
-        Default: False.
-
-    origin_type : str (either 'exp' or 'fft')
-        The type of the origin:
-            'exp', or experimental, is unknown prior to measurement;
-            'fft', for images processed by shifted FFT where the origin is
-            (h/2, w/2).
-        For 'exp', the origin attribute will be set to None initially, unless
-        one is passed when initiating the DataCube object.
-        For 'fft', the correct origin will be determined from datacube.shape.
-        Ensure the datacube has not been manipulated in any way to change the
-        correct origin for 'fft'.
-        Default: 'fft'
 
     show_mean_image : bool
         Whether to display the mean image after initiation of the DataCube
@@ -130,6 +114,14 @@ class DataCube:
         as it will be used to hone some analysis parameters prior to applying
         the analysis to the full DataCube.
         Default: True.
+
+    get_ewpc : bool
+        Whether to calculate the exit wave power cepstrum from the diffraction
+        space data supplied in datacube.
+        Default: True
+
+    upsample_factor : int
+        Factor by which to upsample the dataset for EWPC calculaiton.
 
     Attributes
     ----------
@@ -139,11 +131,13 @@ class DataCube:
     mean_image : 2d array
         The mean taken along the first len(data.shape) - 2 axes.
 
+    A bunch of other stuff...
+
     """
 
     # TODO : Add new / update attributess in docstring
 
-    # TODO : Incorporate pixel size calibrations
+    # TODO : Incorporate pixel size calibrations for scan dims
 
     # TODO : Incorporate .cif structure for absolute strain reference
 
@@ -151,28 +145,27 @@ class DataCube:
         self,
         datacube,
         scan_pixel_size=None,
-        image_pixel_size=None,
+        dp_pixel_size=None,
         dp_rotation=0,
         origin=None,
-        fix_origin=False,
-        origin_type='fft',
         show_mean_image=True,
         get_ewpc=True,
         upsample_factor=1,
     ):
-        self.datacube = datacube  # copy.deepcopy(datacube)
+        self.datacube = datacube
         self.ndims = len(datacube.shape)
         self.data_mean = np.mean(datacube,
                                  axis=tuple(i for i in range(self.ndims-2)))
 
-        self.im_h, self.im_w = np.array(self.datacube.shape[-2:]
-                                        ) * upsample_factor
+        self.im_h, self.im_w = np.array(self.datacube.shape[-2:])
         self.scan_h, self.scan_w = self.datacube.shape[-4:-2]
         self.scan_pixel_size = scan_pixel_size
-        self.image_pixel_size = image_pixel_size
+        self.dp_pixel_size = dp_pixel_size
+        if dp_pixel_size is not None:
+            self.ewpc_pixel_size = 1 / (
+                self.dp_pixel_size * datacube.shape[-1])
+        self.dp_rotation = dp_rotation
         self.origin = origin
-        self.fix_origin = fix_origin
-        self.origin_type = origin_type
         self.ref_region = None
         self.upsample_factor = upsample_factor
         self.origin_shift = 0
@@ -180,10 +173,11 @@ class DataCube:
         if get_ewpc:
             print('Calculating EWPC. This may take a moment...')
             minval = np.min(datacube)
-            self.ewpc = np.abs(fft_square(
+            self.ewpc = fft_square(
                 np.log(datacube - minval + 0.1),
-                hanning_window=True,
-                upsample_factor=upsample_factor))
+                hann_window=True,
+                upsample_factor=upsample_factor)
+
             self.ewpc_mean = np.mean(
                 self.ewpc,
                 axis=tuple(i for i in range(self.ndims-2))
@@ -194,15 +188,8 @@ class DataCube:
 
         if upsample_factor is not None:
             self.origin_shift = self.scan_w * (upsample_factor - 1) / 2
-
-        if self.origin_type == 'fft':
-            self.origin = (int(self.im_h/2), int(self.im_w/2))
-            if np.max(display_image) != display_image[self.origin]:
-                warnings.warn(
-                    "Determined origin is not correct for origin_type='fft'." +
-                    "Check that data has not been manipulated, e.g. via " +
-                    "cropping. Otherwise, should assign: origin_type='exp'."
-                )
+            self.im_h *= upsample_factor
+            self.im_w *= upsample_factor
 
         if show_mean_image:
             fig, ax = plt.subplots(1)
@@ -210,7 +197,24 @@ class DataCube:
             if self.origin is not None:
                 ax.scatter(*self.origin, c='red', marker='+')
 
-    def initalize_cepstral_analysis(
+    def kmeans_segmentation_ewpc(self, n_clusters, window=4):
+
+        ewpc = copy.deepcopy(self.ewpc)
+
+        # Block out central peak:
+        ewpc[:, :, 64-window:64+window+1, 64-window:64+window+1] = 0
+
+        # Prepare kmeans analysis
+        X_train = ewpc.reshape((-1, 128*128))**0.5
+        X_train -= np.min(X_train)
+        X_train /= np.max(X_train)
+
+        kmeans = MiniBatchKMeans(n_clusters=n_clusters)
+        kmeans.fit(X_train)
+        self.kmeans_labels = kmeans.labels_.reshape((self.scan_h, self.scan_w))
+        plt.imshow(self.kmeans_labels)
+
+    def initalize_ewpc_analysis(
             self,
             pick_basis_order=(1, 1),
             use_only_basis_peaks=False,
@@ -221,8 +225,7 @@ class DataCube:
             pick_labels=None,
             min_order=0,
             max_order=10,
-            # scaling=None,
-            # power=0.2,
+            thresh=0.05
     ):
         """
         Initialize EWPC analysis by registring a lattice to the mean image.
@@ -276,60 +279,50 @@ class DataCube:
         power : scalar
             The exponent to use for power scaling of the pattern for plotting.
             Default: 0.2
+        thresh : scalar
+            The threshold cutoff for detecting peaks relative to the highest
+            peak, vmax (not considering the central EWPC peak). An individual
+            peak must have a maximum > thresh * vmax to be detected.
+
+        Returns
+        -------
+        None.
+
         """
 
         timeout = None
 
+        self.origin = np.array([self.im_w/2, self.im_h/2])
+
         peaks = detect_peaks(self.ewpc_mean, min_dist=2, thresh=0)
 
         # Find the maximum of the 2nd highest peak (ignores the central peak)
-        vmax = np.unique(peaks*self.ewpc_mean)[-2]
+        self.ewpc_vmax = np.unique(peaks*self.ewpc_mean)[-2]
 
         # Get feature size after applying vmax as a maximum threshold.
         # This prevents the central peak from dominating the size determination
         # vmax will also be used as the upper limit of the imshow cmap.
-        ewpc_thresh = np.where(self.ewpc_mean > vmax, 0, self.ewpc_mean)
-        min_dist = get_feature_size(ewpc_thresh) * 2
-        print(min_dist)
+        ewpc_thresh = np.where(
+            self.ewpc_mean > self.ewpc_vmax,
+            0,
+            self.ewpc_mean
+        )
 
-        # if scaling is None:
-        #     display_image = self.ewpc_mean
-        # else:
-        #     if scaling == 'pwr':
-        #         display_image = self.ewpc_mean ** power
-        #     elif scaling == 'log':
-        #         display_image = np.log(self.ewpc_mean)
-        #     else:
-        #         raise Exception(
-        #             'Scaling must be: None, "pwr", or "log".')
-
-        if self.origin is None:
-            n_picks = 3
-        else:
-            n_picks = 2
-
-        # masks, num_masks, slices, peaks = watershed_segment(
-        #     self.ewpc_mean,
-        #     sigma=0,
-        #     min_dist=min_dist,
-        #     local_thresh_factor=0,
-        # )
+        min_dist = get_feature_size(ewpc_thresh) * 1.5
 
         # Detect peaks and get x,y coordinates
         peaks = detect_peaks(
             self.ewpc_mean,
             min_dist=min_dist,
-            thresh=0.02*vmax,
+            thresh=thresh*self.ewpc_vmax,
         )
 
         xy_peaks = np.fliplr(np.argwhere(peaks))
 
-        # xy_peaks = peaks.loc[:, 'x':'y'].to_numpy()
-
         if graphical_picking or (pick_labels is None):
             basis_picks = pick_points(
                 ewpc_thresh,
-                n_picks,
+                n_picks=2,
                 xy_peaks=xy_peaks,
                 origin=self.origin,
                 graphical_picking=graphical_picking,
@@ -350,7 +343,7 @@ class DataCube:
                 xy_peaks=xy_peaks,
                 basis1_order=pick_basis_order[0],
                 basis2_order=pick_basis_order[1],
-                fix_origin=self.fix_origin,
+                fix_origin=True,
                 min_order=min_order,
                 max_order=max_order,
             )
@@ -400,7 +393,7 @@ class DataCube:
 
             self.lattice = lattice
 
-    def get_cepstral_basis(
+    def get_ewpc_basis(
             self,
             window_size=7,
     ):
@@ -413,19 +406,19 @@ class DataCube:
             Window size of the mask used to find initial guess for peak
             position in each EWPC pattern.
             Default: 7
-        rotation : scalar
-            Rotation angle (in degrees) between the real space scan axes and
-            the detector axes. Positive is clockwise. This must incorporate
-            both normal image-detector rotation angle as well as any applied
-            scan rotation. Note that the scan rotation value may be opposite in
-            sign compared to the resulting image rotation.
+
+        Returns
+        -------
+        None.
 
 
         """
 
+        theta = np.radians(self.dp_rotation)
         t = [time.time()]
         m = self.ewpc_mean.shape[0] / 2
-        p0 = self.basis.flatten().tolist() + list(self.origin)
+        p0 = np.concatenate([self.basis.flatten(), self.origin]
+                            ) / self.upsample_factor
 
         lattice = copy.deepcopy(self.lattice)
 
@@ -493,12 +486,22 @@ class DataCube:
         basis_vects = np.array([
             fit_lattice(
                 p0,
-                np.array(xy) * self.upsample_factor,
+                np.array(xy),
                 M,
                 fix_origin=True,
             )[:4].reshape((2, 2))
             for xy in results
         ]).reshape((self.scan_h, self.scan_w, 2, 2))
+
+        rot_mat = np.array([
+            [np.cos(theta), np.sin(theta)],
+            [-np.sin(theta), np.cos(theta)]
+        ])
+
+        # Apply rotation
+        basis_vects = np.array([
+            [basis @ rot_mat for basis in row]
+            for row in basis_vects])
 
         self.basis_vects_real_px = basis_vects
 
@@ -516,14 +519,248 @@ class DataCube:
             self.basis_vects_recip_px, axis=(0, 1)
         )
 
-        # TODO : If calibration given, also calculate in Angstroms / A ^ -1
+        if self.dp_pixel_size is not None:
+
+            # Make lattice parameter maps
+            lattice_maps = {}
+            # Find lattice parameter distances
+            lattice_maps['a1'] = norm(
+                np.squeeze(self.basis_vects_real_px[:, :, 0, :]),
+                axis=-1
+            ) * self.ewpc_pixel_size
+
+            lattice_maps['a2'] = norm(
+                np.squeeze(self.basis_vects_real_px[:, :, 1, :]),
+                axis=-1
+            ) * self.ewpc_pixel_size
+
+            # Find lattice parameter angle
+            lattice_maps['gamma'] = np.array([
+                [np.abs(rotation_angle_bt_vectors(basis[0], basis[1]))
+                 for basis in row]
+                for row in self.basis_vects_real_px
+            ])
+
+            # Find angle between local & mean basis vectors
+            theta1 = np.array([
+                [rotation_angle_bt_vectors(
+                    basis[0],
+                    self.basis_mean_real_px[0]
+                )
+                    for basis in row]
+                for row in self.basis_vects_real_px
+            ])
+
+            theta2 = np.array([
+                [rotation_angle_bt_vectors(
+                    basis[1],
+                    self.basis_mean_real_px[1]
+                )
+                    for basis in row]
+                for row in self.basis_vects_real_px
+            ])
+
+            # Find lattice rotation relative to mean basis
+            lattice_maps['theta'] = (theta1 + theta2) / 2
+
+            self.lattice_maps = lattice_maps
 
         t += [time.time()]
         print(f'Step 5 (Register lattice): {(t[-1]-t[-2]) :.{2}f} sec')
 
+    def overlay_mean_basis(self):
+        """
+        Overlay the mean basis vectors on a virtual dark field image.
+
+        Function is for sanity checking the measured mean basis vectors
+        relative to the scan axes. They are not plotted to scale on the image,
+        but are to scale with respect to each other.
+
+        Parameters
+        ----------
+        None.
+
+        Returns
+        -------
+        None.
+
+        """
+
+        ewpc_df = self.ewpc[:, :, int(self.origin[1]), int(self.origin[0])]
+        fig, ax = plot_basis(
+            ewpc_df,
+            self.basis_mean_real_px,
+            [self.scan_w/2, self.scan_h/2],
+            return_fig=True)
+
+        fig.suptitle('Basis orientation overlaid on scan dimensions image'
+                     + '\n Vectors not to scale.')
+
+    def plot_lattice_parameter_maps(
+            self,
+            lattice_vect_origin=(0.1, 0.9),
+            lattice_vect_scale=0.1,
+            kmeans_roi=None,
+            roi_erode=1,
+            figsize=(10, 10),
+            return_fig=False):
+        """
+        Plot calculated strain maps.
+
+        Parameters
+        ----------
+        lattice_vect_origin : 2-tuple of scalars (0 to 1)
+            Fractional axes coordinates (x, y) to locate the lattice vectors
+            plot in the a1 plot (upper left axes). (0,1, 0.9) plots the lattice
+            vectors with the origin in the bottom left corner of the a1 plot.
+            Default: (0.1, 0.9)
+        lattice_vect_scale : scalar
+            Scale of the lattce basis vectors relative to the plot size. Note:
+            the basis vectors are plotted to visualize the crystal orientation
+            and are not to scale with respect to the scan pixel size; they are,
+            however, to scale with respect to each other. 
+            lattice_vect_scale=0.1 will scale the vectors so their mean length
+            is 10% of the plot size.
+            Default: 0.1
+        kmeans_roi : int or None
+            The k-means cluster label of the region of interest.
+        roi_erode : int
+            Radius of the erosion footprint, equivalent to erroding this number
+            of pixels from the original ROI. Useful for removing pixels near
+            the edge of the ROI that are incorrectly classified or may contain
+            information from the neighboring region.
+        figsize : 2-tuple of scalars
+            Size of the resulting figure.
+            Default: (10, 10)
+        return_fig: bool
+            Whether to return the fig and axes objects so they can be modified.
+            Default: False
+
+        Returns
+        -------
+        fig, axs : figure and axes objects (optional)
+            The resulting matplotlib figure and axes objects for possible
+            modification by the user.
+
+        """
+
+        if kmeans_roi is not None:
+            mask = np.where(self.kmeans_labels == kmeans_roi, True, False)
+            mask = erosion(mask, footprint=np.ones((roi_erode*2 + 1,)*2))
+
+        else:
+            mask = np.ones((self.scan_h, self.scan_w)).astype(bool)
+
+        labels = [r'$a_1$', r'$a_2$',
+                  r'$\gamma$', r'$\theta$']
+        units = [r'$\AA$', r'$\AA$', r'$\circ$', r'$\circ$']
+
+        fig, axs = plt.subplots(
+            2, 2,
+            sharex=True,
+            sharey=True,
+            figsize=figsize,
+            tight_layout=True,
+            # layout='constrained',
+        )
+        axs = axs.flatten()
+        plots = []
+
+        for i, comp in enumerate(self.lattice_maps.keys()):
+            decimals = 2 if i < 2 else 1
+            vmin = np.around(np.nanmin(
+                np.where(mask, self.lattice_maps[comp], np.nan)),
+                decimals)
+            vmax = np.around(np.nanmax(
+                np.where(mask, self.lattice_maps[comp], np.nan)),
+                decimals)
+
+            if i == 0:
+                size = np.mean(norm(self.basis_mean_real_px, axis=1))
+
+                plot_basis_vects = self.basis_mean_real_px * \
+                    lattice_vect_scale * np.min([self.scan_h, self.scan_w]) \
+                    / size
+
+                axis_origin = [self.scan_w * lattice_vect_origin[0],
+                               self.scan_h * lattice_vect_origin[1]]
+                axs[i].arrow(
+                    axis_origin[0],
+                    axis_origin[1],
+                    plot_basis_vects[0, 0],
+                    plot_basis_vects[0, 1],
+                    fc='black',
+                    ec='black',
+                    width=0.2,
+                    length_includes_head=True,
+                )
+                axs[i].arrow(
+                    axis_origin[0],
+                    axis_origin[1],
+                    plot_basis_vects[1, 0],
+                    plot_basis_vects[1, 1],
+                    fc='black',
+                    ec='black',
+                    width=0.2,
+                    length_includes_head=True,
+                )
+                axs[i].text(axis_origin[0]+plot_basis_vects[0, 0] * 1.2,
+                            axis_origin[1]+plot_basis_vects[0, 1] * 1.2,
+                            r'$a_1$',
+                            size=16,)
+                axs[i].text(axis_origin[0]+plot_basis_vects[1, 0] * 1.2,
+                            axis_origin[1]+plot_basis_vects[1, 1] * 1.2,
+                            r'$a_2$',
+                            size=16,)
+
+            plots += [axs[i].imshow(
+                np.where(mask, self.lattice_maps[comp], np.nan),
+                cmap='RdBu_r',
+                vmin=vmin,
+                vmax=vmax,
+            )]
+
+            axs[i].set_xticks([])
+            axs[i].set_yticks([])
+
+            cbar = plt.colorbar(
+                plots[i],
+                orientation='vertical',
+                shrink=0.3,
+                aspect=10,
+                ticks=[
+                    vmin,
+                    vmax,
+                    np.around(np.mean([vmin, vmax]), decimals+1)
+                ],
+                pad=0.02,
+
+            )
+
+            # cbar.ax.tick_params(labelsize=16)
+            cbar.set_label(label=units[i], fontsize=20, fontweight='bold',
+                           rotation='horizontal')
+            axs[i].text(self.scan_w/50, self.scan_h/50,
+                        labels[i], ha='left', va='top',
+                        size=24, fontweight='bold',
+                        bbox=dict(facecolor='white', alpha=0.7, lw=0)
+                        )
+
+            # if self.ref_region is not None:
+            #     dx = self.ref_region[0, 1] - self.ref_region[0, 0]
+            #     dy = self.ref_region[1, 0] - self.ref_region[1, 1]
+            #     corner = [self.ref_region[0, 0], self.ref_region[1, 1] - 1]
+
+            #     rect = Rectangle(corner, dx, dy, fill=False)
+            #     axs[i].add_patch(rect)
+
+        if return_fig:
+            return fig, axs
+
     def get_strain(
             self,
             ref=None,
+            roi_erode=1,
             rotation=None,
     ):
         """
@@ -535,33 +772,46 @@ class DataCube:
             Window size of the mask used to find initial guess for peak
             position in each EWPC pattern.
             Default: 7
-        ref : 2x2 array, 2d slice object, or None
+
+        ref : 2x2 array, 2d slice object, int or None
             The reference basis vectors or reference region from which to
             measure strain. Reference vectors must be in units of detector
             pixels and rotationally aligned to the average pattern.
             If a slice, is passed, it is intrepreted to be a region of the real
             space scan dimensions. The average lattice parameters in this
             region are taken as the zero strain reference.
+            If k-means segmentation has been run, passing an integer is
+            selects one of the k-means labels as the reference region.
             If None, The average vectors from the entire dataset are used as
             the zero strain reference.
             Default: None
-        rotation : scalar
-            Rotation angle (in degrees) between the real space scan axes and
-            the detector axes. Positive is clockwise. This must incorporate
-            both normal image-detector rotation angle as well as any applied
-            scan rotation. Note that the scan rotation value may be opposite in
-            sign compared to the resulting image rotation.
 
+        rotation : scalar
+            Reference frame rotation for strain relative to the scan axes, in
+            degrees. Positive is clockwise; negative is counterclockwise.
+
+        Returns
+        -------
+        None.
 
         """
 
         if ref is None:
             ref = self.basis_mean_real_px
+            self.ref_region = None
 
-        elif type(ref[0]) == slice:
+        elif (type(ref) == tuple):
             self.ref_region = np.array([[ref[1].start, ref[1].stop],
                                         [ref[0].start, ref[0].stop]])
             ref = np.mean(self.basis_vects_real_px[ref], axis=(0, 1))
+
+        elif type(ref) == int:
+            mask = np.where(self.kmeans_labels == ref, True, False)
+            mask = erosion(mask, footprint=np.ones((roi_erode*2 + 1,)*2))
+            ref = np.mean(
+                self.basis_vects_real_px[mask],
+                axis=0,
+            )
 
         beta = np.array([
             [solve(ref, local_basis)
@@ -574,7 +824,11 @@ class DataCube:
         exy = -(beta[:, :, 0, 1] + beta[:, :, 1, 0]) / 2 * 100
         theta = np.degrees((beta[:, :, 0, 1] - beta[:, :, 1, 0]) / 2)
 
-        if rotation is not None:
+        if rotation is None or rotation == 0:
+            self.strain_basis = np.identity(2) \
+                * np.min([self.scan_h, self.scan_w]) * 0.05
+
+        else:
             strain = np.stack([exx,
                                eyy,
                                exy],
@@ -591,6 +845,11 @@ class DataCube:
                                for row in strain])
             [exx, eyy, exy] = strain.transpose((2, 0, 1))
 
+            self.strain_basis = np.array([
+                [np.cos(rotation), np.sin(rotation)],
+                [-np.sin(rotation), np.cos(rotation)]
+            ]) * np.min([self.scan_h, self.scan_w]) * 0.05
+
         self.strain_map = {
             'exx': exx,
             'eyy': eyy,
@@ -605,6 +864,10 @@ class DataCube:
             normal_strain_lim=None,
             shear_strain_lim=None,
             theta_lim=None,
+            kmeans_roi=None,
+            roi_erode=1,
+            plot_strain_axes=True,
+            strain_axes_origin=(0.1, 0.1),
             figsize=(10, 10),
             return_fig=False):
         """
@@ -627,6 +890,14 @@ class DataCube:
             If None, will use the zero-centered absolute maximum of all
             values.
             Default: None
+        plot_strain_axes : bool
+            Whether to plot vectors showing the axes of the displayed strain
+            fields, i.e. the x and y strain directions.
+        strain_axes_origin : 2-tuple
+            The origin location of the displayed strain axes vectors
+            (if plot_strain_axes is True) relative to the (x, y) plot axes,
+            e.g. (0.1, 0.1) is the upper left corner, 10% in from each edge.
+            Default: (0.1, 0.1)
         figsize : 2-tuple of scalars
             Size of the resulting figure.
             Default: (10, 10)
@@ -642,6 +913,13 @@ class DataCube:
 
         """
 
+        if kmeans_roi is not None:
+            mask = np.where(self.kmeans_labels == kmeans_roi, True, False)
+            mask = erosion(mask, footprint=np.ones((roi_erode*2 + 1,)*2))
+
+        else:
+            mask = np.ones((self.scan_h, self.scan_w)).astype(bool)
+
         limlist = [normal_strain_lim] * 2 + [shear_strain_lim, theta_lim]
         keys = ['exx', 'eyy', 'exy', 'theta']
         labels = [r'$\epsilon _{xx}$', r'$\epsilon _{yy}$',
@@ -649,10 +927,11 @@ class DataCube:
 
         # TODO: center limits at zero by default
 
-        vminmax = {key: tuple(limlist[i]) if limlist[i] is not None
-                   else (None, None)
-                   for i, key in enumerate(keys)
-                   }
+        vminmax = {
+            key: tuple(limlist[i]) if limlist[i] is not None
+            else (None, None)  # find the min and max
+            for i, key in enumerate(keys)
+        }
 
         fig, axs = plt.subplots(
             2, 2,
@@ -664,11 +943,46 @@ class DataCube:
         )
         axs = axs.flatten()
         plots = []
-
         for i, comp in enumerate(keys):
-            label = r'$\circ$' if comp == 'theta' else '%'
+            if (i == 0) & plot_strain_axes:
+                print('plotting strain axes')
+                axis_origin = [self.scan_w * strain_axes_origin[0],
+                               self.scan_h * strain_axes_origin[1]]
+                axs[i].arrow(
+                    axis_origin[0],
+                    axis_origin[1],
+                    self.strain_basis[0, 0],
+                    self.strain_basis[0, 1],
+                    fc='black',
+                    ec='black',
+                    width=0.1,
+                    length_includes_head=True,
+                    # head_width=2,
+                    # head_length=3,
+                    label='1',
+                )
+                axs[i].arrow(
+                    axis_origin[0],
+                    axis_origin[1],
+                    self.strain_basis[1, 0],
+                    self.strain_basis[1, 1],
+                    fc='black',
+                    ec='black',
+                    width=0.1,
+                    length_includes_head=True,
+                    # head_width=2,
+                    # head_length=3,
+                )
+                axs[i].text(axis_origin[0]+self.strain_basis[0, 0] * 1.2,
+                            axis_origin[1]+self.strain_basis[0, 1] * 1.2,
+                            'xx')
+                axs[i].text(axis_origin[0]+self.strain_basis[1, 0] * 1.2,
+                            axis_origin[1]+self.strain_basis[1, 1] * 1.2,
+                            'yy')
+
+            units = r'$\circ$' if comp == 'theta' else '%'
             plots += [axs[i].imshow(
-                self.strain_map[comp],
+                np.where(mask, self.strain_map[comp], np.nan),
                 cmap='RdBu_r',
                 vmin=vminmax[comp][0],
                 vmax=vminmax[comp][1])]
@@ -688,9 +1002,13 @@ class DataCube:
             )
 
             cbar.ax.tick_params(labelsize=16)
-            cbar.set_label(label=label, fontsize=20, fontweight='bold')
+            cbar.set_label(label=units, fontsize=20, fontweight='bold')
             axs[i].text(self.scan_w/50, self.scan_h/50,
-                        labels[i], ha='left', va='top', size=24)
+                        labels[i], ha='left', va='top', size=24,
+                        # bbox={'alpha' : 0.2,
+                        #       'color' : 'white',
+                        #       'fill' : True},
+                        )
 
             if self.ref_region is not None:
                 dx = self.ref_region[0, 1] - self.ref_region[0, 0]
@@ -702,17 +1020,36 @@ class DataCube:
 
         return fig, axs
 
-    def plot_dp_basis(self, dp_origin=None):
+    def plot_dp_basis(self, dp_origin=None, basis_factor=[1,1]):
+        
+        basis_factor = np.array(basis_factor, ndmin=2).T
 
         if dp_origin is None:
             dp_origin = np.flip(np.unravel_index(np.argmax(self.data_mean),
                                                  self.datacube.shape[-2:]))
 
+        theta = -np.radians(self.dp_rotation)
+        rot_matrix = np.array([[np.cos(theta), np.sin(theta)],
+                               [-np.sin(theta), np.cos(theta)]])
+
         fig, ax = plot_basis(
-            self.data_mean,
-            self.basis_mean_recip_px,
+            np.log(self.data_mean),
+            self.basis_mean_recip_px @ rot_matrix * basis_factor,
             dp_origin,
             return_fig=True)
+        ax.legend()
+
+    def plot_real_basis(self, basis_factor=[1,1]):
+        
+        
+
+        fig, ax = so.plot_basis(
+            self.ewpc_mean,
+            self.basis_mean_real_px,
+            self.origin,
+            return_fig=True,
+            vmax=self.ewpc_vmax,
+            vmin=None)
         ax.legend()
 
     def calibrate_dp(self, g1, g2, cif_path):

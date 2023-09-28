@@ -15,6 +15,16 @@
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see https://www.gnu.org/licenses"""
 
+from SingleOrigin.utils import (
+    metric_tensor,
+    bond_length,
+    bond_angle,
+    IntPlSpc
+)
+from CifFile import ReadCif
+from PyQt5.QtWidgets import QFileDialog as qfd
+import matplotlib.patches as patches
+import matplotlib.pyplot as plt
 import copy
 import warnings
 
@@ -22,20 +32,8 @@ import numpy as np
 from numpy.linalg import norm, inv
 
 import pandas as pd
+pd.options.mode.chained_assignment = None
 
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-
-from PyQt5.QtWidgets import QFileDialog as qfd
-
-from CifFile import ReadCif
-
-from SingleOrigin.utils import (
-    metric_tensor,
-    bond_length,
-    bond_angle,
-    IntPlSpc
-)
 
 # %%
 
@@ -180,7 +178,7 @@ class UnitCell():
             ).T
 
         else:
-            site_frac = np.ones((xyz.shape[0], 1))
+            site_frac = np.ones((xyz_motif.shape[0], 1))
 
         atoms = pd.DataFrame(
             {'u': xyz_motif[:, 0], 'v': xyz_motif[:, 1], 'w': xyz_motif[:, 2],
@@ -505,14 +503,14 @@ class UnitCell():
         at_cols = at_cols.reset_index(drop=True)
 
         at_cols.rename(
-            columns={'v': 'u', 'w': 'v'},
+            columns={'v': 'u', 'w': 'v', 'y': 'x', 'z': 'y'},
             inplace=True
         )
 
-        at_cols.rename(
-            columns={'y': 'x', 'z': 'y'},
-            inplace=True
-        )
+        # at_cols.rename(
+        #     columns={'y': 'x', 'z': 'y'},
+        #     inplace=True
+        # )
 
         self.at_cols = at_cols
 
@@ -569,7 +567,8 @@ class UnitCell():
 
             a_2d /= a_mult.T
 
-        at_cols[['x', 'y']] = at_cols.loc[:, 'u':'v'].to_numpy() @ a_2d.T
+        at_cols.loc[:, 'x':'y'] = at_cols.loc[:, 'u':'v'].to_numpy() @ a_2d.T
+
         at_cols = at_cols.sort_values(by=['elem', 'u', 'v'])
         at_cols.reset_index(drop=True, inplace=True)
 

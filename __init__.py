@@ -16,7 +16,7 @@
     along with this program.  If not, see https://www.gnu.org/licenses"""
 
 
-__version__ = "2.5"
+__version__ = "2.5.1"
 
 from SingleOrigin.utils import (
     metric_tensor,
@@ -57,7 +57,8 @@ from SingleOrigin.utils import (
     cft,
     find_cepstrum_peak,
     pcf_radial,
-    v_pcf,
+    get_vpcf,
+    get_vpcf_peak_params,
     pick_points,
     register_lattice_to_peaks,
     plot_basis,
@@ -75,4 +76,4 @@ from SingleOrigin.find_atom_columns import (
 
 from SingleOrigin.reciprocal_lattice_analyzer import ReciprocalImage
 
-from SingleOrigin.nbed4dstem import DataCube
+from SingleOrigin.measure_lattice import MeasureLattice

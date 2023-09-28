@@ -22,9 +22,10 @@ import warnings
 import io
 import json
 from contextlib import redirect_stdout
+from tqdm import tqdm
 
 import numpy as np
-from numpy.linalg import norm, lstsq, solve
+from numpy.linalg import norm, lstsq
 
 import pandas as pd
 
@@ -34,7 +35,6 @@ from scipy.signal import convolve2d
 from scipy.optimize import minimize
 from scipy.ndimage.morphology import (
     binary_fill_holes,
-    binary_erosion,
     binary_dilation,
 )
 from scipy.ndimage import (
@@ -47,6 +47,7 @@ from scipy.ndimage import (
 )
 from scipy.interpolate import make_interp_spline
 from scipy.fft import (fft2, fftshift)
+from scipy.stats import gaussian_kde
 
 from PyQt5.QtWidgets import QFileDialog as qfd
 
@@ -60,6 +61,8 @@ from ncempy.io.emdVelox import fileEMDVelox
 from ncempy.io.emd import emdReader
 
 from skimage.segmentation import watershed
+from skimage.morphology import binary_erosion  # erosion
+
 from skimage.measure import (moments, moments_central)
 from skimage.feature import hessian_matrix_det
 
@@ -397,7 +400,7 @@ def select_folder():
 
     """
 
-    print('Select folder')
+    print('Select folder...')
     path = qfd.getExistingDirectory()
 
     return path
@@ -429,7 +432,7 @@ def select_file(folder_path=None, message=None, ftypes=None):
         os.chdir(folder_path)
 
     if type(message) is not str:
-        print('Select folder')
+        print('Select file...')
     else:
         print(message)
 
@@ -533,6 +536,8 @@ def load_image(
             + 'the default dataset.'
         )
 
+    # if dsets_to_load == 'all':
+
     if path[-3:] in ['dm4', 'dm3']:
 
         dm_file = dmReader(path)
@@ -548,12 +553,16 @@ def load_image(
         emd = hs.load(path)
         if type(emd) != list:
             dsets = np.array([emd.metadata.General.title])
+            print(dsets)
+
+            if dsets_to_load == 'all':
+                dsets_to_load = dsets
 
         else:
             dsets = np.array([emd[i].metadata.General.title
                               for i in range(len(emd))])
 
-            print('Datasets found: ', ', '.join(dsets))
+            # print('Datasets found: ', ', '.join(dsets))
 
             # Get list of all datasets to load if "all" specified.
             # Remove EDS datasets because they cause problems.
@@ -647,7 +656,7 @@ def load_image(
         metadata['imageType'] = dsets[dset_ind]
 
     elif path[-3:] == 'ser':
-        ser_file = serReader(path, dsetNum=dsets_to_load)
+        ser_file = serReader(path)  # , dsetNum=dsets_to_load)
         images = {dsets_to_load: ser_file['data']}
         metadata = {dsets_to_load: {
             key: val for key, val in ser_file.items() if key != 'data'
@@ -1004,7 +1013,7 @@ def binary_find_smallest_rectangle(array):
 
 
 def fft_square(image,
-               hanning_window=False,
+               hann_window=False,
                upsample_factor=None,
                abs_val=True
                ):
@@ -1017,7 +1026,7 @@ def fft_square(image,
         (e.g. a 4D dataset of diffraction patterns, 4D STEM). The FFT will
         be taken along the last two axes.
 
-    hanning_window : bool
+    hann_window : bool
         Whether to apply a hanning window to the image before taking the FFT.
         Default: False
 
@@ -1043,28 +1052,42 @@ def fft_square(image,
     m = (min(h, w) // 2) * 2
     U = int(m/2)
     ndim = len(image.shape)
+
     if h != w:
-        image_square = copy.deepcopy(image[...,
-                                           int(h/2)-U: int(h/2)+U,
-                                           int(w/2)-U: int(w/2)+U])
+        image_square = image[...,
+                             int(h/2)-U: int(h/2)+U,
+                             int(w/2)-U: int(w/2)+U]
     else:
         image_square = image
 
-    if hanning_window:
+    if hann_window:
         image_square *= hann_2d(m)
 
     if upsample_factor is not None:
-        upsample_factor = int(upsample_factor)
-        pad = int(m/2 * (upsample_factor - 1))
-        padding = ((0, 0),)*(ndim - 2) + ((pad, pad),)*2
-        image_square = np.pad(image_square, padding)
+        if upsample_factor > 1:
+            print('upsampling... may take a while longer.')
+            upsample_factor = int(upsample_factor)
+            pad = int(m/2 * (upsample_factor - 1))
+            padding = ((0, 0),)*(ndim - 2) + ((pad, pad),)*2
+            image_square = np.pad(image_square, padding)
 
     fft = fftshift(fft2(image_square), axes=(-2, -1))
 
+    # if len(image.shape) == 2:
+    #     fft = fftshift(fft2(image_square * hann))
+
+    # elif len(image.shape) == 3:
+    #     fft = np.array(
+    #         [fftshift(fft2(im * hann)) for im in image_square]
+    #     )
+
+    # if len(image.shape) == 4:
+    #     fft = np.array([
+    #         [fftshift(fft2(im * hann)) for im in row]
+    #         for row in image_square])
+
     if abs_val:
         fft = np.abs(fft)
-
-    # del image_square
 
     return fft
 
@@ -1219,6 +1242,17 @@ def detect_peaks(
              ) * (image > thresh)
 
     return peaks.astype(int)
+
+    # xy_peaks = (*peak_local_max(fft, footprint=neighborhood).T,)
+
+    # peaks = np.zeros(fft.shape).flatten()
+
+    # xy_peaks = np.ravel_multi_index(xy_peaks, fft.shape)
+
+    # peaks[xy_peaks] = 1
+
+    # peaks = peaks.reshape(fft.shape)
+    # plt.imshow(peaks)
 
 
 def watershed_segment(
@@ -1427,24 +1461,24 @@ def img_ellip_param(image):
     theta : rotation angle of the major semi-axis relative to horizontal
         in degrees (positive is counterclockwise)
 
-    sig_1 : magnitude of the major semi-axis
+    sig_maj : magnitude of the major semi-axis
 
-    sig_2 : magnitude of the major semi-axis
+    sig_min : magnitude of the minor semi-axis
 
     """
 
     eigvals, eigvects, x0, y0 = img_equ_ellip(image)
     major = np.argmax(eigvals)
     minor = np.argmin(eigvals)
-    sig_1 = np.sqrt(eigvals[major])
-    sig_2 = np.sqrt(eigvals[minor])
+    sig_maj = np.sqrt(eigvals[major])
+    sig_min = np.sqrt(eigvals[minor])
     eccen = np.sqrt(1-eigvals[minor]/eigvals[major])
     theta = np.degrees(np.arcsin(
         np.cross(np.array([1, 0]),
                  eigvects[major]).item()
     ))
 
-    return x0, y0, eccen, theta, sig_1, sig_2
+    return x0, y0, eccen, theta, sig_maj, sig_min
 
 
 def gaussian_2d(x, y, x0, y0, sig_1, sig_2, ang, A=1, I_o=0):
@@ -1529,10 +1563,10 @@ def gaussian_ellip_ss(p0, x, y, z, masks=None):
 
     # Sum the functions for each peak:
     model = np.sum(A*np.exp(-1/2*(((np.cos(ang) * (x - x0)
-                                    + np.sin(ang) * (y - y0))
-                                   / sig_maj)**2
+                                   + np.sin(ang) * (y - y0))
+                                  / sig_maj)**2
                                   + ((-np.sin(ang) * (x - x0)
-                                      + np.cos(ang) * (y - y0))
+                                     + np.cos(ang) * (y - y0))
                                      / sig_min)**2)),
                    axis=0) + I0
 
@@ -1764,9 +1798,8 @@ def fit_gaussian_circ(
 
     """
 
-    num_gauss = int(np.ceil(p0.shape[0]/5))
+    num_gauss = p0.shape[0] // 4
     img_shape = data.shape
-    p0.shape
     I0 = p0[-1]
     p0_ = p0[:-1].reshape((num_gauss, 4))
 
@@ -1844,6 +1877,10 @@ def pack_data_prefit(
         xy_peaks,
         peak_mask_index,
         peak_groups,
+        pos_bound_dist=None,
+        use_circ_gauss=False,
+        use_bounds=False,
+        use_background_param=True,
 ):
     """Function to group data for the parallelized fitting process.
 
@@ -1891,6 +1928,10 @@ def pack_data_prefit(
          slices[counter][-2].start
          ],
         xy_peaks[inds, :].reshape((-1, 2)),
+        pos_bound_dist,
+        use_circ_gauss,
+        use_bounds,
+        use_background_param,
     ]
         for counter, inds
         in enumerate(peak_groups)
@@ -1963,13 +2004,6 @@ def fit_gaussian_group(
         The fitted parameters for the Gaussian(s).
 
     """
-
-    defaults = getattr(fit_gaussian_group, 'func_defaults', None)
-    if defaults is not None:
-        (pos_bound_dist,
-         use_circ_gauss,
-         use_bounds,
-         use_background_param) = defaults
 
     num = xy_peaks.shape[0]
 
@@ -2348,7 +2382,7 @@ def pcf_radial(
     return pcf
 
 
-def v_pcf(
+def get_vpcf(
         xlim,
         ylim,
         coords1,
@@ -2433,8 +2467,7 @@ def v_pcf(
         # Keep all vectors for a pair-pair vPCF
         vects = np.array([coords1 - i for i in coords2])
 
-    x_ = vects[:, :, 0].flatten()
-    y_ = vects[:, :, 1].flatten()
+    vects = vects.reshape((-1, 2))
 
     n_sq = coords1.shape[0] * coords2.shape[0]
     denominator = n_sq / area
@@ -2450,11 +2483,17 @@ def v_pcf(
     xedges -= xedges[x_min_ind] + d/2
     yedges -= yedges[y_min_ind] + d/2
 
+    # Remove vectors that fall out of the desired field of view
+    vects = vects[(vects[:, 0] > np.min(xedges)) &
+                  (vects[:, 0] < np.max(xedges)) &
+                  (vects[:, 1] > np.min(yedges)) &
+                  (vects[:, 1] < np.max(yedges))]
+
     if method == 'bin':
         # Bin into 2D histogram
         H, _, _ = np.histogram2d(
-            y_,
-            x_,
+            vects[:, 1],
+            vects[:, 0],
             bins=[yedges, xedges]
         )
 
@@ -2464,45 +2503,50 @@ def v_pcf(
 
         H = np.zeros((ycents.shape[0], xcents.shape[0]))
 
-        # Round values down to nearest pixel
-        xF = np.floor(x_/d) * d
-        yF = np.floor(y_/d) * d
+        xF = (vects[:, 0] // d) * d
+        yF = (vects[:, 1] // d) * d
 
         # Get x and y weights for the floor pixels
-        xFw = 1 - np.abs(x_/d % 1)
-        yFw = 1 - np.abs(y_/d % 1)
+        xFw = 1 - vects[:, 0] % d
+        yFw = 1 - vects[:, 1] % d
 
-        # Weighted histogram for x & y floor pixels
+        # Weighted histogram for x floor, y floor pixels
         H += np.histogram2d(
             yF, xF,
             bins=[yedges, xedges],
             weights=xFw * yFw
         )[0]
 
-        # Weighted histogram for x ceiling & y floor pixels
+        # Weighted histogram for x ceiling, y floor pixels
         H += np.histogram2d(
             yF, xF + d,
             bins=[yedges, xedges],
             weights=(1 - xFw) * yFw
         )[0]
 
-        # Weighted histogram for x floor & y ceiling pixels
+        # Weighted histogram for x floor, y ceiling pixels
         H += np.histogram2d(
             yF + d, xF,
             bins=[yedges, xedges],
             weights=xFw * (1 - yFw)
         )[0]
 
-        # Weighted histogram for x & y ceiling pixels
+        # Weighted histogram for x ceiling, y ceiling pixels
         H += np.histogram2d(
             yF + d, xF + d,
             bins=[yedges, xedges],
             weights=(1 - xFw) * (1 - yFw)
         )[0]
 
+    elif method == 'kde':
+        x_coords, y_coords = np.meshgrid(xedges[:-1] + d/2, yedges[:-1] + d/2)
+        coords = np.vstack([x_coords.ravel(), y_coords.ravel()])
+        kernel = gaussian_kde(vects.T, bw_method=1.5 * d**2)
+        H = np.reshape(kernel(coords).T, x_coords.shape)
+
     else:
         raise Exception(
-            "'method' must be either 'bin' or 'weighted'"
+            "'method' must be either 'bin', 'weighted' or 'kde'."
         )
 
     # Flip so y axis is positive going up
@@ -2516,9 +2560,231 @@ def v_pcf(
 
     H[origin[1], origin[0]] = 0
 
-    v_pcf = H/(denominator * d**2)  # Normalize vPCF by number density
+    if method == 'kde':
+        vpcf = H/d**2 * denominator
+    else:
+        vpcf = H/(denominator * d**2)  # Normalize vPCF by number density
 
-    return v_pcf, origin
+    return vpcf, origin
+
+
+def get_vpcf_peak_params(
+    vpcf,
+    sigma=10,
+    buffer=10,
+    method='moments',
+    sigma_group=None,
+    thresh_factor=1,
+):
+    """Calculates shape of peaks in each pair-pair vPCF.
+
+    Calculates peak equivalent ellipse shapes and locations for all vPCFs
+    stored in the "vpcfs" dictionary within the AtomColumnLattice object.
+    Results are saved in the "vpcf_peaks" dictionary and can be plotted
+    with the "plot_vpcfs" method.
+
+    Parameters
+    ----------
+    sigma : scalar
+        The Gaussian sigma for bluring peaks prior to identifying
+        mask areas for each peak by he watershed algorithm. In units of
+        vPCF pixels.
+    method : 'momenets' or 'gaussian'
+        Method to calculate shape and location of peaks. 'moments' uses
+        image moments calculations to measure the peaks while 'gaussian'
+        fits with a 2D Gaussian. Methods are roughly equivalent and give
+        the parameters of the ellipse that best describes the peak shape.
+        Gaussian fitting, however, is more unstable and somewhat slower.
+        The primary reason to use 2D Gaussians is in the case of peaks
+        with overalapping tails when simultaneous fitting is needed for
+        accurate measurements; otherwise, moments should be preferred.
+        Default: 'moments'
+    sigma_group : scalar or None
+        The maximum separation distance used for grouping close peaks for
+        simultaneous fitting. This is necessary if peaks are close enough
+        to have overlapping tails. Must use Gaussian fitting to account for
+        overlap when determining peak shapes. If None, not used.
+        Default: None.
+    thresh_factor : scalar
+        Adjusts the minimum amplitude for considering an identified local
+        maximum to be a peak for the purposes of finding its shape. By
+        default peaks with less than 10% of the amplitude of the largest
+        peak are not considered for fitting. A thresh_factor of 2 would
+        raise this cutoff to 20% while 0.5 would lower it to 5%.
+        Default: 1.
+
+    Returns
+    -------
+    None
+
+    """
+
+    xy_bnd = 10    # Position bound limit for gaussian fitting
+
+    vpcf_peaks = pd.DataFrame(columns=['x_fit', 'y_fit',
+                                       'sig_maj', 'sig_min',
+                                       'theta', 'peak_max', 'ecc'])
+    if sigma is not None:
+        pcf_sm = gaussian_filter(
+            vpcf,
+            sigma=sigma,
+            truncate=3,
+            mode='constant',
+        )
+
+    else:
+        pcf_sm = copy.deepcopy(vpcf)
+        sigma = 2
+
+    masks_indiv, n_peaks, _, peaks = watershed_segment(
+        pcf_sm,
+        min_dist=sigma,
+        # max_thresh_factor=0.5,
+        # local_thresh_factor=0,
+        sigma=None,
+        buffer=buffer,
+        watershed_line=False,
+    )
+
+    peaks['peak_max'] = vpcf[
+        peaks.loc[:, 'y'].to_numpy(dtype=int),
+        peaks.loc[:, 'x'].to_numpy(dtype=int)
+    ]
+
+    thresh = np.max(peaks.loc[:, 'peak_max']) * 0.1 * thresh_factor
+
+    peaks = peaks[(peaks.loc[:, 'peak_max'] > thresh)
+                  ].reset_index(drop=True)
+    # n_peaks = peaks.shape[0]
+    xy_peak = peaks.loc[:, 'x':'y'].to_numpy(dtype=int)
+    labels = peaks.loc[:, 'label'].to_numpy(dtype=int)
+
+    if sigma_group is not None:
+        if method != 'gaussian':
+            print('Using Gaussian method to account for peak overlap.')
+            method = 'gaussian'
+
+        pcf_sm = gaussian_filter(
+            vpcf,
+            sigma=sigma_group,
+            truncate=3
+        )
+
+        group_masks, _, _, _ = watershed_segment(
+            pcf_sm,
+            min_dist=sigma_group,
+            local_thresh_factor=0,
+            sigma=None,
+            buffer=0,
+            watershed_line=True
+        )
+
+        group_masks_to_peaks = map_coordinates(
+            group_masks,
+            np.flipud(xy_peak.T),
+            order=0
+        ).astype(int)
+
+        labels = np.unique(group_masks_to_peaks).astype(int)
+
+        group_masks = np.where(
+            np.isin(group_masks, labels),
+            group_masks,
+            0
+        )
+
+    if method == 'moments':
+        for i, peak_num in tqdm(enumerate(labels)):
+            pcf_masked = np.where(masks_indiv == peak_num, 1, 0
+                                  )*vpcf
+            peak_max = np.max(pcf_masked)
+            x_fit, y_fit, ecc, theta, sig_maj, sig_min = img_ellip_param(
+                pcf_masked
+            )
+
+            vpcf_peaks.loc[i, 'x_fit':] = [
+                x_fit,
+                y_fit,
+                sig_maj,
+                sig_min,
+                -theta,
+                peak_max,
+                ecc,
+            ]
+
+    elif method == 'gaussian':
+        for i in tqdm(labels):
+            if sigma_group is None:
+                mask = np.where(masks_indiv == i, 1, 0)
+            else:
+                mask = np.where(group_masks == i, 1, 0)
+
+            pcf_masked = mask * vpcf
+
+            match = np.argwhere([mask[y, x] for x, y in xy_peak])
+
+            # match = np.array([[y, x] for x, y in xy_peak])
+
+            mask_peaks = peaks.loc[match.flatten(), :]
+
+            if sigma_group is not None:
+
+                pcf_masked *= np.where(
+                    np.isin(masks_indiv, peaks.loc[:, 'label']),
+                    1, 0)
+
+            p0 = []
+            bounds = []
+            for j, (ind, row) in enumerate(mask_peaks.iterrows()):
+                mask_num = masks_indiv[int(row.y), int(row.x)]
+                mask = np.where(masks_indiv == mask_num, 1, 0)
+                peak_masked = mask * vpcf
+
+                x0, y0, ecc, theta, sig_maj, sig_min = img_ellip_param(
+                    peak_masked
+                )
+
+                p0 += [
+                    x0,
+                    y0,
+                    sig_maj,
+                    sig_maj/sig_min,
+                    np.max(pcf_masked),
+                    theta
+                ]
+
+                bounds += [(x0 - xy_bnd, x0 + xy_bnd),
+                           (y0 - xy_bnd, y0 + xy_bnd),
+                           (1, None),
+                           (1, 5),
+                           (0, None),
+                           (0, None),
+                           ]
+
+            p0 = np.array(p0 + [0])
+            bounds += [(0, 0)]
+
+            params = fit_gaussian_ellip(
+                pcf_masked,
+                p0,
+                masks=None,
+                method='L-BFGS-B',
+                bounds=bounds
+            )
+
+            # params = params[:, :-1]
+            params[:, 3] = params[:, 2] / params[:, 3]
+            params[:, 4] = np.degrees(params[:, 4])
+            params[:, -1] = np.sqrt(1 - params[:, 3]**2
+                                    / params[:, 2]**2)
+
+            next_ind = vpcf_peaks.shape[0]
+            for k, p in enumerate(params):
+                vpcf_peaks.loc[next_ind + k, :] = p
+
+    vpcf_peaks = vpcf_peaks.infer_objects()
+
+    return vpcf_peaks
 
 
 # %%
@@ -2722,6 +2988,8 @@ def plot_basis(
         origin,
         lattice=None,
         return_fig=False,
+        vmin=None,
+        vmax=None,
 ):
     """
     Plot a lattice and its basis vectors on the corresponding image.
@@ -2740,6 +3008,9 @@ def plot_basis(
     return_fig: bool
         Whether to return the fig and axes objects so they can be modified.
         Default: False
+    vmin, vmax : scalars
+        The min and max values for the image display colormap range.
+
     Returns
     -------
     fig, axs : figure and axes objects (optional)
@@ -2749,7 +3020,12 @@ def plot_basis(
     """
 
     fig, ax = plt.subplots(figsize=(10, 10))
-    ax.imshow(image, cmap='plasma')
+    ax.imshow(
+        image,
+        cmap='plasma',
+        vmin=vmin,
+        vmax=vmax,
+    )
     if lattice is not None:
         ax.scatter(
             lattice.loc[:, 'x_ref'].to_numpy(dtype=float),

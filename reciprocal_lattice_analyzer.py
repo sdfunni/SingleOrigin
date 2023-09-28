@@ -37,6 +37,8 @@ from SingleOrigin.utils import (
     watershed_segment,
     fit_lattice,
     absolute_angle_bt_vectors,
+    detect_peaks,
+    get_feature_size,
 )
 
 
@@ -99,7 +101,7 @@ class ReciprocalImage:
         a1_order=1,
         a2_order=1,
         sigma=3,
-        min_dist=5,
+        # min_dist=5,
         buffer=5,
         thresh_factor_std=1,
         thresh_abs=0.1,
@@ -170,35 +172,37 @@ class ReciprocalImage:
                 "'fft_or_dp' must be 'fft' or 'dp'."
             )
 
-        # Downsample for speed
-        # if np.max([self.h, self.w]) > 2000:
-        #     print('Downsampling...')
-        #     factor = int(np.max([self.h, self.w])/1e3)
-        #     image_ds = downscale_local_mean(self.image, (factor, factor))
-        #     if sigma > 0:
-        #         image_der = image_norm(-gaussian_laplace(
-        #             gaussian_filter(image_ds, 1), sigma/factor))
-        #     else:
-        #         image_der = self.image
-
+        # if sigma > 0:
+        #     # image_der = image_norm(-gaussian_laplace(
+        #     #     gaussian_filter(self.image, 1), sigma))
+        #     image_der = image_norm(gaussian_filter(self.image, sigma))
         # else:
-        if sigma > 0:
-            image_der = image_norm(-gaussian_laplace(
-                gaussian_filter(self.image, 1), sigma))
-        else:
-            image_der = self.image
+        #     image_der = self.image
+        image_der = self.image
+        peaks = detect_peaks(self.image, min_dist=2, thresh=0)
+
+        # Find the maximum of the 2nd highest peak (ignores the central peak)
+        self.image_vmax = np.unique(peaks*self.image)[-2]
+
+        # Get feature size after applying vmax as a maximum threshold.
+        # This prevents the central peak from dominating the size determination
+        # vmax will also be used as the upper limit of the imshow cmap.
+        image_thresh = np.where(
+            self.image > self.image_vmax,
+            0,
+            self.image
+        )
+
+        min_dist = get_feature_size(image_thresh)
+        print(min_dist)
+        
         masks, num_masks, _, spots = watershed_segment(
             image_der,
             local_thresh_factor=0,
-            max_thresh_factor=peak_thresh_factor,
+            max_thresh_factor=None,
             buffer=buffer,
             min_dist=min_dist
         )
-
-        # Upsample
-        # if np.max([self.h, self.w]) > 2000:
-        #     masks = rescale(masks, (factor, factor), order=0)
-        #     spots.loc[:, 'x':'y'] *= factor
 
         # Remove edge pixels:
         if buffer > 0:
