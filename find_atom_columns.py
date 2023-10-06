@@ -2268,7 +2268,7 @@ class AtomicColumnLattice:
             use_circ_gauss=False,
             use_bounds=False,
             use_background_param=True,
-            pos_bound_dist='auto'
+            pos_bound_dist=None
     ):
         """Algorithm for fitting 2D Gaussians to HR STEM image.
 
@@ -2389,7 +2389,7 @@ class AtomicColumnLattice:
             half the minimum seperation between atom columns in the reference
             lattice is used. If 'None', position bounds are not used.
             Argument is only functional when 'use_bounds' is set to True.
-            Default: 'auto'
+            Default: None
 
         Returns
         -------

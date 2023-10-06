@@ -36,33 +36,41 @@ from numpy.linalg import (
     solve,
 )
 
+import pandas as pd
+
+from scipy.ndimage import center_of_mass, gaussian_filter
+
 from sklearn.cluster import MiniBatchKMeans
-from skimage.morphology import erosion, disk
+from skimage.morphology import erosion
 
 from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle, Circle
 
 from SingleOrigin.utils import (
+    image_norm,
     detect_peaks,
     get_feature_size,
     pick_points,
     register_lattice_to_peaks,
     plot_basis,
-    fft_square,
-    find_cepstrum_peak,
+    find_ewpc_peak,
     hann_2d,
     fit_lattice,
     metric_tensor,
     get_astar_2d_matrix,
-    rotation_angle_bt_vectors
+    rotation_angle_bt_vectors,
+    absolute_angle_bt_vectors,
+    watershed_segment,
+    fft_square
 )
 
 from SingleOrigin.cell_transform import UnitCell
 
 
 class MeasureLattice:
-    #TODO: Modify to handle more data types, e.g. HR STEM image, FFT, single DP, etc.
-    
+    # TODO: Modify to handle more data types, e.g. HR STEM image, FFT,
+    # single DP, etc.
+
     """
     Class for lattice paremeter analysis.
 
@@ -74,10 +82,9 @@ class MeasureLattice:
     time, temperature, voltage, etc. These must be the first dimension(s).
 
 
-
     Parameters
     ----------
-    datacube : ndarray
+    data : ndarray
         The STEM data to analize.
 
     scan_pixel_size : scalar, 2-tuple of scalars or None
@@ -109,15 +116,15 @@ class MeasureLattice:
 
 
     show_mean_image : bool
-        Whether to display the mean image after initiation of the DataCube
+        Whether to display the mean image after initiation of the data
         object. Verify that this is representative of the underlying data
         as it will be used to hone some analysis parameters prior to applying
-        the analysis to the full DataCube.
+        the analysis to the full data.
         Default: True.
 
     get_ewpc : bool
         Whether to calculate the exit wave power cepstrum from the diffraction
-        space data supplied in datacube.
+        space data supplied in data.
         Default: True
 
     upsample_factor : int
@@ -139,11 +146,13 @@ class MeasureLattice:
 
     # TODO : Incorporate pixel size calibrations for scan dims
 
-    # TODO : Incorporate .cif structure for absolute strain reference
-
     def __init__(
         self,
-        datacube,
+        data,
+        datatype='dp',
+        # lattice_dims=(-2, -1),
+        # scan_dims=(0, 1),
+        t_dim=None,
         scan_pixel_size=None,
         dp_pixel_size=None,
         dp_rotation=0,
@@ -152,18 +161,31 @@ class MeasureLattice:
         get_ewpc=True,
         upsample_factor=1,
     ):
-        self.datacube = datacube
-        self.ndims = len(datacube.shape)
-        self.data_mean = np.mean(datacube,
-                                 axis=tuple(i for i in range(self.ndims-2)))
-
-        self.im_h, self.im_w = np.array(self.datacube.shape[-2:])
-        self.scan_h, self.scan_w = self.datacube.shape[-4:-2]
+        ndims = len(data.shape)
+        self.datatype = datatype
+        if ndims == 2:
+            self.data_mean = data
+            if datatype == 'dp':
+                self.data = data[None, None, :, :]
+            if datatype == 'image':
+                self.data = data[:, :, None, None]
+        elif ndims == 3:
+            self.data_mean = np.mean(data, axis=0)
+            if datatype == 'dp':
+                self.data = data[None, :, :, :]
+            if datatype == 'image':
+                raise Exception('Data shape not yet supported.')
+                # self.data = data[:, :, :, None, None]
+        else:
+            self.data_mean = np.mean(data,
+                                     axis=tuple(i for i in range(ndims-2)))
+        self.dp_h, self.dp_w = np.array(self.data.shape[-2:])
+        self.scan_h, self.scan_w = self.data.shape[-4:-2]
         self.scan_pixel_size = scan_pixel_size
         self.dp_pixel_size = dp_pixel_size
         if dp_pixel_size is not None:
             self.ewpc_pixel_size = 1 / (
-                self.dp_pixel_size * datacube.shape[-1])
+                self.dp_pixel_size * data.shape[-1])
         self.dp_rotation = dp_rotation
         self.origin = origin
         self.ref_region = None
@@ -172,24 +194,23 @@ class MeasureLattice:
 
         if get_ewpc:
             print('Calculating EWPC. This may take a moment...')
-            minval = np.min(datacube)
-            self.ewpc = fft_square(
-                np.log(datacube - minval + 0.1),
-                hann_window=True,
+            self.ewpc = get_ewpc(
+                self.data,
                 upsample_factor=upsample_factor)
 
             self.ewpc_mean = np.mean(
                 self.ewpc,
-                axis=tuple(i for i in range(self.ndims-2))
+                axis=(-2, -1),
             )
             display_image = self.ewpc_mean
+
         else:
             display_image = self.data_mean
 
         if upsample_factor is not None:
             self.origin_shift = self.scan_w * (upsample_factor - 1) / 2
-            self.im_h *= upsample_factor
-            self.im_w *= upsample_factor
+            self.dp_h *= upsample_factor
+            self.dp_w *= upsample_factor
 
         if show_mean_image:
             fig, ax = plt.subplots(1)
@@ -198,6 +219,24 @@ class MeasureLattice:
                 ax.scatter(*self.origin, c='red', marker='+')
 
     def kmeans_segmentation_ewpc(self, n_clusters, window=4):
+        """
+        Segment scan using kmeans over the ewpc patterns.
+
+        Parameters
+        ----------
+        n_clusters : int
+            Number of regions to segment image.
+        window : int
+            The wingow size used to block off the central peak. This needs to
+            be blocked off because it dominates the patterns and disrupts
+            desired segmentation.
+            Default: 4
+
+        Returns
+        -------
+        None.
+
+        """
 
         ewpc = copy.deepcopy(self.ewpc)
 
@@ -215,17 +254,17 @@ class MeasureLattice:
         plt.imshow(self.kmeans_labels)
 
     def initalize_ewpc_analysis(
-            self,
-            pick_basis_order=(1, 1),
-            use_only_basis_peaks=False,
-            measure_basis_order=(1, 1),
-            r_min=None,
-            r_max=None,
-            graphical_picking=True,
-            pick_labels=None,
-            min_order=0,
-            max_order=10,
-            thresh=0.05
+        self,
+        pick_basis_order=(1, 1),
+        use_only_basis_peaks=False,
+        measure_basis_order=(1, 1),
+        r_min=None,
+        r_max=None,
+        graphical_picking=True,
+        pick_labels=None,
+        min_order=0,
+        max_order=10,
+        thresh=0.05
     ):
         """
         Initialize EWPC analysis by registring a lattice to the mean image.
@@ -272,13 +311,6 @@ class MeasureLattice:
             detection of noise peaks where real peaks are too dim or
             non-existant.
             Default: 0, 10
-        scaling : str ('pwr' or 'log') or None
-            Whether to scale the displayed image for better visualization.
-            Uses power scaling ('pwr') or logrithmic ('log').
-            Default: None
-        power : scalar
-            The exponent to use for power scaling of the pattern for plotting.
-            Default: 0.2
         thresh : scalar
             The threshold cutoff for detecting peaks relative to the highest
             peak, vmax (not considering the central EWPC peak). An individual
@@ -292,7 +324,7 @@ class MeasureLattice:
 
         timeout = None
 
-        self.origin = np.array([self.im_w/2, self.im_h/2])
+        self.origin = np.array([self.dp_w/2, self.dp_h/2])
 
         peaks = detect_peaks(self.ewpc_mean, min_dist=2, thresh=0)
 
@@ -360,18 +392,18 @@ class MeasureLattice:
             else:
                 if r_max is not None:
                     lattice = lattice[norm(
-                        lattice.loc[:, 'x_ref':'y_ref'].to_numpy() -
+                        lattice.loc[:, 'x_reg':'y_reg'].to_numpy() -
                         self.origin,
                         axis=1)
                         < r_max]
                 if r_min is not None:
                     lattice = lattice[norm(
-                        lattice.loc[:, 'x_ref':'y_ref'].to_numpy() -
+                        lattice.loc[:, 'x_reg':'y_reg'].to_numpy() -
                         self.origin,
                         axis=1)
                         > r_min]
 
-                lattice = lattice[lattice.loc[:, 'y_ref'] > self.origin[1]]
+                lattice = lattice[lattice.loc[:, 'y_reg'] > self.origin[1]]
 
             fig, ax = plot_basis(
                 image=ewpc_thresh,
@@ -381,7 +413,7 @@ class MeasureLattice:
                 return_fig=True,
             )
 
-            ax.scatter(lattice.loc[:, 'x_ref'], lattice.loc[:, 'y_ref'],
+            ax.scatter(lattice.loc[:, 'x_reg'], lattice.loc[:, 'y_reg'],
                        marker='o', color='white', s=100, facecolors='none')
 
             if r_min:
@@ -394,8 +426,8 @@ class MeasureLattice:
             self.lattice = lattice
 
     def get_ewpc_basis(
-            self,
-            window_size=7,
+        self,
+        window_size=7,
     ):
         """
         Get basis vectors for each scan pixel from the registered EWPC lattice.
@@ -422,24 +454,24 @@ class MeasureLattice:
 
         lattice = copy.deepcopy(self.lattice)
 
-        xy_ref = np.around(lattice.loc[:, 'x_ref':'y_ref'].to_numpy()
+        xy_reg = np.around(lattice.loc[:, 'x_reg':'y_reg'].to_numpy()
                            ).astype(int)
         M = lattice.loc[:, 'h':'k'].to_numpy()
 
         dxy = window_size//2
 
-        masks = np.zeros((xy_ref.shape[0], self.im_h, self.im_w))
+        masks = np.zeros((xy_reg.shape[0], self.dp_h, self.dp_w))
 
         for i, mask in enumerate(masks):
-            mask[xy_ref[i, 1]-dxy: xy_ref[i, 1] + dxy + 1,
-                 xy_ref[i, 0]-dxy: xy_ref[i, 0] + dxy + 1] = 1
+            mask[xy_reg[i, 1]-dxy: xy_reg[i, 1] + dxy + 1,
+                 xy_reg[i, 0]-dxy: xy_reg[i, 0] + dxy + 1] = 1
 
         t += [time.time()]
         print(f'Step 1 (Initial setup): {(t[-1]-t[-2]) :.{2}f} sec')
 
         x0y0 = np.array([[
             [np.flip(np.unravel_index(np.argmax(im * mask),
-                                      (self.im_h, self.im_w)))
+                                      (self.dp_h, self.dp_w)))
              for mask in masks
              ]
             for im in row]
@@ -455,16 +487,16 @@ class MeasureLattice:
                 xy_bound,
         ):
 
-            results = [find_cepstrum_peak(coord, log_dp, xy_bound)
+            results = [find_ewpc_peak(coord, log_dp, xy_bound)
                        for coord in coords]
 
             return results
 
-        hann = hann_2d(self.datacube.shape[-1])
-        minval = np.min(self.datacube)
+        hann = hann_2d(self.data.shape[-1])
+        minval = np.min(self.data)
 
         args_packed = [[x0y0[i, j],
-                        np.log(self.datacube[i, j] - minval + 0.1) * hann,
+                        np.log(self.data[i, j] - minval + 0.1) * hann,
                         dxy]
                        for i in range(self.scan_h)
                        for j in range(self.scan_w)]
@@ -597,13 +629,14 @@ class MeasureLattice:
                      + '\n Vectors not to scale.')
 
     def plot_lattice_parameter_maps(
-            self,
-            lattice_vect_origin=(0.1, 0.9),
-            lattice_vect_scale=0.1,
-            kmeans_roi=None,
-            roi_erode=1,
-            figsize=(10, 10),
-            return_fig=False):
+        self,
+        lattice_vect_origin=(0.1, 0.9),
+        lattice_vect_scale=0.1,
+        kmeans_roi=None,
+        roi_erode=1,
+        figsize=(10, 10),
+        return_fig=False
+    ):
         """
         Plot calculated strain maps.
 
@@ -618,7 +651,7 @@ class MeasureLattice:
             Scale of the lattce basis vectors relative to the plot size. Note:
             the basis vectors are plotted to visualize the crystal orientation
             and are not to scale with respect to the scan pixel size; they are,
-            however, to scale with respect to each other. 
+            however, to scale with respect to each other.
             lattice_vect_scale=0.1 will scale the vectors so their mean length
             is 10% of the plot size.
             Default: 0.1
@@ -758,21 +791,16 @@ class MeasureLattice:
             return fig, axs
 
     def get_strain(
-            self,
-            ref=None,
-            roi_erode=1,
-            rotation=None,
+        self,
+        ref=None,
+        roi_erode=1,
+        rotation=None,
     ):
         """
         Get strain from the EWPC registered lattice points.
 
         Parameters
         ----------
-        window_size : scalar
-            Window size of the mask used to find initial guess for peak
-            position in each EWPC pattern.
-            Default: 7
-
         ref : 2x2 array, 2d slice object, int or None
             The reference basis vectors or reference region from which to
             measure strain. Reference vectors must be in units of detector
@@ -785,7 +813,9 @@ class MeasureLattice:
             If None, The average vectors from the entire dataset are used as
             the zero strain reference.
             Default: None
-
+        roi_erode : int
+            Number of pixels to erode from the ROI edge. Only applies if
+            k-means segmentation has been run and an int is passed as "ref".
         rotation : scalar
             Reference frame rotation for strain relative to the scan axes, in
             degrees. Positive is clockwise; negative is counterclockwise.
@@ -860,16 +890,17 @@ class MeasureLattice:
         print('Done')
 
     def plot_strain_maps(
-            self,
-            normal_strain_lim=None,
-            shear_strain_lim=None,
-            theta_lim=None,
-            kmeans_roi=None,
-            roi_erode=1,
-            plot_strain_axes=True,
-            strain_axes_origin=(0.1, 0.1),
-            figsize=(10, 10),
-            return_fig=False):
+        self,
+        normal_strain_lim=None,
+        shear_strain_lim=None,
+        theta_lim=None,
+        kmeans_roi=None,
+        roi_erode=1,
+        plot_strain_axes=True,
+        strain_axes_origin=(0.1, 0.1),
+        figsize=(10, 10),
+        return_fig=False
+    ):
         """
         Plot calculated strain maps.
 
@@ -890,6 +921,10 @@ class MeasureLattice:
             If None, will use the zero-centered absolute maximum of all
             values.
             Default: None
+        kmeans_roi : int
+            The k-means ROI number for which to plot the strain. Only applies
+            if k-means segmentation has been run. If None, all data is plotted.
+            Default: None.
         plot_strain_axes : bool
             Whether to plot vectors showing the axes of the displayed strain
             fields, i.e. the x and y strain directions.
@@ -924,8 +959,6 @@ class MeasureLattice:
         keys = ['exx', 'eyy', 'exy', 'theta']
         labels = [r'$\epsilon _{xx}$', r'$\epsilon _{yy}$',
                   r'$\epsilon _{xy}$', r'$\theta$']
-
-        # TODO: center limits at zero by default
 
         vminmax = {
             key: tuple(limlist[i]) if limlist[i] is not None
@@ -1020,13 +1053,13 @@ class MeasureLattice:
 
         return fig, axs
 
-    def plot_dp_basis(self, dp_origin=None, basis_factor=[1,1]):
-        
+    def plot_dp_basis(self, dp_origin=None, basis_factor=[1, 1]):
+
         basis_factor = np.array(basis_factor, ndmin=2).T
 
         if dp_origin is None:
             dp_origin = np.flip(np.unravel_index(np.argmax(self.data_mean),
-                                                 self.datacube.shape[-2:]))
+                                                 self.data.shape[-2:]))
 
         theta = -np.radians(self.dp_rotation)
         rot_matrix = np.array([[np.cos(theta), np.sin(theta)],
@@ -1039,11 +1072,9 @@ class MeasureLattice:
             return_fig=True)
         ax.legend()
 
-    def plot_real_basis(self, basis_factor=[1,1]):
-        
-        
+    def plot_real_basis(self, basis_factor=[1, 1]):
 
-        fig, ax = so.plot_basis(
+        fig, ax = plot_basis(
             self.ewpc_mean,
             self.basis_mean_real_px,
             self.origin,
@@ -1108,3 +1139,662 @@ class MeasureLattice:
         beta = solve(alpha_meas, a_star_t)
 
         return beta
+
+    def initalize_bragg_lattice(
+        self,
+        a1_order=1,
+        a2_order=1,
+        sigma=5,
+        thresh_factor_std=1,
+        max_order=5,
+        buffer=5,
+        show_fit=True,
+        verbose=True,
+    ):
+        """Find peaks in a reciprocal lattice image (i.e. FFT or diffraction
+        pattern) and get the reciprocal lattice parameters.
+
+        Peaks locations are determined by center-of-mass applied to the
+        surrounding region as found using the watershed method. A best-fit
+        lattice is then registered to the set of located peaks. This procedure
+        results in a high precision measurement of the lattice parameters from
+        reciprocal images.
+
+        Parameters
+        ----------
+        a1_order, a2_order : ints
+            The order of the first peak along the a1* and a2* directions.
+            (e.g.: if the first spot corresponds to an (002) reflection, then
+             set equal to 2.)
+        sigma : scalar
+            Gaussian blur in pixels to be applied to the FFT in if an image
+            is being analized. Helps reduce the number of peaks found and
+            yields more accurate initial positions. For images, final peak
+            measurement is performed using the continuous Fourier transform
+            of the original image, so this parameter does not manipulate the
+            resulting measurement.
+        thresh_factor_std : scalar
+            Relative adjustment of the threshold level for detecting peaks.
+            Greater values will detect fewer peaks; smaller values, more.
+            The thresholding is done based on the standard deviation of the
+            peak and its surrounding area. Dim peaks will have low standard
+            deviations.
+            Default: 1.
+        max_order : ints
+            The maximum order of peaks to locate, use for lattice
+            registration and to retain in the lattice DataFrame.
+            Limiting the maximum order may prevent errors stemming from
+            detection of noise peaks where real peaks are too dim or
+            non-existant. For analizing an imaged lattice by FFT,
+            Default: 5
+        buffer : int
+            Number of pixels near edge of a diffraction pattern or FFT in which
+            to ignore detected peaks.
+        show_fit : bool
+            Whether to plot the final fitted lattice and basis vectors.
+        verbose : bool
+            Whether to print resulting basis vector angle and length ratio.
+
+        Returns
+        -------
+        ...
+
+        """
+
+        if self.datatype == 'image':
+            # pwr_factor = 0.2
+            n_picks = 2
+            fix_origin = True
+            log_fft = np.log(fft_square(self.data_mean))
+            display_im = image_norm(gaussian_filter(log_fft, sigma))
+            U = display_im.shape[0] // 2
+            origin = np.array([U, U])
+
+        elif self.datatype == 'dp':
+            n_picks = 3
+            fix_origin = False
+            # pwr_factor = 0.2
+            display_im = self.data_mean
+        else:
+            raise Exception(
+                "'datatype' must be 'image' or 'dp'."
+            )
+
+        h, w = display_im.shape
+
+        peak_map = detect_peaks(
+            display_im,
+            min_dist=2,
+            thresh=0
+        )
+
+        # Find the maximum of the 2nd highest peak (ignores the central peak)
+        vmax = np.unique(peak_map*display_im)[-2]
+
+        # Get feature size after applying vmax as a maximum threshold.
+        # This prevents the central peak from dominating the size determination
+        # vmax will also be used as the upper limit of the imshow cmap.
+        image_thresh = np.where(
+            display_im > vmax,
+            0,
+            display_im
+        )
+
+        min_dist = get_feature_size(image_thresh)
+        self.sigma = min_dist
+
+        _, peaks = detect_peaks(
+            display_im,
+            min_dist=min_dist,
+            return_DataFrame=True
+        )
+
+        # Remove edge pixels:
+        if buffer > 0:
+            peaks = peaks[
+                ((peaks.x >= buffer) &
+                 (peaks.x <= w - buffer) &
+                 (peaks.y >= buffer) &
+                 (peaks.y <= h - buffer))
+            ].reset_index(drop=True)
+
+        if min_dist < 3:
+            min_dist = 3
+
+        peaks['stdev'] = [
+            np.std(display_im[int(y-int(min_dist)):int(y+int(min_dist)+1),
+                              int(x-int(min_dist)):int(x+int(min_dist)+1)])
+            for [x, y]
+            in np.around(peaks.loc[:, 'x':'y']).to_numpy(dtype=int)
+        ]
+
+        thresh = 0.005 * thresh_factor_std
+
+        if thresh > 0:
+            peaks = peaks[peaks.loc[:, 'stdev'] > thresh
+                          ].reset_index(drop=True)
+
+        xy = peaks.loc[:, 'x':'y'].to_numpy(dtype=float)
+        self.all_peaks = copy.deepcopy(xy)
+
+        # Get vmin for plotting (helps with dead camera pixels)
+        vmin = np.max([np.mean(display_im) - 5*np.std(display_im), 0])
+
+        if n_picks > 0:
+            fig, ax = plt.subplots(figsize=(10, 10))
+            ax.imshow(display_im, cmap='gray', vmin=vmin)
+            ax.scatter(xy[:, 0], xy[:, 1], c='black', marker='+')
+            if self.datatype == 'image':
+                ax.scatter(origin[0], origin[1], c='white', marker='+')
+                fig.suptitle(
+                    'Pick peaks for the a1* and a2* reciprocal basis vectors' +
+                    ' \n in that order).',
+                    fontsize=12,
+                    c='black',
+                )
+
+            elif self.datatype == 'dp':
+                fig.suptitle(
+                    'Pick peaks for the origin, a1* and a2* reciprocal basis' +
+                    ' \n vectors (in that order).',
+                    fontsize=12,
+                    c='black',
+                )
+
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+            if self.datatype == 'image':
+                plot_window = np.min([np.max(np.abs(xy - origin)) * 1.5, U])
+
+                ax.set_xlim(U - plot_window, U + plot_window)
+                ax.set_ylim(U - plot_window, U + plot_window)
+
+            basis_picks_xy = np.array(plt.ginput(n_picks, timeout=30))
+
+            plt.close('all')
+
+        # Match peaks to basis click points or passed a_star/origin data
+        vects = np.array([xy - i for i in basis_picks_xy])
+        inds = np.argmin(norm(vects, axis=2), axis=1)
+        basis_picks_xy = xy[inds, :]
+
+        a1_pick = basis_picks_xy[-2, :]
+        a2_pick = basis_picks_xy[-1, :]
+
+        if ((self.datatype == 'dp') & (origin is None)):
+            origin = basis_picks_xy[0, :]
+
+        # Generate reciprocal lattice
+        a1_star = (a1_pick - origin) / a1_order
+        a2_star = (a2_pick - origin) / a2_order
+
+        a_star = np.array([a1_star, a2_star])
+
+        recip_latt_indices = np.array(
+            [[i, j]
+             for i in range(-max_order, max_order+1)
+             for j in range(-max_order, max_order+1)]
+        )
+
+        xy_reg = recip_latt_indices @ a_star + origin
+
+        # Match reciprocal lattice points to peaks; make DataFrame
+        vects = np.array([xy - xy_ for xy_ in xy_reg])
+        inds = np.argmin(norm(vects, axis=2), axis=1)
+
+        self.recip_latt = pd.DataFrame({
+            'h': recip_latt_indices[:, 0],
+            'k': recip_latt_indices[:, 1],
+            'x_reg': xy_reg[:, 0],
+            'y_reg': xy_reg[:, 1],
+            'x_max': [xy[ind, 0] for ind in inds],
+            'y_max': [xy[ind, 1] for ind in inds],
+            'mask_ind': inds
+        })
+
+        # Remove peaks that are too far from initial reciprocal lattice
+        self.recip_latt = self.recip_latt[norm(
+            self.recip_latt.loc[:, 'x_max':'y_max'].to_numpy(dtype=float)
+            - self.recip_latt.loc[:, 'x_reg':'y_reg'].to_numpy(dtype=float),
+            axis=1
+        ) < np.max([0.1*np.max(norm(a_star, axis=1)), 1])
+        ].reset_index(drop=True)
+
+        if self.datatype == 'image':
+            print('Finding peaks using continuous Fourier transform...')
+
+            hann = hann_2d(self.data_mean.shape[-1])
+
+            im = image_norm(self.data_mean) * hann
+            peaks_xy = self.recip_latt .loc[:, 'x_max':'y_max'].to_numpy()
+
+            cft_xy = np.array([find_ewpc_peak(
+                coords,
+                im,
+                2)
+                for coords in tqdm(peaks_xy)])
+            self.recip_latt .loc[:, 'x_max':'y_max'] = cft_xy
+
+        # Initial refinement of reciprocal basis vectors
+        M_star = self.recip_latt.loc[:, 'h':'k'].to_numpy(dtype=float)
+        xy = self.recip_latt.loc[:, 'x_max':'y_max'].to_numpy(dtype=float)
+
+        p0 = np.concatenate((a_star.flatten(), origin))
+
+        params = fit_lattice(p0, xy, M_star, fix_origin=fix_origin)
+
+        # Save initial refinement data
+        self.a1_star = params[:2]
+        self.a2_star = params[2:4]
+        if len(params) == 6:
+            self.origin = params[4:]
+        else:
+            self.origin = origin
+
+        self.a_star = np.array([self.a1_star, self.a2_star])
+
+        self.recip_latt[['x_reg', 'y_reg']] = (
+            self.recip_latt.loc[:, 'h':'k'].to_numpy(dtype=float)
+            @ self.a_star
+            + self.origin
+        )
+
+        # Remove peaks that are too far from refined reciprocal lattice
+        self.recip_latt = self.recip_latt[norm(
+            self.recip_latt.loc[:, 'x_max':'y_max'].to_numpy(dtype=float)
+            - self.recip_latt.loc[:, 'x_reg':'y_reg'].to_numpy(dtype=float),
+            axis=1
+        ) < np.max([0.02*np.max(norm(a_star, axis=1)), 1])
+        ].reset_index(drop=True)
+
+        # Final refinement of reciprocal basis vectors on reduced set
+        M_star = self.recip_latt.loc[:, 'h':'k'].to_numpy(dtype=float)
+        xy = self.recip_latt.loc[:, 'x_max':'y_max'].to_numpy(dtype=float)
+
+        p0 = np.concatenate((a_star.flatten(), origin))
+
+        params = fit_lattice(p0, xy, M_star, fix_origin=fix_origin)
+
+        # Save final refinement data
+        self.a1_star = params[:2]
+        self.a2_star = params[2:4]
+        if len(params) == 6:
+            self.origin = params[4:]
+        else:
+            self.origin = origin
+
+        self.a_star = np.array([self.a1_star, self.a2_star])
+
+        self.recip_latt[['x_reg', 'y_reg']] = (
+            self.recip_latt.loc[:, 'h':'k'].to_numpy(dtype=float)
+            @ self.a_star
+            + self.origin
+        )
+
+        theta = absolute_angle_bt_vectors(
+            self.a1_star,
+            self.a2_star,
+            np.identity(2)
+        )
+
+        ratio = norm(self.a1_star)/norm(self.a2_star)
+
+        if verbose:
+            print(f'Reciproal lattice angle (degrees): {theta :.{5}f}')
+            print(f'Reciproal vector ratio (a1*/a2*): {ratio :.{6}f}')
+
+        # Plot refined basis
+        if show_fit:
+            fig2, ax = plt.subplots(figsize=(10, 10))
+            ax.imshow(display_im, cmap='plasma', vmin=vmin)
+            ax.scatter(
+                self.recip_latt.loc[:, 'x_reg'].to_numpy(dtype=float),
+                self.recip_latt.loc[:, 'y_reg'].to_numpy(dtype=float),
+                marker='+',
+                c='red'
+            )
+            ax.scatter(
+                self.recip_latt.loc[:, 'x_max'].to_numpy(dtype=float),
+                self.recip_latt.loc[:, 'y_max'].to_numpy(dtype=float),
+                marker='+',
+                c='black'
+            )
+            ax.scatter(self.origin[0], self.origin[1], marker='+', c='white')
+
+            ax.arrow(
+                self.origin[0],
+                self.origin[1],
+                self.a1_star[0],
+                self.a1_star[1],
+                fc='red',
+                ec='white',
+                width=0.1,
+                length_includes_head=True,
+                head_width=2,
+                head_length=3
+            )
+            ax.arrow(
+                self.origin[0],
+                self.origin[1],
+                self.a2_star[0],
+                self.a2_star[1],
+                fc='green',
+                ec='white',
+                width=0.1,
+                length_includes_head=True,
+                head_width=2,
+                head_length=3
+            )
+
+            if self.datatype == 'image':
+                plot_window = np.max(
+                    np.abs(self.recip_latt.loc[:, 'x_reg':'y_reg'].to_numpy()
+                           - origin)) * 1.5
+
+                if plot_window > U:
+                    plot_window = U
+
+                ax.set_xlim(U - plot_window, U + plot_window)
+                ax.set_ylim(U - plot_window, U + plot_window)
+
+            ax.set_xticks([])
+            ax.set_yticks([])
+            plt.title('Reciprocal Lattice Fit')
+
+    def initalize_superlattice(
+        self,
+        n_superlatt=1,
+        superlatt_order=(1,),
+        max_order=2,
+        show_fit=True,
+        verbose=True,
+    ):
+        """Find superlattice peaks relative to previously located Bragg peaks.
+
+        Uses previously detected peaks in diffraction pattern, so make sure
+        the desired superlattice peaks were found in the initialize_lattice
+        step.
+
+        Parameters
+        ----------
+        n_superlatt : int
+            The number of independent superlattice modulation vectors to
+            measure.
+        superlatt_order : tuple of ints of length n_superlatt
+            The order of each superlattice reflection that will be picked.
+        max_order : int
+            The maximum order of superlattice reflections to be measured around
+            each Bragg peak.
+        show_fit : bool
+            Whether to plot the final fitted superlattice and basis vectors.
+        verbose : bool
+            Whether to print resulting basis vector angles and length ratios.
+        Returns
+        -------
+        ...
+
+        """
+
+        n_superlatt = 3
+        superlatt_order = (1, 1, 1)
+        max_order = 2
+        origin = None
+
+        if self.datatype == 'image':
+            n_picks = n_superlatt
+            U = self.h // 2
+            display_im = fft_square(self.data_mean)
+            U = display_im.shape[0] // 2
+            origin = np.array([U, U])
+
+        elif self.datatype == 'dp':
+            n_picks = n_superlatt + 1
+            display_im = self.data_mean
+        else:
+            raise Exception(
+                "'datatype' must be 'image' or 'dp'."
+            )
+
+        h, w = display_im.shape
+
+        xy = self.all_peaks
+
+        # Get vmin for plotting (helps with dead camera pixels)
+        vmin = np.max([np.mean(display_im) - 5*np.std(display_im), 0])
+
+        if n_picks > 0:
+            fig, ax = plt.subplots(figsize=(10, 10))
+            ax.imshow(display_im, cmap='gray', vmin=vmin)
+            ax.scatter(xy[:, 0], xy[:, 1], c='black', marker='+')
+            ax.scatter(
+                self.recip_latt.loc[:, 'x_reg'],
+                self.recip_latt.loc[:, 'y_reg'],
+                ec='white',
+                fc='none',
+                marker='o',
+                s=100,
+            )
+
+            if self.datatype == 'image':
+                ax.scatter(origin[0], origin[1], c='white', marker='+')
+                fig.suptitle(
+                    'Pick peaks for the a1* and a2* reciprocal basis vectors' +
+                    ' \n in that order).',
+                    fontsize=12,
+                    c='black',
+                )
+
+            elif self.datatype == 'dp':
+                fig.suptitle(
+                    'Pick peaks for the origin, a1* and a2* reciprocal basis' +
+                    ' \n vectors (in that order).',
+                    fontsize=12,
+                    c='black',
+                )
+
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+            if self.datatype == 'image':
+                ax.set_xlim(np.min(xy[:, 0]) - 100, np.max(xy[:, 0]) + 100)
+                ax.set_ylim(np.max(xy[:, 1]) + 100, np.min(xy[:, 1]) - 100)
+
+            basis_picks_xy = np.array(plt.ginput(n_picks, timeout=30))
+
+            plt.close('all')
+
+        # Match peaks to  click points to get reciprocal superspace basis
+        vects = np.array([xy - i for i in basis_picks_xy])
+        inds = np.argmin(norm(vects, axis=2), axis=1)
+        basis_picks_xy = xy[inds, :]
+
+        if ((self.datatype == 'dp') & (origin is None)):
+            origin = basis_picks_xy[0, :]
+
+        a_4_star = np.array([
+            (basis_picks_xy[i+1, :] - origin) / superlatt_order[i]
+            for i in range(n_superlatt)
+        ])
+
+        super_latt_indices = np.array([
+            i for i in range(-max_order, max_order+1) if i != 0
+        ])
+
+        # Make array of all superlattice reflection vectors to max_order
+        q_vects = a_4_star[:, :, None] * super_latt_indices
+        q_vects = np.concatenate([
+            q_vects[:, :, i]
+            for i in range(q_vects.shape[-1])
+        ])
+
+        # Record the reflection order for each vector
+        q_order = np.identity(3)[:, :, None] * super_latt_indices
+        q_order = np.concatenate([
+            q_order[:, :, i]
+            for i in range(q_order.shape[-1])
+        ])
+
+        # Get all superlattice reflection positions from all Bragg peaks
+        xy_bragg = self.recip_latt[['x_reg', 'y_reg']].to_numpy()
+        q_pos = np.concatenate([
+            q_vects + bragg_peak
+            for bragg_peak in xy_bragg
+        ])
+
+        # Match reciprocal superlattice points to peaks; make DataFrame
+        vects = np.array([xy - xy_ for xy_ in q_pos])
+        inds = np.argmin(norm(vects, axis=2), axis=1)
+
+        h_inds = self.recip_latt.loc[:, 'h'].tolist()
+        h_inds = np.concatenate([[h_ind] * q_vects.shape[0]
+                                 for h_ind in h_inds])
+        k_inds = self.recip_latt.loc[:, 'k'].tolist()
+        k_inds = np.concatenate([[k_ind] * q_vects.shape[0]
+                                 for k_ind in k_inds])
+
+        q_keys = [f'q{i+1}' for i in range(3)]
+        q_order = np.concatenate([q_order] * xy_bragg.shape[0]).T
+
+        self.recip_suplatt = pd.DataFrame({
+            'h': h_inds,
+            'k': k_inds,
+            'x_reg': q_pos[:, 0],
+            'y_reg': q_pos[:, 1],
+            'x_max': [xy[ind, 0] for ind in inds],
+            'y_max': [xy[ind, 1] for ind in inds],
+        })
+
+        for i, col in enumerate(q_order):
+            self.recip_suplatt[q_keys[i]] = col
+
+        # Remove peaks that are too far from initial reciprocal lattice
+        self.recip_suplatt = self.recip_suplatt[norm(
+            self.recip_suplatt.loc[:, 'x_max':'y_max'].to_numpy(dtype=float)
+            - self.recip_suplatt.loc[:, 'x_reg':'y_reg'].to_numpy(dtype=float),
+            axis=1
+        ) < 0.1*np.max(norm(a_4_star, axis=1))
+        ].reset_index(drop=True)
+
+        # Refine reciprocal basis vectors
+        M_star = self.recip_suplatt.loc[:, 'h': 'k'].to_numpy(dtype=float)
+
+        xy_bragg = M_star @ self.a_star + self.origin
+
+        q_vect_xy = self.recip_suplatt.loc[:, 'x_max': 'y_max'
+                                           ].to_numpy(dtype=float) - xy_bragg
+
+        q_order = self.recip_suplatt.loc[:, q_keys[0]:q_keys[-1]
+                                         ].to_numpy(dtype=float)
+
+        p0 = np.concatenate((a_4_star.flatten(), np.array([0, 0])))
+
+        params = fit_lattice(p0, q_vect_xy, q_order, fix_origin=True)
+
+        # Save data and report key values
+        self.a_4_star = params[:n_superlatt*2].reshape((n_superlatt, 2))
+
+        self.recip_suplatt[['x_reg', 'y_reg']] = (
+            q_order @ self.a_4_star + xy_bragg
+        )
+
+        theta_super = [absolute_angle_bt_vectors(
+            self.a_4_star[i],
+            self.a_4_star[int((i+1) % n_superlatt)],
+            np.identity(2))
+            for i in range(n_superlatt)
+        ]
+
+        self.theta_bragg_to_super = [rotation_angle_bt_vectors(
+            self.a1_star, self.a_4_star[i], np.identity(2))
+            for i in range(n_superlatt)
+        ]
+
+        ratios = np.around(
+            [norm(self.a_4_star[i]) /
+             norm(self.a_4_star[int((i+1) % n_superlatt)])
+             for i in range(n_superlatt)],
+            decimals=5
+        )
+
+        if verbose:
+            print(
+                'Rotation angles between superlattice vectors (degrees): ',
+                f'{theta_super}.'
+            )
+            print(
+                'Superlattice rotation angle from a1_star (degrees): ',
+                f'{self.theta_bragg_to_super}.'
+            )
+            print(f'Superlattice vector ratios: {ratios}')
+
+        # Plot refined basis
+        if show_fit:
+            fig2, ax = plt.subplots(figsize=(10, 10))
+            ax.imshow(display_im, cmap='plasma', vmin=vmin)
+            ax.scatter(
+                self.recip_suplatt.loc[:, 'x_max'].to_numpy(dtype=float),
+                self.recip_suplatt.loc[:, 'y_max'].to_numpy(dtype=float),
+                marker='+',
+                c='red',
+                label='Superlattice Peaks'
+            )
+            ax.scatter(
+                self.recip_latt.loc[:, 'x_max'].to_numpy(dtype=float),
+                self.recip_latt.loc[:, 'y_max'].to_numpy(dtype=float),
+                marker='+',
+                c='black',
+                label='Bragg Peaks'
+            )
+            ax.scatter(self.origin[0], self.origin[1], marker='+', c='white')
+
+            ax.arrow(
+                self.origin[0],
+                self.origin[1],
+                self.a1_star[0],
+                self.a1_star[1],
+                fc='black',
+                ec='black',
+                width=1,
+                length_includes_head=True,
+                head_width=10,
+                head_length=15
+            )
+            ax.arrow(
+                self.origin[0],
+                self.origin[1],
+                self.a2_star[0],
+                self.a2_star[1],
+                fc='black',
+                ec='black',
+                width=1,
+                length_includes_head=True,
+                head_width=10,
+                head_length=15
+            )
+
+            for q in self.a_4_star:
+                ax.arrow(
+                    self.origin[0],
+                    self.origin[1],
+                    q[0],
+                    q[1],
+                    fc='red',
+                    ec='red',
+                    width=1,
+                    length_includes_head=True,
+                    head_width=10,
+                    head_length=15
+                )
+
+            if self.datatype == 'image':
+                ax.set_xlim(np.min(self.recip_suplatt.loc[:, 'x_reg']) - 100,
+                            np.max(self.recip_suplatt.loc[:, 'x_reg']) + 100)
+                ax.set_ylim(np.max(self.recip_suplatt.loc[:, 'y_reg']) + 100,
+                            np.min(self.recip_suplatt.loc[:, 'y_reg']) - 100)
+
+            ax.set_xticks([])
+            ax.set_yticks([])
+            plt.title('Superlattice Fit')
+
+# TODO: Add functions to analize lattice and superlattice over series or scan

@@ -656,11 +656,16 @@ def load_image(
         metadata['imageType'] = dsets[dset_ind]
 
     elif path[-3:] == 'ser':
-        ser_file = serReader(path)  # , dsetNum=dsets_to_load)
-        images = {dsets_to_load: ser_file['data']}
-        metadata = {dsets_to_load: {
-            key: val for key, val in ser_file.items() if key != 'data'
-        }}
+        ser_file = serReader(path)
+        images = {0: ser_file['data']}
+        metadata = {
+            0: {key: val for key, val in ser_file.items() if key != 'data'}
+        }
+
+        # images = {dsets_to_load: ser_file['data']}
+        # metadata = {dsets_to_load: {
+        #     key: val for key, val in ser_file.items() if key != 'data'
+        # }}
 
     else:
         images = {'image': imageio.volread(path)}
@@ -1202,7 +1207,8 @@ def get_feature_size(image):
 def detect_peaks(
         image,
         min_dist=4,
-        thresh=0
+        thresh=0,
+        return_DataFrame=False,
 ):
     """Detect peaks in an image using a maximum filter with a minimum
     separation distance and threshold.
@@ -1238,21 +1244,23 @@ def detect_peaks(
          for j in range(size) for i in range(size)]
     ).reshape((size, size))
 
-    peaks = (maximum_filter(image, footprint=neighborhood) == image
-             ) * (image > thresh)
+    peak_map = np.where(
+        maximum_filter(image, footprint=neighborhood) == image, 1, 0
+    ) * (image > thresh)
 
-    return peaks.astype(int)
+    if return_DataFrame:
+        peak_xy = np.fliplr(np.argwhere(peak_map))
+        peaks = pd.DataFrame.from_dict({
+            'x': list(peak_xy[:, 0]),
+            'y': list(peak_xy[:, 1]),
+            'max': image[peak_xy[:, 1], peak_xy[:, 0]],
+            'label': [i+1 for i in range(peak_xy.shape[0])]
+        })
 
-    # xy_peaks = (*peak_local_max(fft, footprint=neighborhood).T,)
+        return peak_map.astype(int), peaks
 
-    # peaks = np.zeros(fft.shape).flatten()
-
-    # xy_peaks = np.ravel_multi_index(xy_peaks, fft.shape)
-
-    # peaks[xy_peaks] = 1
-
-    # peaks = peaks.reshape(fft.shape)
-    # plt.imshow(peaks)
+    else:
+        return peak_map.astype(int)
 
 
 def watershed_segment(
@@ -1316,7 +1324,13 @@ def watershed_segment(
     if type(sigma) in (int, float, tuple):
         img_der = image_norm(-gaussian_laplace(img_der, sigma))
 
-    local_max = label(detect_peaks(img_der, min_dist=min_dist))[0]
+    peak_map, peaks = detect_peaks(
+        img_der,
+        min_dist=min_dist,
+        return_DataFrame=True
+    )
+
+    local_max = label(peak_map)
 
     masks = watershed(-img_der, local_max, watershed_line=watershed_line)
 
@@ -1351,20 +1365,6 @@ def watershed_segment(
             masks_ref[slices[i][0], slices[i][1]] += mask_sl
 
         masks = masks_ref
-
-    _, peak_xy = np.unique(local_max, return_index=True)
-
-    peak_xy = np.fliplr(np.array(np.unravel_index(
-        peak_xy,
-        local_max.shape
-    )).T[1:, :])
-
-    peaks = pd.DataFrame.from_dict({
-        'x': list(peak_xy[:, 0]),
-        'y': list(peak_xy[:, 1]),
-        'max': image[peak_xy[:, 1], peak_xy[:, 0]],
-        'label': [i+1 for i in range(num_masks)]
-    })
 
     peaks = peaks[
         ((peaks.x >= buffer) &
@@ -2253,8 +2253,8 @@ def cft(xy, im):
 
     x, y = xy
     h, w = im.shape
-    j = np.arange(h).reshape((h, 1))
-    k = np.arange(w).reshape((1, w))
+    j = np.arange(h)[:, None]
+    k = np.arange(w)[None, :]
 
     x += w/2  # because the coordinates are zero-centered
     y += h/2
@@ -2263,6 +2263,21 @@ def cft(xy, im):
                         np.exp(-2 * np.pi * 1j * k * x / w))))
 
     return val
+
+
+def get_ewpc(data, upsample_factor=1):
+    """
+    Calculate the exit wave power cepstrum of a dataset.
+    """
+
+    minval = np.min(data)
+    ewpc = fft_square(
+        np.log(data - minval + 0.1),
+        hann_window=True,
+        upsample_factor=upsample_factor,
+        abs_val=True)
+
+    return ewpc
 
 
 def ewpc_obj_fn(xy, log_dp):
@@ -2289,7 +2304,7 @@ def ewpc_obj_fn(xy, log_dp):
     return -np.abs(cft(xy, log_dp))
 
 
-def find_cepstrum_peak(
+def find_ewpc_peak(
         p0,
         log_dp,
         bound_dist,
@@ -3090,8 +3105,8 @@ def disp_vect_sum_squares(p0, xy, M):
 
     """
 
-    dir_struct_matrix = p0[:4].reshape((2, 2))
-    origin = p0[4:]
+    dir_struct_matrix = p0[:-2].reshape((-1, 2))
+    origin = p0[-2:]
 
     err_xy = xy - M @ dir_struct_matrix - origin
     sum_sq = np.sum(err_xy**2)
@@ -3128,7 +3143,7 @@ def fit_lattice(p0, xy, M, fix_origin=False):
     """
 
     p0 = np.array(p0).flatten()
-    x0y0 = p0[4:]
+    x0y0 = p0[-2:]
 
     if fix_origin is True:
         params = (lstsq(M, xy - x0y0, rcond=-1)[0]).flatten()

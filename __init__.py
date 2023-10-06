@@ -16,7 +16,7 @@
     along with this program.  If not, see https://www.gnu.org/licenses"""
 
 
-__version__ = "2.5.1"
+__version__ = "2.5.2"
 
 from SingleOrigin.utils import (
     metric_tensor,
@@ -55,7 +55,8 @@ from SingleOrigin.utils import (
     pack_data_prefit,
     fit_gaussian_group,
     cft,
-    find_cepstrum_peak,
+    find_ewpc_peak,
+    get_ewpc,
     pcf_radial,
     get_vpcf,
     get_vpcf_peak_params,
