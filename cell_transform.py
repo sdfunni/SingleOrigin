@@ -15,16 +15,7 @@
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see https://www.gnu.org/licenses"""
 
-from SingleOrigin.utils import (
-    metric_tensor,
-    bond_length,
-    bond_angle,
-    IntPlSpc
-)
-from CifFile import ReadCif
-from PyQt5.QtWidgets import QFileDialog as qfd
-import matplotlib.patches as patches
-import matplotlib.pyplot as plt
+import os
 import copy
 import warnings
 
@@ -32,7 +23,23 @@ import numpy as np
 from numpy.linalg import norm, inv
 
 import pandas as pd
+
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+
+from CifFile import ReadCif
+
+from PyQt5.QtWidgets import QFileDialog as qfd
+
+from SingleOrigin.utils import (
+    metric_tensor,
+    bond_length,
+    bond_angle,
+    IntPlSpc
+)
+
 pd.options.mode.chained_assignment = None
+pkg_dir, _ = os.path.split(__file__)
 
 # %%
 
@@ -50,6 +57,13 @@ class UnitCell():
     origin_shift : array_like with shape (3,)
         Change of origin in fractional coordinates.
         Default: [0, 0, 0].
+    toler : scalar
+        Min distance between atoms under which to combine them into one
+        position. For atoms at high symmetry positions, if the specified
+        coordinates in the .cif file are numerically different from the ideal
+        high symmetry position in the unit cell, multiple sites will be
+        generated. Generated positions under this tolerance will be combined
+        at their average position.
 
     Attributes
     ----------
@@ -112,7 +126,9 @@ class UnitCell():
     def __init__(
             self,
             path=None,
-            origin_shift=[0, 0, 0]
+            origin_shift=[0, 0, 0],
+            toler=1,
+
     ):
 
         if path is None:
@@ -228,6 +244,7 @@ class UnitCell():
             symm_eq_pos = []
             warnings.warn('No symmetry related positions found. Check'
                           + 'structure to ensure accuracy.')
+
         # Generate all atoms in unit cell using symmetry related positions
         if len(symm_eq_pos) > 1:
             # Loop through motif basis positions
@@ -268,7 +285,10 @@ class UnitCell():
         atoms.reset_index(drop=True, inplace=True)
 
         # Apply origin shift
-        atoms[['u', 'v', 'w']] = (atoms.loc[:, 'u':'w'] - origin_shift) % 1
+        xyz = (atoms.loc[:, 'u':'w'] - origin_shift) % 1
+        xyz = np.where(xyz > 0.99, xyz - 1, xyz)
+
+        atoms[['u', 'v', 'w']] = xyz
         atoms = atoms.sort_values(['u', 'v', 'w'])
         atoms.reset_index(inplace=True, drop=True)
 
@@ -297,6 +317,41 @@ class UnitCell():
         atoms.insert(atoms.shape[1], 'z', 0)
         atoms[['x', 'y', 'z']] = atoms.loc[:, 'u':'w'].to_numpy() @ self.a_3d.T
         atoms.reset_index(drop=True, inplace=True)
+
+        # Combine duplicate positions within the tolerance
+        skiplist = []
+        for ind in range(atoms.shape[0]):
+            if np.isin(ind, skiplist).item():
+                continue
+            elem = atoms.loc[ind, 'elem']
+            same_elem = atoms[atoms.elem == elem].copy()
+
+            atoms_tol = same_elem[
+                norm(same_elem.loc[:, 'x':'z'].to_numpy(dtype=float)
+                     - atoms.loc[ind, 'x':'z'].to_numpy(dtype=float),
+                     axis=1
+                     )
+                < toler]
+
+            ind_tol = atoms_tol.index.tolist()
+
+            if len(ind_tol) > 1:
+
+                atoms.loc[ind, 'u':'w'] = np.mean(
+                    same_elem.loc[:, 'u':'w'].to_numpy(dtype=float),
+                    axis=0)
+                atoms.loc[ind, 'x':'z'] = np.mean(
+                    same_elem.loc[:, 'x':'z'].to_numpy(dtype=float),
+                    axis=0)
+
+                while ind in ind_tol:
+                    ind_tol.remove(ind)
+
+                skiplist += ind_tol
+
+                atoms.drop(ind_tol, inplace=True)
+
+        atoms.reset_index(inplace=True, drop=True)
 
         # Save data as object attributes
         self.atoms = atoms
@@ -900,7 +955,9 @@ class UnitCell():
         None.
 
         """
-        element_table = pd.read_csv('Element_table.txt')
+        element_table = pd.read_csv(
+            os.path.join(pkg_dir, 'Element_table.txt'))
+
         atoms = self.atoms
         x = atoms.x.round(decimals=5).to_numpy(dtype=str)
         y = atoms.y.round(decimals=5).to_numpy(dtype=str)

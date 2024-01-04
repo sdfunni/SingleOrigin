@@ -31,12 +31,11 @@ import pandas as pd
 
 from matplotlib import pyplot as plt
 
+from matplotlib_scalebar.scalebar import ScaleBar
+
 from scipy.signal import convolve2d
 from scipy.optimize import minimize
-from scipy.ndimage.morphology import (
-    binary_fill_holes,
-    binary_dilation,
-)
+
 from scipy.ndimage import (
     label,
     find_objects,
@@ -44,6 +43,10 @@ from scipy.ndimage import (
     gaussian_filter,
     gaussian_laplace,
     maximum_filter,
+    fourier_shift,
+    center_of_mass,
+    binary_fill_holes,
+    binary_dilation,
 )
 from scipy.interpolate import make_interp_spline
 from scipy.fft import (fft2, fftshift)
@@ -62,11 +65,19 @@ from ncempy.io.emd import emdReader
 
 from skimage.segmentation import watershed
 from skimage.morphology import binary_erosion  # erosion
+from skimage.draw import polygon2mask
+
 
 from skimage.measure import (moments, moments_central)
 from skimage.feature import hessian_matrix_det
 
+# from sklearn.neighbors import KernelDensity
+
+from KDEpy import FFTKDE, NaiveKDE, TreeKDE
+
 from tifffile import imwrite
+
+pkg_dir, _ = os.path.split(__file__)
 
 # %%
 
@@ -536,7 +547,8 @@ def load_image(
             + 'the default dataset.'
         )
 
-    # if dsets_to_load == 'all':
+    elements = pd.read_csv(
+        os.path.join(pkg_dir, 'Element_table.txt')).sym.tolist()
 
     if path[-3:] in ['dm4', 'dm3']:
 
@@ -553,7 +565,6 @@ def load_image(
         emd = hs.load(path)
         if type(emd) != list:
             dsets = np.array([emd.metadata.General.title])
-            print(dsets)
 
             if dsets_to_load == 'all':
                 dsets_to_load = dsets
@@ -595,7 +606,6 @@ def load_image(
         images = {}
         metadata = {}
         for i, dset_ in enumerate(dsets_to_load):
-            print(dset_)
             if type(emd) != list:
                 images[dset_] = np.array(emd)
                 dset_ind = 0
@@ -683,17 +693,16 @@ def load_image(
             raise Exception('"images_from_stack" must be "all", an int, or '
                             + 'a list of ints.')
 
-        # Norm the image(s)
-        if norm_image:
+        # Norm the image(s), if specified, unless they are EDS spectra
+        if norm_image and not any(key == el for el in elements):
             images[key] = image_norm(images[key])
 
-        # Make image dimensions even length
         if len(images[key].shape) == 2:
-            images[key] = images[key][:int((h//2)*2), :int((w//2)*2)]
+            # images[key] = images[key][:int((h//2)*2), :int((w//2)*2)]
             image_ = images[key]
 
         if len(images[key].shape) == 3:
-            images[key] = images[key][:, :int((h//2)*2), :int((w//2)*2)]
+            # images[key] = images[key][:, :int((h//2)*2), :int((w//2)*2)]
             image_ = images[key][0, :, :]
 
         if display_image is True:
@@ -784,7 +793,7 @@ def band_pass_filter(
         low_pass,
 ):
     """
-    High and/or low pass filter an image.
+    High and/or low pass filter an image with a Gaussian band.
 
     Parameters
     ----------
@@ -812,6 +821,293 @@ def band_pass_filter(
         im_filtered = gaussian_filter(im_filtered, low_pass)
 
     return im_filtered
+
+
+def nearestKDE_2D(coords, xlim, ylim, d, weights=None, return_binedges=False):
+    """
+    Apply nearest neighbor KDE to 2D coordinate set with optional weights.
+
+    Parameters
+    ----------
+    coords : array of scalars (n, 2)
+        the x, y coordinates of the data points.
+
+    xlim : two-tuple of scalars
+        The x limits of the resulting density estimate.
+
+    ylim : two-tuple of scalars
+        The y limits of the resulting density estimate.
+
+    d : scalar
+        The bin width.
+
+    weights : array of scalars (n,) or None
+        The values by which to weight each coordinates for the KDE. (e.g.
+        the image intensity value of a pixel). If None, all data points are
+        considered equal.
+
+    return_binedges : bool
+        Whether to return arrays with x & y coordinates of the bin edges.
+        Default: False
+
+    Returns
+    -------
+    H : array of scalars (h, w)
+        The density estimate as a 2D histogram with shape defined by the
+        specified xlim, ylim and d arguments.
+
+    xedges, yedges : array of scalars with shapes (w+1,) and (h+1,)
+        The bin edges of the pixels in H.
+
+    """
+
+    # Get bin spacing
+    xedges = np.arange(xlim[0], xlim[1], d)
+    yedges = np.arange(ylim[0], ylim[1], d)
+
+    # Find edge closest to 0 and shift edges so (0,0) is exactly at the center
+    # of a pixel
+    x_min_ind = np.argmin(np.abs(xedges))
+    y_min_ind = np.argmin(np.abs(yedges))
+    xedges -= xedges[x_min_ind] + d/2
+    yedges -= yedges[y_min_ind] + d/2
+
+    # Remove vectors that fall out of the desired field of view
+    coords = coords[(coords[:, 0] > np.min(xedges)) &
+                    (coords[:, 0] < np.max(xedges)) &
+                    (coords[:, 1] > np.min(yedges)) &
+                    (coords[:, 1] < np.max(yedges))]
+
+    H, _, _ = np.histogram2d(
+        coords[:, 1],
+        coords[:, 0],
+        bins=[yedges, xedges]
+    )
+
+    if return_binedges:
+        return H, xedges, yedges
+    else:
+        return H
+
+
+# def linearKDE_2D_old(
+#         coords,
+#         xlim,
+#         ylim,
+#         d,
+#         w=1,
+#         weights=None,
+#         return_binedges=False
+# ):
+#     """
+#     Apply linear KDE to 2D coordinate set with optional weights.
+
+#     Parameters
+#     ----------
+#     coords : array of scalars (n, 2)
+#         the x, y coordinates of the data points.
+
+#     xlim : two-tuple of scalars
+#         The x limits of the resulting density estimate.
+
+#     ylim : two-tuple of scalars
+#         The y limits of the resulting density estimate.
+
+#     d : scalar
+#         The bin width.
+
+#     w : int
+#         The width of the kernal in integer number of bins.
+
+#     weights : array of scalars (n,) or None
+#         The values by which to weight each coordinates for the KDE. (e.g.
+#         the image intensity value of a pixel). If None, all data points are
+#         considered equal.
+
+#     return_binedges : bool
+#         Whether to return arrays with x & y coordinates of the bin edges.
+#         Default: False
+
+#     Returns
+#     -------
+#     H : array of scalars (h, w)
+#         The density estimate as a 2D histogram with shape defined by the
+#         specified xlim, ylim and d arguments.
+
+#     xedges, yedges : arrays of scalars with shapes (w+1,) and (h+1,)
+#         The bin edges of the pixels in H.
+
+#     """
+
+#     # Get bin spacing
+#     xedges = np.arange(xlim[0], xlim[1], d)
+#     yedges = np.arange(ylim[0], ylim[1], d)
+
+#     # Find edge closest to 0 and shift edges so (0,0) is exactly at the center
+#     # of a pixel
+#     x_min_ind = np.argmin(np.abs(xedges))
+#     y_min_ind = np.argmin(np.abs(yedges))
+#     xedges -= xedges[x_min_ind] + d/2
+#     yedges -= yedges[y_min_ind] + d/2
+
+#     # Get bin centers
+#     xcents = xedges[:-1] + d/2
+#     ycents = yedges[:-1] + d/2
+
+#     H = np.zeros((ycents.shape[0], xcents.shape[0]))
+
+#     xF = (coords[:, 0] // d) * d
+#     yF = (coords[:, 1] // d) * d
+
+#     # Get x and y position weights for the floor pixels
+#     xFw = 1 - coords[:, 0] % d
+#     yFw = 1 - coords[:, 1] % d
+
+#     # If intensity weights were not passed, get equal weighting array
+#     if weights is None:
+#         weights = np.ones(coords.shape[0])
+
+#     # Weighted histogram for x floor, y floor pixels
+#     H += np.histogram2d(
+#         yF, xF,
+#         bins=[yedges, xedges],
+#         weights=xFw * yFw * weights
+#     )[0]
+
+#     # Weighted histogram for x ceiling, y floor pixels
+#     H += np.histogram2d(
+#         yF, xF + d,
+#         bins=[yedges, xedges],
+#         weights=(1 - xFw) * yFw * weights
+#     )[0]
+
+#     # Weighted histogram for x floor, y ceiling pixels
+#     H += np.histogram2d(
+#         yF + d, xF,
+#         bins=[yedges, xedges],
+#         weights=xFw * (1 - yFw) * weights
+#     )[0]
+
+#     # Weighted histogram for x ceiling, y ceiling pixels
+#     H += np.histogram2d(
+#         yF + d, xF + d,
+#         bins=[yedges, xedges],
+#         weights=(1 - xFw) * (1 - yFw) * weights
+#     )[0]
+
+#     if return_binedges:
+#         return H, xedges, yedges
+#     else:
+#         return H
+
+def linearKDE_2D(
+        coords,
+        xlim,
+        ylim,
+        d,
+        r=1,
+        weights=None,
+        return_binedges=False
+):
+    """
+    Apply linear KDE to 2D coordinate set with optional weights.
+
+    Parameters
+    ----------
+    coords : array of scalars (n, 2)
+        the x, y coordinates of the data points.
+
+    xlim : two-tuple of scalars
+        The x limits of the resulting density estimate.
+
+    ylim : two-tuple of scalars
+        The y limits of the resulting density estimate.
+
+    d : scalar
+        The bin width.
+
+    w : int
+        The width of the kernal in integer number of bins.
+
+    weights : array of scalars (n,) or None
+        The values by which to weight each coordinates for the KDE. (e.g.
+        the image intensity value of a pixel). If None, all data points are
+        considered equal.
+
+    return_binedges : bool
+        Whether to return arrays with x & y coordinates of the bin edges.
+        Default: False
+
+    Returns
+    -------
+    H : array of scalars (h, w)
+        The density estimate as a 2D histogram with shape defined by the
+        specified xlim, ylim and d arguments.
+
+    xedges, yedges : arrays of scalars with shapes (w+1,) and (h+1,)
+        The bin edges of the pixels in H.
+
+    """
+
+    # Get bin spacing
+    xedges = np.arange(xlim[0], xlim[1], d)
+    yedges = np.arange(ylim[0], ylim[1], d)
+
+    # Find edge closest to 0 and shift edges so (0,0) is exactly at the center
+    # of a pixel
+    x_min_ind = np.argmin(np.abs(xedges))
+    y_min_ind = np.argmin(np.abs(yedges))
+    xedges -= xedges[x_min_ind] + d/2
+    yedges -= yedges[y_min_ind] + d/2
+
+    # Get bin centers
+    xcents = xedges[:-1] + d/2
+    ycents = yedges[:-1] + d/2
+
+    H = np.zeros((ycents.shape[0], xcents.shape[0]))
+
+    # If intensity weights were not passed, get equal weighting array
+    if weights is None:
+        weights = np.ones(coords.shape[0])
+
+    # Get relative pixel shift values
+    xs = [i for i in range(-r, r, 1)]
+    ys = [i for i in range(-r, r, 1)]
+
+    # Get reference pixel for each data point
+    xyC = np.ceil(coords / d) * d
+
+    # Get x and y position weights for the floor pixels
+    for j in ys:
+        for i in xs:
+            # Find bin indices for the shift
+            xyB = xyC + np.array([[i*d, j*d]])
+
+            # Find distance weighting for high sampling:
+            # Method results in density being slightly off from 1,
+            # but close for sufficient sampling (i.e. r >= 2)
+
+            if r > 1:
+                dW = 3/np.pi * (1 - norm(xyB - coords, axis=1) / (d*r)) / r**2
+                # print(type(dW))
+
+            # Find distance weighting if low sampling (i.e. r == 1):
+                # Method ensures density for each data point is 1
+            elif r == 1:
+                dW = np.prod(1 - np.abs(xyB - coords) / (d*r), axis=1) / r**2
+
+            H += np.histogram2d(
+                xyB[:, 1], xyB[:, 0],
+                bins=[yedges, xedges],
+                weights=dW * weights
+            )[0]
+
+    H = image_norm(H)
+
+    if return_binedges:
+        return H, xedges, yedges
+    else:
+        return H
 
 
 def fast_rotate_90deg(image, angle):
@@ -848,6 +1144,206 @@ def fast_rotate_90deg(image, angle):
     return image_
 
 
+def rotation_matrix(angle, origin):
+    """Get a 2D origin-shifted rotation matrix for an arbitrary rotation.
+
+    Parameters
+    ----------
+    angle : scalar
+        The angle (in degrees) by which to rotate the image.
+
+    origin : 2-tuple
+        The point (x, y) about which to preform the rotation.
+
+    Returns
+    -------
+    tmat : array of shape (3, 3)
+        The origin-shifted rotation matrix.
+    """
+    theta = np.radians(angle)
+
+    tmat = np.array(
+        [[np.cos(theta), np.sin(theta), 0],
+         [-np.sin(theta), np.cos(theta), 0],
+         [0, 0, 1]]
+    )
+    tau = np.array(
+        [[1, 0, origin[0]],
+         [0, 1, origin[1]],
+         [0, 0, 1]]
+    )
+    tau_ = np.array(
+        [[1, 0, -origin[0]],
+         [0, 1, -origin[1]],
+         [0, 0, 1]]
+    )
+    tmat = tau @ tmat @ tau_
+
+    return tmat
+
+
+def rotate_xy(coords, angle, origin):
+    """Apply a rotation to a set of coordinates.
+
+    Parameters
+    ----------
+    coords : ndarray of shape (n, 2)
+        The the (x, y) coordinates.
+
+    angle : scalar
+        The angle (in degrees) by which to rotate the coordinates.
+
+    origin : 2-tuple
+        The point (x, y) about which to preform the rotation.
+
+    Returns
+    -------
+    coords_ : array of shape (n, 2)
+        The rotated coordinates.
+    """
+
+    rmat = rotation_matrix(angle, origin)
+
+    coords = np.array(coords, ndmin=2)
+
+    # Append "1" to each coordinate vector for use with origin-shifted
+    # transformation matrix.
+    coords = np.append(coords, np.ones(coords.shape[:-1] + (1,)), axis=-1)
+
+    # Apply the transformation
+    coords_ = (coords @ rmat.T)[..., :-1]
+
+    return coords_
+
+
+def rotate_image_kde(
+        image,
+        angle,
+        bandwidth=0.5,
+        reshape_method='original',
+        fill_value=0
+):
+    """Rotate an image to arbitrary angle & interpolate using KDE.
+
+    Apply an aribtrary image rotation and interpolate new pixel values using
+    the kernel density estimate (KDE) method with a Gaussian kernel. This
+    method is fairly slow and MAY NOT offer improved performance over bilinear
+    interpolation methods.
+
+    Parameters
+    ----------
+    image : ndarray of shape (h,w)
+        The image.
+
+    angle : scalar
+        The angle by which to rotate the image.
+
+    bandwidth : scalar
+        The bandwidth of the Gaussian kernel in pixels.
+
+    reshape_method : str
+        Final frame shape after rotation: 'fulldata', 'original', or
+        'only_data'.
+        'original' returns an image with the same shape as the input image,
+        with corners that were rotated out of the image cut off.
+        'fulldata' returns a image with shape >= original shape, but without
+        any pixels cut off.
+        'only_data' crops the final image to the largest region of the rotated
+        frame that contains only data and no NaNs.
+        Default : 'original'
+
+    fill_value : scalar
+        Value to fill areas in the final output image that are not inside
+        the area of the rotated frame. User can specify any value, but likely
+        should be 0 or np.nan.
+        Default: np.nan.
+
+    Returns
+    -------
+    image_rot : 2D array
+        The rotated image
+    """
+
+    h, w = image.shape
+
+    # Rotate about the center of the image
+    origin = np.array([w-1, h-1]) / 2
+
+    # Original pixel coordinates
+    coords = np.array(np.meshgrid(np.arange(0, w), np.arange(0, h))
+                      ).transpose(1, 2, 0).reshape((-1, 2))
+
+    # Transformed pixel coordinates
+    coords_ = rotate_xy(coords, angle, origin)
+
+    # Flattened array of intensity values (i.e. weights for KDE data points)
+    weights = image.ravel()
+
+    # Shift coordinates to be in quadrant 1
+    minxy = np.min(coords_, axis=0)
+    coords_ -= minxy
+
+    if angle % 90 != 0:
+        # Get binary mask for rotated frame area
+        vertices = np.array([
+            coords_[np.argmin(coords_[:, 0])],
+            coords_[np.argmin(coords_[:, 1])],
+            coords_[np.argmax(coords_[:, 0])],
+            coords_[np.argmax(coords_[:, 1])]
+        ])
+
+    else:
+        # If a 90 degree rotation full frame contained in original image size
+        # You shouldn't be using this function!
+        vertices = np.array([0, 0], [1, 0], [1, 1], [0, 1])
+
+    if reshape_method == 'fulldata':
+        # Expand resulting image frame
+
+        h, w = int(np.floor(h - 2*minxy[1])), int(np.floor(w - 2*minxy[0]))
+        coords = np.array(
+            np.meshgrid(np.arange(0, w), np.arange(0, h))
+        ).transpose(1, 2, 0).reshape((-1, 2))
+
+    elif reshape_method == 'original':
+        # Select coordinates remaining inside original image frame
+        coords_ += minxy
+        vertices += minxy
+
+        inds = np.argwhere(
+            ((coords_[:, 0] >= 0) &
+             (coords_[:, 0] < w - 1) &
+             (coords_[:, 1] >= 0) &
+             (coords_[:, 1] < h - 1)
+             )
+        )
+
+        coords_ = np.squeeze(coords_[inds])
+        weights = np.squeeze(weights[inds])
+
+    elif reshape_method == 'only_data':
+        raise Exception('Method not yet implimented')
+
+    else:
+        raise Exception('reshape_method must be one of: "fulldata", '
+                        '"original", or "only_data".')
+
+    # Create rotated frame mask:
+    mask = polygon2mask(
+        (np.int(np.ceil(np.max(coords[:, 1])) + 1),
+         np.int(np.ceil(np.max(coords[:, 0])) + 1)),
+        np.fliplr(vertices))
+
+    image_rot = NaiveKDE(kernel='gaussian', bw=bandwidth
+                         ).fit(coords_, weights).evaluate(coords)
+
+    image_rot = np.reshape(image_rot, (h, w))
+
+    image_rot = np.where(mask, image_rot, fill_value)
+
+    return image_rot
+
+
 def std_local(image, r):
     """Get local standard deviation of an image
     Parameters
@@ -868,7 +1364,15 @@ def std_local(image, r):
     im2 = im**2
     ones = np.ones(im.shape)
 
-    kernel = np.ones((2*r+1, 2*r+1))
+    # kernel = np.ones((2*r+1, 2*r+1))
+    kern_rad = int(np.floor(r))
+    size = 2*kern_rad + 1
+    kernel = np.array(
+        [1 if np.hypot(i - kern_rad, j - kern_rad) <= r
+         else 0
+         for j in range(size) for i in range(size)]
+    ).reshape((size, size))
+
     s = convolve2d(im, kernel, mode="same")
     s2 = convolve2d(im2, kernel, mode="same")
     ns = convolve2d(ones, kernel, mode="same")
@@ -1017,137 +1521,8 @@ def binary_find_smallest_rectangle(array):
     return xlim, ylim, sl
 
 
-def fft_square(image,
-               hann_window=False,
-               upsample_factor=None,
-               abs_val=True
-               ):
-    """Gets FFT with equal x & y pixel sizes
-
-    Parameters
-    ----------
-    image : ndarray
-        The image or image stack. May be an image stack or 4D array of images
-        (e.g. a 4D dataset of diffraction patterns, 4D STEM). The FFT will
-        be taken along the last two axes.
-
-    hann_window : bool
-        Whether to apply a hanning window to the image before taking the FFT.
-        Default: False
-
-    upsample_factor : int
-        The factor by which to upsample the data during the FFT process. This
-        operation is done by padding the image(s) with zeros after applying
-        the (optional) Hanning window. Hanning windowing is recommended to
-        avoid artifacts if upsampling. For 4D STEM datasets, using large
-        factors can be very slow and may max out available memory.
-    abs_val : bool
-        Whether to take return the absolute value of the FFT (if True). If
-        False, returns the complex-valued FFT.
-        Default: True
-
-    Returns
-    -------
-    fft : ndarray
-        FFT amplitude of image after cropping to largest possible square image.
-
-    """
-
-    h, w = image.shape[-2:]
-    m = (min(h, w) // 2) * 2
-    U = int(m/2)
-    ndim = len(image.shape)
-
-    if h != w:
-        image_square = image[...,
-                             int(h/2)-U: int(h/2)+U,
-                             int(w/2)-U: int(w/2)+U]
-    else:
-        image_square = image
-
-    if hann_window:
-        image_square *= hann_2d(m)
-
-    if upsample_factor is not None:
-        if upsample_factor > 1:
-            print('upsampling... may take a while longer.')
-            upsample_factor = int(upsample_factor)
-            pad = int(m/2 * (upsample_factor - 1))
-            padding = ((0, 0),)*(ndim - 2) + ((pad, pad),)*2
-            image_square = np.pad(image_square, padding)
-
-    fft = fftshift(fft2(image_square), axes=(-2, -1))
-
-    # if len(image.shape) == 2:
-    #     fft = fftshift(fft2(image_square * hann))
-
-    # elif len(image.shape) == 3:
-    #     fft = np.array(
-    #         [fftshift(fft2(im * hann)) for im in image_square]
-    #     )
-
-    # if len(image.shape) == 4:
-    #     fft = np.array([
-    #         [fftshift(fft2(im * hann)) for im in row]
-    #         for row in image_square])
-
-    if abs_val:
-        fft = np.abs(fft)
-
-    return fft
-
-
-def hann_2d(dim):
-    """Creates a square 2D Hann window without square artifact generated by
-    the common method.
-
-    The resulting Hann function is round
-
-    Parameters
-    ----------
-    dim : int
-        The dimension of the Hann window to be created.
-
-    Returns
-    -------
-    hann : 2d array
-        The Hann window.
-
-    """
-    inds = np.arange(dim)
-
-    origin = np.array([(dim - 1)/2] * 2, ndmin=3).T
-
-    r = norm(np.array(np.meshgrid(inds, inds)) - origin, axis=0
-             ) * 2*np.pi / (dim - 1)
-
-    return np.where(r > np.pi, 0, np.cos(r) + 1)
-
-
-def get_fft_pixel_size(image, pixel_size):
-    """Gets FFT pixel size for a real-space image.
-
-    Parameters
-    ----------
-    image : 2D array
-        The image. If not square, the smaller dimension will be used.
-
-    pixel_size : scalar
-        The pixel size of the real space image.
-
-    Returns
-    -------
-    reciprocal_pixel_size : scalar
-        Size of a pixel in an FFT of the image (assuming the image is first
-        cropped to the largest square).
-
-    """
-    h, w = image.shape
-    m = (min(h, w) // 2) * 2
-
-    reciprocal_pixel_size = (pixel_size * m) ** -1
-
-    return reciprocal_pixel_size
+# %%
+"""Peak finding, characterization and fitting methods"""
 
 
 def get_feature_size(image):
@@ -1178,7 +1553,7 @@ def get_feature_size(image):
         crop_w = int(w * crop_factor / 2)
 
         image = image[int(h/2)-crop_h:int(h/2)+crop_h,
-                      int(w/2)-crop_w:int(w/2)+crop_w]
+                      int(w/2)-crop_w: int(w/2)+crop_w]
 
     min_scale = 2
     max_scale = 30
@@ -1198,10 +1573,6 @@ def get_feature_size(image):
     sigma = scale_max/2
 
     return sigma
-
-
-# %%
-"""Peak finding, characterization and fitting methods"""
 
 
 def detect_peaks(
@@ -1249,7 +1620,14 @@ def detect_peaks(
     ) * (image > thresh)
 
     if return_DataFrame:
-        peak_xy = np.fliplr(np.argwhere(peak_map))
+        peak_map_labeled, num_peaks = label(peak_map)
+        peak_xy = np.around(np.fliplr(np.array(
+            center_of_mass(
+                peak_map,
+                peak_map_labeled,
+                np.arange(1, num_peaks+1)
+            )
+        ))).astype(int)
         peaks = pd.DataFrame.from_dict({
             'x': list(peak_xy[:, 0]),
             'y': list(peak_xy[:, 1]),
@@ -1268,7 +1646,7 @@ def watershed_segment(
         sigma=None,
         buffer=0,
         local_thresh_factor=0.95,
-        max_thresh_factor=None,
+        peak_max_thresh_factor=0,
         watershed_line=True,
         min_dist=5
 ):
@@ -1330,7 +1708,7 @@ def watershed_segment(
         return_DataFrame=True
     )
 
-    local_max = label(peak_map)
+    local_max, n_peaks = label(peak_map)
 
     masks = watershed(-img_der, local_max, watershed_line=watershed_line)
 
@@ -1351,7 +1729,7 @@ def watershed_segment(
 
         masks = masks_ref
 
-    elif max_thresh_factor is not None:
+    elif peak_max_thresh_factor > 0:
         masks_ref = np.zeros(image.shape)
 
         for i in range(0, num_masks):
@@ -1360,7 +1738,7 @@ def watershed_segment(
             edge = mask_sl - binary_erosion(mask_sl)
             edge_max = np.max(edge * img_der_sl) * (local_thresh_factor)
             peak_max = np.max(img_der_sl)
-            thresh = max_thresh_factor * (peak_max - edge_max) + edge_max
+            thresh = peak_max_thresh_factor * (peak_max - edge_max) + edge_max
             mask_sl = np.where(mask_sl*img_der_sl >= thresh, i+1, 0)
             masks_ref[slices[i][0], slices[i][1]] += mask_sl
 
@@ -1563,10 +1941,10 @@ def gaussian_ellip_ss(p0, x, y, z, masks=None):
 
     # Sum the functions for each peak:
     model = np.sum(A*np.exp(-1/2*(((np.cos(ang) * (x - x0)
-                                   + np.sin(ang) * (y - y0))
-                                  / sig_maj)**2
+                                  + np.sin(ang) * (y - y0))
+                                   / sig_maj)**2
                                   + ((-np.sin(ang) * (x - x0)
-                                     + np.cos(ang) * (y - y0))
+                                      + np.cos(ang) * (y - y0))
                                      / sig_min)**2)),
                    axis=0) + I0
 
@@ -2230,6 +2608,210 @@ def fit_gaussian_group(
     return params
 
 
+def plane_2d(x, y, mx, my, b):
+
+    z = mx*x + my*y + b
+
+    return z
+
+
+def plane_ss(p0, x, y, z):
+    """Sum of squares for a plane fit to 2D intensity data.
+
+    Parameters
+    ----------
+    p0 : array_like with shape (n,7)
+        n = number of peaks to fit
+        Array containing the Gaussian function parameter vector(s):
+            [x0, y0, sig_maj, sig_rat, ang, A, I_o]
+
+    x, y : 1D array_like, must have the same shape
+        The flattened arrays of x and y coordinates of image pixels
+
+    z : 1D array_like, must have the same shape as x and y
+        The flattened array of image values at the x, y coordinates
+
+    masks : 2d array_like of size (n, m)
+        n = number of peaks to fit
+        m = number of unmasked pixels
+        The flattened masks for each peak. Each of the "n" rows is 1 where the
+        mask for the corresponding peak and 0 elsewhere.
+
+    Returns
+    -------
+    r_sum_sqrd : float
+        The sum of the squares of the residuals
+
+    """
+
+    # Sum the functions for each peak:
+    model = plane_2d(x, y, *p0)
+
+    # Subtract from data to get residuals:
+    R = z - model
+    r_sum_sqrd = (R @ R.T).flatten()
+
+    return r_sum_sqrd
+
+
+def plane_fit(
+        data,
+        p0,
+):
+
+    y, x = np.indices(data.shape)
+    z = data.flatten()
+
+    unmasked_data = np.nonzero(z)
+    z = np.take(z, unmasked_data)
+    x = np.take(x.flatten(), unmasked_data)
+    y = np.take(y.flatten(), unmasked_data)
+
+    params = minimize(
+        plane_ss,
+        p0,
+        args=(x, y, z),
+        bounds=[(None, None), (None, None), (0, None)],
+        method='L-BFGS-B'
+    ).x
+
+    return params
+
+
+# %%
+"""Fourier Analysis"""
+
+
+def fft_square(image,
+               hann_window=False,
+               upsample_factor=None,
+               abs_val=True,
+               pre_shift=False,
+               ):
+    """Gets FFT with equal x & y pixel sizes
+
+    Parameters
+    ----------
+    image : ndarray
+        The image or image stack. May be an image stack or 4D array of images
+        (e.g. a 4D dataset of diffraction patterns, 4D STEM). The FFT will
+        be taken along the last two axes.
+
+    hann_window : bool
+        Whether to apply a hanning window to the image before taking the FFT.
+        Default: False
+
+    upsample_factor : int
+        The factor by which to upsample the data during the FFT process. This
+        operation is done by padding the image(s) with zeros after applying
+        the (optional) Hanning window. Hanning windowing is recommended to
+        avoid artifacts if upsampling. For 4D STEM datasets, using large
+        factors can be very slow and may max out available memory.
+    abs_val : bool
+        Whether to take return the absolute value of the FFT (if True). If
+        False, returns the complex-valued FFT.
+        Default: True
+
+    Returns
+    -------
+    fft : ndarray
+        FFT amplitude of image after cropping to largest possible square image.
+
+    """
+
+    h, w = image.shape[-2:]
+    m = min(h, w)
+    U = m/2
+    ndim = len(image.shape)
+
+    if h != w:
+        image_square = image[...,
+                             int(h/2-U): int(h/2+U),
+                             int(w/2-U): int(w/2+U)]
+    else:
+        image_square = image
+
+    if type(hann_window) == bool:
+        if hann_window:
+            image_square *= hann_2d(m)
+
+    elif type(hann_window) == np.ndarray:
+        image_square *= hann_window
+
+    if upsample_factor is not None:
+        if upsample_factor > 1:
+            print('upsampling... may take a while longer.')
+            upsample_factor = int(upsample_factor)
+            pad = int(m/2 * (upsample_factor - 1))
+            padding = ((0, 0),)*(ndim - 2) + ((pad, pad),)*2
+            image_square = np.pad(image_square, padding)
+
+    if pre_shift:
+        fft = fftshift(fft2(fftshift(image_square)), axes=(-2, -1))
+    else:
+        fft = fftshift(fft2(image_square), axes=(-2, -1))
+
+    if abs_val:
+        fft = np.abs(fft)
+
+    return fft
+
+
+def hann_2d(dim):
+    """Creates a square 2D Hann window without square artifact generated by
+    the common method.
+
+    The resulting Hann function is round
+
+    Parameters
+    ----------
+    dim : int
+        The dimension of the Hann window to be created.
+
+    Returns
+    -------
+    hann : 2d array
+        The Hann window.
+
+    """
+    inds = np.arange(dim)
+
+    origin = np.array([dim/2] * 2, ndmin=3).T
+
+    r = norm(np.array(np.meshgrid(inds, inds)) - origin, axis=0
+             ) * 2*np.pi / dim
+
+    hann = np.where(r > np.pi, 0, np.cos(r) + 1) / 2
+
+    return hann
+
+
+def get_fft_pixel_size(image, pixel_size):
+    """Gets FFT pixel size for a real-space image.
+
+    Parameters
+    ----------
+    image : 2D array
+        The image. If not square, the smaller dimension will be used.
+
+    pixel_size : scalar
+        The pixel size of the real space image.
+
+    Returns
+    -------
+    reciprocal_pixel_size : scalar
+        Size of a pixel in an FFT of the image (assuming the image is first
+        cropped to the largest square).
+
+    """
+    h, w = image.shape
+    m = (min(h, w) // 2) * 2
+
+    reciprocal_pixel_size = (pixel_size * m) ** -1
+
+    return reciprocal_pixel_size
+
+
 def cft(xy, im):
     """
     Calculate value of the continuous Fourier tansform of an array at arbitrary
@@ -2265,19 +2847,42 @@ def cft(xy, im):
     return val
 
 
-def get_ewpc(data, upsample_factor=1):
+def get_ewpc(data, upsample_factor=1, window=None):
     """
     Calculate the exit wave power cepstrum of a dataset.
     """
 
     minval = np.min(data)
+    if window is None:
+        window = True
     ewpc = fft_square(
-        np.log(data - minval + 0.1),
-        hann_window=True,
+        (np.log(data - minval + 1e-8)),
+        hann_window=(window),
         upsample_factor=upsample_factor,
         abs_val=True)
 
     return ewpc
+
+
+def get_ewic(data, upsample_factor=1, window=None):
+    """
+    Calculate the exit wave imaginary cepstrum of a dataset.
+    """
+
+    minval = np.min(data)
+    if window is None:
+        window = True
+    ewcc = fft_square(
+        np.log(data - minval + 1e-8),
+        hann_window=window,
+        upsample_factor=upsample_factor,
+        abs_val=False,
+        pre_shift=True,
+    )
+
+    ewic = np.imag(ewcc)
+
+    return ewic
 
 
 def ewpc_obj_fn(xy, log_dp):
@@ -2344,6 +2949,196 @@ def find_ewpc_peak(
     return params
 
 
+def center_image_point(image, x0y0):
+    """
+    Center a point in an image.
+
+    This function shifts the image to center the specified coordinate at the
+    pixel (h//2, w//2). This is the correct convention so that if fftshift is
+    applied, the centered point will be shifted to the (0, 0) pixel.
+    Additionally, the function works for image stacks or (higher dimension)
+    by appling the shift to the last two axes only.
+
+    Parameters
+    ----------
+    image : ndarray
+        The image to center.
+
+   x0y0 : 2-tuple
+       The (x, y) coordinates of the image point to be centered.
+
+    Returns
+    -------
+    im_cent : ndarray
+        The centered image.
+    """
+
+    h, w = image.shape[-2:]
+
+    x0, y0 = np.array([w, h]) // 2 - np.array(x0y0)
+
+    shift = [0 for _ in range(len(image.shape)-2)] + [y0, x0]
+
+    im_cent = np.abs(np.fft.ifft2(
+        fourier_shift(np.fft.fft2(image, axes=(-2, -1)), shift),
+        axes=(-2, -1)))
+
+    return im_cent
+
+
+def dp_center_obj_fn(xy, dp):
+    """
+    Objective function for
+    This function finds the center of a diffraction pattern by determining
+    the Fourier shift that produces the smallest residual difference between
+    the shifted pattern and its left-right & up-down flips. It works best for
+    diffraction patterns that are nearly centered, nearly on-zone and with a
+    relatively dominant direct beam.
+
+    Parameters
+    ----------
+    dp : ndarray
+        The diffraction pattern.
+    xy0 : 2-tuple or None
+        The (x, y) initial guess for the diffraction pattenr center. If None,
+        takes the center of mass of the entire pattern as the initial guess.
+
+    Returns
+    -------
+    im_cent : ndarray
+        The centered image.
+    """
+
+    dp_cent = center_image_point(dp, xy)
+
+    R_ssq = np.sum((dp_cent - np.fliplr(dp_cent))**2) \
+        + np.sum((dp_cent - np.flipud(dp_cent))**2)
+
+    return R_ssq
+
+
+def find_dp_center_flip(dp, xy0=None):
+    """
+    Find the center of a diffraction pattern.
+
+    This function finds the center of a diffraction pattern by determining
+    the Fourier shift that produces the smallest residual difference between
+    the shifted pattern and its left-right & up-down flips. It works best for
+    diffraction patterns that are nearly centered, nearly on-zone and with a
+    relatively dominant direct beam.
+
+    Parameters
+    ----------
+    dp : ndarray
+        The diffraction pattern.
+    xy0 : 2-tuple or None
+        The (x, y) initial guess for the diffraction pattenr center. If None,
+        takes the center of mass of the entire pattern as the initial guess.
+
+    Returns
+    -------
+    xy_cent : 2-tuple
+        The center of the diffraction pattern.
+    """
+    h, w = dp.shape
+
+    if h % 2 == 0:
+        h_crop = 1
+    else:
+        h_crop = 0
+
+    if w % 2 == 0:
+        w_crop = 1
+    else:
+        w_crop = 0
+
+    dp_ = dp[h_crop:, w_crop:]
+
+    if xy0 is None:
+        xy0 = np.flip(center_of_mass(dp_))
+
+    xy_cent = minimize(
+        dp_center_obj_fn,
+        xy0,
+        args=dp_,
+        method='BFGS',
+    ).x
+
+    return xy_cent
+
+
+def ewic_center_obj_fn(xy, dp):
+    """
+    Objective function for
+    This function finds the center of a diffraction pattern by determining
+    the Fourier shift that produces the smallest residual difference between
+    the shifted pattern and its left-right & up-down flips. It works best for
+    diffraction patterns that are nearly centered, nearly on-zone and with a
+    relatively dominant direct beam.
+
+    Parameters
+    ----------
+    dp : ndarray
+        The diffraction pattern.
+    xy0 : 2-tuple or None
+        The (x, y) initial guess for the diffraction pattenr center. If None,
+        takes the center of mass of the entire pattern as the initial guess.
+
+    Returns
+    -------
+    im_cent : ndarray
+        The centered image.
+    """
+
+    dp_cent = center_image_point(dp, xy)
+
+    ewic_peak = np.sum(np.abs(get_ewic(dp_cent))**2)
+
+    return ewic_peak
+
+
+def find_dp_center_ewicmin(dp, xy0=None):
+    """
+    Find the center of a diffraction pattern.
+
+    This function finds the center of a diffraction pattern by determining
+    the Fourier shift that produces the smallest residual difference between
+    the shifted pattern and its left-right & up-down flips. It works best for
+    diffraction patterns that are nearly centered, nearly on-zone and with a
+    relatively dominant direct beam.
+
+    Parameters
+    ----------
+    dp : ndarray
+        The diffraction pattern.
+    peak_to_minimize : 2-tuple or None
+        The approximate (x, y) coordinates of a lattice peak that should be
+        minimized in the EWIC to determine the DP center.
+    xy0 : 2-tuple or None
+        The (x, y) initial guess for the diffraction pattenr center. If None,
+        takes the center of mass of the entire pattern as the initial guess.
+
+    Returns
+    -------
+    xy_cent : 2-tuple
+        The center of the diffraction pattern.
+    """
+
+    h, w = dp.shape
+
+    if xy0 is None:
+        xy0 = np.flip(center_of_mass(dp))
+
+    xy_cent = minimize(
+        ewic_center_obj_fn,
+        xy0,
+        args=dp,
+        method='BFGS',
+    ).x
+
+    return xy_cent
+
+
 # %%
 """PCF functions"""
 
@@ -2404,7 +3199,7 @@ def get_vpcf(
         coords2=None,
         d=0.05,
         area=None,
-        method='weighted'
+        method='linearKDE'
 ):
     """
     Get a 2D pair (or pair-pair) correlation function for a dataset.
@@ -2433,21 +3228,21 @@ def get_vpcf(
         if the data does not come from a retangular area or the rectangle has
         been rotated relative to the cartesian axes.
         Default: None
-    method : 'bin' or 'weighted'
+    method : 'bin' or 'linearKDE'
         The method to use for calculating the v_pcf. If 'bin', uses a direct
-        histogram binning function in two dimensions. If 'weighted',
+        histogram binning function in two dimensions. If 'linearKDE',
         linearly divides the count for each data point among the 2x2 nearest
         neighbor pixels. Examples:
             1: A point exactly at the center of a pixel will have its full
             weight placed in that pixel and none in any others.
             2: A point at the common corner of 4 pixels will have 1/4 weight
             assigned to each.
-        Discussion: 'bin' is about 4x faster in execution while 'weight' is
+        Discussion: 'bin' is about 4x faster in execution while 'linearKDE' is
         more quantitatively correct. Practically, the results will be very
         similar. 'bin' should only be preferred if the function must be called
         many times and speed is critical. This option may be removed in a
         future version in favor of always using the weighted method.
-        Default: 'weight'
+        Default: 'linearKDE'
 
     Returns
     -------
@@ -2487,81 +3282,29 @@ def get_vpcf(
     n_sq = coords1.shape[0] * coords2.shape[0]
     denominator = n_sq / area
 
-    # Get bin spacing
-    xedges = np.arange(xlim[0], xlim[1], d)
-    yedges = np.arange(ylim[0], ylim[1], d)
-
-    # Find edge closest to 0 and shift edges so (0,0) is exactly at the center
-    # of a pixel
-    x_min_ind = np.argmin(np.abs(xedges))
-    y_min_ind = np.argmin(np.abs(yedges))
-    xedges -= xedges[x_min_ind] + d/2
-    yedges -= yedges[y_min_ind] + d/2
-
-    # Remove vectors that fall out of the desired field of view
-    vects = vects[(vects[:, 0] > np.min(xedges)) &
-                  (vects[:, 0] < np.max(xedges)) &
-                  (vects[:, 1] > np.min(yedges)) &
-                  (vects[:, 1] < np.max(yedges))]
-
     if method == 'bin':
-        # Bin into 2D histogram
-        H, _, _ = np.histogram2d(
-            vects[:, 1],
-            vects[:, 0],
-            bins=[yedges, xedges]
+
+        H, xedges, yedges = nearestKDE_2D(
+            vects,
+            xlim,
+            ylim,
+            d,
+            return_binedges=True
         )
 
-    elif method == 'weighted':
-        xcents = xedges[:-1] + d/2
-        ycents = yedges[:-1] + d/2
+    elif method == 'linearKDE':
 
-        H = np.zeros((ycents.shape[0], xcents.shape[0]))
-
-        xF = (vects[:, 0] // d) * d
-        yF = (vects[:, 1] // d) * d
-
-        # Get x and y weights for the floor pixels
-        xFw = 1 - vects[:, 0] % d
-        yFw = 1 - vects[:, 1] % d
-
-        # Weighted histogram for x floor, y floor pixels
-        H += np.histogram2d(
-            yF, xF,
-            bins=[yedges, xedges],
-            weights=xFw * yFw
-        )[0]
-
-        # Weighted histogram for x ceiling, y floor pixels
-        H += np.histogram2d(
-            yF, xF + d,
-            bins=[yedges, xedges],
-            weights=(1 - xFw) * yFw
-        )[0]
-
-        # Weighted histogram for x floor, y ceiling pixels
-        H += np.histogram2d(
-            yF + d, xF,
-            bins=[yedges, xedges],
-            weights=xFw * (1 - yFw)
-        )[0]
-
-        # Weighted histogram for x ceiling, y ceiling pixels
-        H += np.histogram2d(
-            yF + d, xF + d,
-            bins=[yedges, xedges],
-            weights=(1 - xFw) * (1 - yFw)
-        )[0]
-
-    elif method == 'kde':
-        x_coords, y_coords = np.meshgrid(xedges[:-1] + d/2, yedges[:-1] + d/2)
-        coords = np.vstack([x_coords.ravel(), y_coords.ravel()])
-        kernel = gaussian_kde(vects.T, bw_method=1.5 * d**2)
-        H = np.reshape(kernel(coords).T, x_coords.shape)
+        H, xedges, yedges = linearKDE_2D(
+            vects,
+            xlim,
+            ylim,
+            d,
+            return_binedges=True
+        )
 
     else:
         raise Exception(
-            "'method' must be either 'bin', 'weighted' or 'kde'."
+            "'method' must be either 'bin', 'linearKDE'."
         )
 
     # Flip so y axis is positive going up
@@ -2575,10 +3318,7 @@ def get_vpcf(
 
     H[origin[1], origin[0]] = 0
 
-    if method == 'kde':
-        vpcf = H/d**2 * denominator
-    else:
-        vpcf = H/(denominator * d**2)  # Normalize vPCF by number density
+    vpcf = H/(denominator * d**2)  # Normalize vPCF by number density
 
     return vpcf, origin
 
@@ -3236,134 +3976,47 @@ def fft_amplitude_area(
     return mask
 
 
-# def get_phase_from_com(
-#         comx,
-#         comy,
-#         theta,
-#         flip=True,
-#         high_low_filter=False,
-#         filter_params={
-#             'beam_energy': 200e3,
-#             'conv_semi_angle': 18,
-#             'pixel_size': 0.01,
-#             'high_pass': 0.05,
-#             'low_pass': 0.85,
-#             'edge_smoothing': 0.01
-#         }
-# ):
-#     """Reconstruct phase from center of mass shift components.
+def quickplot(
+        im,
+        cmap='inferno',
+        figsize=(6, 6),
+        hide_ticks=True,
+        pixel_size=None,
+        pixel_unit=None,
+        scalebar_len=None,
+        return_figax=False,
+):
 
-#     *** Citations...
+    fig, ax = plt.subplots(1, figsize=figsize)
+    ax.imshow(im, cmap=cmap)
 
-#     Parameters
-#     ----------
-#     com_xy : ndarray of shape (h,w,2)
-#         The center of mass shift component images as a stack.
+    if hide_ticks:
+        ax.set_xticks([])
+        ax.set_yticks([])
 
-#     theta : scalar
-#         Rotation angle in degrees between real and reciprocal space.
+    if pixel_size is not None:
+        if pixel_unit is None:
+            pixel_unit = 'a.u.'
+        if scalebar_len is None:
+            sb_sizes = np.array([10**dec * int_ for dec in range(-1, 5)
+                                 for int_ in [1, 2, 4, 5]])
+            fov = np.max(im.shape) * pixel_size
+            scalebar_len = sb_sizes[np.argmax(sb_sizes > fov*0.1)]
+            scalebar_len
 
-#     flip : bool
-#         Whether to transpose x and y axes.
-#         Default: False
+        scalebar = ScaleBar(
+            pixel_size,
+            pixel_unit,
+            font_properties={'size': 12},
+            pad=0.3,
+            border_pad=0.6,
+            box_color='white',
+            height_fraction=0.02,
+            color='black',
+            location='lower right',
+            fixed_value=scalebar_len,
+        )
+        ax.add_artist(scalebar)
 
-#     high_low_filter : bool
-#         Whether to perform high and/or low pass filtering as defined in the
-#         filter_params argument.
-#         Default: False
-
-#     filter_params : dict
-#         Dictionary of parameters used for calculating the high and/or low pass
-#         filters:
-#             {'beam_energy' : 200e3,    # electron-volts
-#              'conv_semi_angle' : 18,   # mrads
-#              'pixel_size' : 0.01,      # nm
-#              'high_pass' : 0.05,       # fraction of aperture passband
-#              'low_pass' : 0.85,        # fraction of aperture passband
-#              'edge_smoothing' : 0.01}  # fraction of aperture passband
-
-#     Returns
-#     -------
-#     phase : 2D array with shape (h,w)
-#         The reconstructed phase of the sample transmission function.
-
-#     """
-
-#     f_freq_1d_y = np.fft.fftfreq(comx.shape[0], 1)
-#     f_freq_1d_x = np.fft.fftfreq(comx.shape[1], 1)
-#     h, w = comx.shape
-
-#     if high_low_filter:
-#         lambda_ = elec_wavelength(filter_params['beam_energy']) * 1e9  # in nm
-#         h, w = comx.shape
-#         min_dim = np.argmin((h, w))
-#         fft_pixelSize = 1 / (np.array(comx.shape)
-#                              * filter_params['pixel_size'])  # nm^-1
-
-#         apeture_cutoff = 2*np.sin(2 * filter_params['conv_semi_angle']/1000
-#                                   )/lambda_
-#         low_pass = (filter_params['low_pass']*apeture_cutoff
-#                     / fft_pixelSize[min_dim])
-#         high_pass = (filter_params['high_pass']*apeture_cutoff
-#                      / fft_pixelSize[min_dim])  # pixels
-
-#         sigma = (filter_params['edge_smoothing'] * apeture_cutoff
-#                  / fft_pixelSize[min_dim])
-
-#         mask = band_pass_filter((h, w), high_pass=high_pass,
-#                                 low_pass=low_pass,
-#                                 filter_edge_smoothing=sigma)
-
-#     else:
-#         mask = np.ones((h, w))
-
-#     # theta = np.radians(theta)
-#     if not flip:
-#         comx_ = comx*np.cos(theta) - comy*np.sin(theta)
-#         comy_ = comx*np.sin(theta) + comy*np.cos(theta)
-#     if flip:
-#         comx_ = comx*np.cos(theta) + comy*np.sin(theta)
-#         comy_ = comx*np.sin(theta) - comy*np.cos(theta)
-
-#     k_p = np.array(np.meshgrid(f_freq_1d_x, f_freq_1d_y))
-
-#     _ = np.seterr(divide='ignore')
-#     denominator = 1/((k_p[0] + 1j*k_p[1]))
-#     denominator[0, 0] = 0
-#     _ = np.seterr(divide='warn')
-
-#     complex_image = np.fft.ifft2((mask * (np.fft.fft2(comy_)
-#                                           + 1j*np.fft.fft2(comx_)))
-#                                  * denominator)
-
-#     # phase = (np.real(complex_image)**2 + np.imag(complex_image)**2)**0.5
-#     phase = - np.real(complex_image)
-#     return phase
-
-
-# def get_charge_density_image(comx, comy, theta):
-#     """Get charge density image.
-
-#     Parameters
-#     ----------
-#     comx, comy : ndarrays of shape (h,w)
-#         The center of mass shift component images.
-
-#     theta : scalar
-#         Rotation angle in degrees between horizontal scan direction and
-#         detector orientation (i.e. the comx vector).
-
-#     Returns
-#     -------
-#     charge_density : 2D array with shape (h,w)
-#         The sample charge density convolved with the probe intensity function.
-
-#     """
-
-#     theta = np.radians(theta)
-#     comx_ = comx*np.cos(theta) - comy*np.sin(theta)
-#     comy_ = comx*np.sin(theta) + comy*np.cos(theta)
-
-#     charge_density = np.gradient(comx_, axis=1) + np.gradient(comy_, axis=0)
-
-#     return charge_density
+    if return_figax:
+        return fig, ax

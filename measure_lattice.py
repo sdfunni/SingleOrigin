@@ -53,6 +53,7 @@ from SingleOrigin.utils import (
     pick_points,
     register_lattice_to_peaks,
     plot_basis,
+    get_ewpc,
     find_ewpc_peak,
     hann_2d,
     fit_lattice,
@@ -158,10 +159,11 @@ class MeasureLattice:
         dp_rotation=0,
         origin=None,
         show_mean_image=True,
-        get_ewpc=True,
+        calc_ewpc=True,
         upsample_factor=1,
     ):
         ndims = len(data.shape)
+        self.data = data
         self.datatype = datatype
         if ndims == 2:
             self.data_mean = data
@@ -192,7 +194,7 @@ class MeasureLattice:
         self.upsample_factor = upsample_factor
         self.origin_shift = 0
 
-        if get_ewpc:
+        if calc_ewpc:
             print('Calculating EWPC. This may take a moment...')
             self.ewpc = get_ewpc(
                 self.data,
@@ -200,7 +202,7 @@ class MeasureLattice:
 
             self.ewpc_mean = np.mean(
                 self.ewpc,
-                axis=(-2, -1),
+                axis=(0, 1),
             )
             display_image = self.ewpc_mean
 
@@ -264,7 +266,8 @@ class MeasureLattice:
         pick_labels=None,
         min_order=0,
         max_order=10,
-        thresh=0.05
+        thresh=0.05,
+        window_size='auto',
     ):
         """
         Initialize EWPC analysis by registring a lattice to the mean image.
@@ -351,6 +354,9 @@ class MeasureLattice:
 
         xy_peaks = np.fliplr(np.argwhere(peaks))
 
+        if window_size == 'auto':
+            window_size = np.std(np.abs(xy_peaks - self.origin)) * 2
+
         if graphical_picking or (pick_labels is None):
             basis_picks = pick_points(
                 ewpc_thresh,
@@ -358,7 +364,7 @@ class MeasureLattice:
                 xy_peaks=xy_peaks,
                 origin=self.origin,
                 graphical_picking=graphical_picking,
-                window_size=None,
+                window_size=window_size,
                 timeout=timeout
             )
 
@@ -392,18 +398,18 @@ class MeasureLattice:
             else:
                 if r_max is not None:
                     lattice = lattice[norm(
-                        lattice.loc[:, 'x_reg':'y_reg'].to_numpy() -
+                        lattice.loc[:, 'x_ref':'y_ref'].to_numpy() -
                         self.origin,
                         axis=1)
                         < r_max]
                 if r_min is not None:
                     lattice = lattice[norm(
-                        lattice.loc[:, 'x_reg':'y_reg'].to_numpy() -
+                        lattice.loc[:, 'x_ref':'y_ref'].to_numpy() -
                         self.origin,
                         axis=1)
                         > r_min]
 
-                lattice = lattice[lattice.loc[:, 'y_reg'] > self.origin[1]]
+                lattice = lattice[lattice.loc[:, 'y_ref'] <= self.origin[1]]
 
             fig, ax = plot_basis(
                 image=ewpc_thresh,
@@ -413,7 +419,7 @@ class MeasureLattice:
                 return_fig=True,
             )
 
-            ax.scatter(lattice.loc[:, 'x_reg'], lattice.loc[:, 'y_reg'],
+            ax.scatter(lattice.loc[:, 'x_ref'], lattice.loc[:, 'y_ref'],
                        marker='o', color='white', s=100, facecolors='none')
 
             if r_min:
@@ -454,17 +460,17 @@ class MeasureLattice:
 
         lattice = copy.deepcopy(self.lattice)
 
-        xy_reg = np.around(lattice.loc[:, 'x_reg':'y_reg'].to_numpy()
+        xy_ref = np.around(lattice.loc[:, 'x_ref':'y_ref'].to_numpy()
                            ).astype(int)
         M = lattice.loc[:, 'h':'k'].to_numpy()
 
         dxy = window_size//2
 
-        masks = np.zeros((xy_reg.shape[0], self.dp_h, self.dp_w))
+        masks = np.zeros((xy_ref.shape[0], self.dp_h, self.dp_w))
 
         for i, mask in enumerate(masks):
-            mask[xy_reg[i, 1]-dxy: xy_reg[i, 1] + dxy + 1,
-                 xy_reg[i, 0]-dxy: xy_reg[i, 0] + dxy + 1] = 1
+            mask[xy_ref[i, 1]-dxy: xy_ref[i, 1] + dxy + 1,
+                 xy_ref[i, 0]-dxy: xy_ref[i, 0] + dxy + 1] = 1
 
         t += [time.time()]
         print(f'Step 1 (Initial setup): {(t[-1]-t[-2]) :.{2}f} sec')
@@ -1072,7 +1078,7 @@ class MeasureLattice:
             return_fig=True)
         ax.legend()
 
-    def plot_real_basis(self, basis_factor=[1, 1]):
+    def plot_ewpc_basis(self, basis_factor=[1, 1]):
 
         fig, ax = plot_basis(
             self.ewpc_mean,
@@ -1109,8 +1115,7 @@ class MeasureLattice:
         """
 
         alpha_meas = copy.copy(self.basis_mean_recip_px)
-        if np.cross(alpha_meas[0], alpha_meas[1]) < 0:
-            alpha_meas[0] *= -1
+        print(self.basis_mean_recip_px)
 
         uc = UnitCell(cif_path)
 
@@ -1120,13 +1125,22 @@ class MeasureLattice:
 
         a_star_2d = get_astar_2d_matrix(g1, g2, g)
 
+        # Make sure basis systems have the same handedness
+        if np.cross(alpha_meas[0], alpha_meas[1]) < 0:
+            # alpha_meas[0] *= -1
+            alpha_meas = np.flipud(alpha_meas)
+
+        if np.cross(a_star_2d[0], a_star_2d[1]) < 0:
+            # alpha_meas[0] *= -1
+            a_star_2d = np.flipud(a_star_2d)
+
         theta1 = np.radians(rotation_angle_bt_vectors(
             alpha_meas[0], a_star_2d[0])
         )
         theta2 = np.radians(rotation_angle_bt_vectors(
             alpha_meas[1], a_star_2d[1])
         )
-
+        print(theta1, theta2)
         theta = (theta1 + theta2) / 2
 
         rot_mat = np.array([[np.cos(theta), -np.sin(theta)],
@@ -1140,14 +1154,391 @@ class MeasureLattice:
 
         return beta
 
+    # def initalize_bragg_lattice_old(
+    #     self,
+    #     a1_order=1,
+    #     a2_order=1,
+    #     sigma=5,
+    #     thresh_factor_std=1,
+    #     thresh_max=0,
+    #     max_order=5,
+    #     buffer=5,
+    #     show_fit=True,
+    #     verbose=True,
+    # ):
+    #     """Find peaks in a reciprocal lattice image (i.e. FFT or diffraction
+    #     pattern) and get the reciprocal lattice parameters.
+
+    #     Peaks locations are determined by center-of-mass applied to the
+    #     surrounding region as found using the watershed method. A best-fit
+    #     lattice is then registered to the set of located peaks. This procedure
+    #     results in a high precision measurement of the lattice parameters from
+    #     reciprocal images.
+
+    #     Parameters
+    #     ----------
+    #     a1_order, a2_order : ints
+    #         The order of the first peak along the a1* and a2* directions.
+    #         (e.g.: if the first spot corresponds to an (002) reflection, then
+    #           set equal to 2.)
+    #     sigma : scalar
+    #         Gaussian blur in pixels to be applied to the FFT in if an image
+    #         is being analized. Helps reduce the number of peaks found and
+    #         yields more accurate initial positions. For images, final peak
+    #         measurement is performed using the continuous Fourier transform
+    #         of the original image, so this parameter does not manipulate the
+    #         resulting measurement.
+    #     thresh_factor_std : scalar
+    #         Relative adjustment of the threshold level for detecting peaks.
+    #         Greater values will detect fewer peaks; smaller values, more.
+    #         The thresholding is done based on the standard deviation of the
+    #         peak and its surrounding area. Dim peaks will have low standard
+    #         deviations.
+    #         Default: 1.
+    #     max_order : ints
+    #         The maximum order of peaks to locate, use for lattice
+    #         registration and to retain in the lattice DataFrame.
+    #         Limiting the maximum order may prevent errors stemming from
+    #         detection of noise peaks where real peaks are too dim or
+    #         non-existant. For analizing an imaged lattice by FFT,
+    #         Default: 5
+    #     buffer : int
+    #         Number of pixels near edge of a diffraction pattern or FFT in which
+    #         to ignore detected peaks.
+    #     show_fit : bool
+    #         Whether to plot the final fitted lattice and basis vectors.
+    #     verbose : bool
+    #         Whether to print resulting basis vector angle and length ratio.
+
+    #     Returns
+    #     -------
+    #     ...
+
+    #     """
+
+    #     if self.datatype == 'image':
+    #         # pwr_factor = 0.2
+    #         n_picks = 2
+    #         fix_origin = True
+    #         log_fft = np.log(fft_square(self.data_mean))
+    #         display_im = image_norm(gaussian_filter(log_fft, sigma))
+    #         U = display_im.shape[0] // 2
+    #         origin = np.array([U, U])
+
+    #     elif self.datatype == 'dp':
+    #         n_picks = 3
+    #         fix_origin = False
+    #         # pwr_factor = 0.2
+    #         display_im = self.data_mean
+    #     else:
+    #         raise Exception(
+    #             "'datatype' must be 'image' or 'dp'."
+    #         )
+
+    #     h, w = display_im.shape
+
+    #     peak_map = detect_peaks(
+    #         copy.deepcopy(display_im),
+    #         min_dist=4,
+    #         thresh=0
+    #     )
+
+    #     # Find the maximum of the 2nd highest peak (ignores the central peak)
+    #     vmax = np.unique(peak_map*display_im)[-2]
+
+    #     # Get feature size after applying vmax as a maximum threshold.
+    #     # This prevents the central peak from dominating the size determination
+    #     # vmax will also be used as the upper limit of the imshow cmap.
+    #     image_thresh = np.where(
+    #         display_im > vmax,
+    #         0,
+    #         display_im
+    #     )
+
+    #     min_dist = get_feature_size(image_thresh)
+    #     if min_dist < 3:
+    #         min_dist = 3
+    #     self.sigma = min_dist
+
+    #     _, peaks = detect_peaks(
+    #         copy.deepcopy(display_im),
+    #         min_dist=min_dist,
+    #         return_DataFrame=True
+    #     )
+
+    #     # Remove edge pixels:
+    #     if buffer > 0:
+    #         peaks = peaks[
+    #             ((peaks.x >= buffer) &
+    #              (peaks.x <= w - buffer) &
+    #              (peaks.y >= buffer) &
+    #              (peaks.y <= h - buffer))
+    #         ].reset_index(drop=True)
+
+    #     peaks['stdev'] = [
+    #         np.std(display_im[int(y-int(min_dist)):int(y+int(min_dist)+1),
+    #                           int(x-int(min_dist)):int(x+int(min_dist)+1)])
+    #         for [x, y]
+    #         in np.around(peaks.loc[:, 'x':'y']).to_numpy(dtype=int)
+    #     ]
+
+    #     thresh = 0.005 * thresh_factor_std
+
+    #     if thresh > 0:
+    #         peaks = peaks[peaks.loc[:, 'stdev'] > thresh
+    #                       ].reset_index(drop=True)
+    #     if thresh_max > 0:
+    #         peaks = peaks[peaks.loc[:, 'max'] > thresh_max
+    #                       ].reset_index(drop=True)
+
+    #     xy = peaks.loc[:, 'x':'y'].to_numpy(dtype=float)
+    #     self.all_peaks = copy.deepcopy(xy)
+
+    #     # Get vmin for plotting (helps with dead camera pixels)
+    #     # vmin = np.min([
+    #     #     np.mean(display_im) - 5*np.std(display_im),
+    #     #     2*np.mean(display_im) - np.max(display_im),
+    #     # ])
+    #     # if vmin < 0:
+    #     vmin = 0
+
+    #     # fig, ax = plt.subplots(figsize=(10, 10))
+    #     # ax.imshow(display_im, cmap='gray')
+    #     if n_picks > 0:
+    #         fig, ax = plt.subplots(figsize=(10, 10))
+    #         ax.imshow(display_im, cmap='gray', vmin=vmin)
+    #         ax.scatter(xy[:, 0], xy[:, 1], c='black', marker='+')
+    #         if self.datatype == 'image':
+    #             ax.scatter(origin[0], origin[1], c='white', marker='+')
+    #             fig.suptitle(
+    #                 'Pick peaks for the a1* and a2* reciprocal basis vectors' +
+    #                 ' \n in that order).',
+    #                 fontsize=12,
+    #                 c='black',
+    #             )
+
+    #         elif self.datatype == 'dp':
+    #             fig.suptitle(
+    #                 'Pick peaks for the origin, a1* and a2* reciprocal basis' +
+    #                 ' \n vectors (in that order).',
+    #                 fontsize=12,
+    #                 c='black',
+    #             )
+
+    #         ax.set_xticks([])
+    #         ax.set_yticks([])
+
+    #         if self.datatype == 'image':
+    #             plot_window = np.min([np.max(np.abs(xy - origin)) * 1.5, U])
+
+    #             ax.set_xlim(U - plot_window, U + plot_window)
+    #             ax.set_ylim(U - plot_window, U + plot_window)
+
+    #         basis_picks_xy = np.array(plt.ginput(n_picks, timeout=30))
+
+    #         plt.close('all')
+
+    #     # Match peaks to basis click points or passed a_star/origin data
+    #     vects = np.array([xy - i for i in basis_picks_xy])
+    #     inds = np.argmin(norm(vects, axis=2), axis=1)
+    #     basis_picks_xy = xy[inds, :]
+
+    #     a1_pick = basis_picks_xy[-2, :]
+    #     a2_pick = basis_picks_xy[-1, :]
+
+    #     if self.datatype == 'dp':
+    #         origin = basis_picks_xy[0, :]
+
+    #     # Generate reciprocal lattice
+    #     a1_star = (a1_pick - origin) / a1_order
+    #     a2_star = (a2_pick - origin) / a2_order
+
+    #     a_star = np.array([a1_star, a2_star])
+
+    #     recip_latt_indices = np.array(
+    #         [[i, j]
+    #          for i in range(-max_order, max_order+1)
+    #          for j in range(-max_order, max_order+1)]
+    #     )
+
+    #     xy_ref = recip_latt_indices @ a_star + origin
+
+    #     # Match reciprocal lattice points to peaks; make DataFrame
+    #     vects = np.array([xy - xy_ for xy_ in xy_ref])
+    #     inds = np.argmin(norm(vects, axis=2), axis=1)
+
+    #     self.recip_latt = pd.DataFrame({
+    #         'h': recip_latt_indices[:, 0],
+    #         'k': recip_latt_indices[:, 1],
+    #         'x_ref': xy_ref[:, 0],
+    #         'y_ref': xy_ref[:, 1],
+    #         'x_max': [xy[ind, 0] for ind in inds],
+    #         'y_max': [xy[ind, 1] for ind in inds],
+    #         'mask_ind': inds
+    #     })
+
+    #     # Remove peaks that are too far from initial reciprocal lattice
+    #     self.recip_latt = self.recip_latt[norm(
+    #         self.recip_latt.loc[:, 'x_max':'y_max'].to_numpy(dtype=float)
+    #         - self.recip_latt.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float),
+    #         axis=1
+    #     ) < np.max([0.1*np.max(norm(a_star, axis=1)), 1])
+    #     ].reset_index(drop=True)
+
+    #     if self.datatype == 'image':
+    #         print('Finding peaks using continuous Fourier transform...')
+
+    #         hann = hann_2d(self.data_mean.shape[-1])
+
+    #         im = image_norm(self.data_mean) * hann
+    #         peaks_xy = self.recip_latt .loc[:, 'x_max':'y_max'].to_numpy()
+
+    #         cft_xy = np.array([find_ewpc_peak(
+    #             coords,
+    #             im,
+    #             2)
+    #             for coords in tqdm(peaks_xy)])
+    #         self.recip_latt .loc[:, 'x_max':'y_max'] = cft_xy
+
+    #     # Initial refinement of reciprocal basis vectors
+    #     M_star = self.recip_latt.loc[:, 'h':'k'].to_numpy(dtype=float)
+    #     xy = self.recip_latt.loc[:, 'x_max':'y_max'].to_numpy(dtype=float)
+
+    #     p0 = np.concatenate((a_star.flatten(), origin))
+
+    #     params = fit_lattice(p0, xy, M_star, fix_origin=fix_origin)
+
+    #     # Save initial refinement data
+    #     self.a1_star = params[:2]
+    #     self.a2_star = params[2:4]
+    #     if len(params) == 6:
+    #         self.origin = params[4:]
+    #     else:
+    #         self.origin = origin
+
+    #     basis_vects = np.array([self.a1_star, self.a2_star])
+
+    #     self.recip_latt[['x_ref', 'y_ref']] = (
+    #         self.recip_latt.loc[:, 'h':'k'].to_numpy(dtype=float)
+    #         @ basis_vects
+    #         + self.origin
+    #     )
+
+    #     # Remove peaks that are too far from refined reciprocal lattice
+    #     self.recip_latt = self.recip_latt[norm(
+    #         self.recip_latt.loc[:, 'x_max':'y_max'].to_numpy(dtype=float)
+    #         - self.recip_latt.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float),
+    #         axis=1
+    #     ) < np.max([0.02*np.max(norm(a_star, axis=1)), 1])
+    #     ].reset_index(drop=True)
+
+    #     # Final refinement of reciprocal basis vectors on reduced set
+    #     M_star = self.recip_latt.loc[:, 'h':'k'].to_numpy(dtype=float)
+    #     xy = self.recip_latt.loc[:, 'x_max':'y_max'].to_numpy(dtype=float)
+
+    #     p0 = np.concatenate((a_star.flatten(), origin))
+
+    #     params = fit_lattice(p0, xy, M_star, fix_origin=fix_origin)
+
+    #     # Save final refinement data
+    #     self.a1_star = params[:2]
+    #     self.a2_star = params[2:4]
+    #     if len(params) == 6:
+    #         self.origin = params[4:]
+    #     else:
+    #         self.origin = origin
+
+    #     basis_vects = np.array([self.a1_star, self.a2_star])
+
+    #     self.recip_latt[['x_ref', 'y_ref']] = (
+    #         self.recip_latt.loc[:, 'h':'k'].to_numpy(dtype=float)
+    #         @ basis_vects
+    #         + self.origin
+    #     )
+
+    #     theta = absolute_angle_bt_vectors(
+    #         self.a1_star,
+    #         self.a2_star,
+    #         np.identity(2)
+    #     )
+
+    #     ratio = norm(self.a1_star)/norm(self.a2_star)
+
+    #     if verbose:
+    #         print(f'Reciproal lattice angle (degrees): {theta :.{5}f}')
+    #         print(f'Reciproal vector ratio (a1*/a2*): {ratio :.{6}f}')
+
+    #     # Plot refined basis
+    #     if show_fit:
+    #         fig2, ax = plt.subplots(figsize=(10, 10))
+    #         ax.imshow(display_im, cmap='plasma', vmin=vmin)
+    #         ax.scatter(
+    #             self.recip_latt.loc[:, 'x_ref'].to_numpy(dtype=float),
+    #             self.recip_latt.loc[:, 'y_ref'].to_numpy(dtype=float),
+    #             marker='+',
+    #             c='red'
+    #         )
+    #         ax.scatter(
+    #             self.recip_latt.loc[:, 'x_max'].to_numpy(dtype=float),
+    #             self.recip_latt.loc[:, 'y_max'].to_numpy(dtype=float),
+    #             marker='+',
+    #             c='black'
+    #         )
+    #         ax.scatter(self.origin[0], self.origin[1], marker='+', c='white')
+
+    #         ax.arrow(
+    #             self.origin[0],
+    #             self.origin[1],
+    #             self.a1_star[0],
+    #             self.a1_star[1],
+    #             fc='red',
+    #             ec='white',
+    #             width=0.1,
+    #             length_includes_head=True,
+    #             head_width=2,
+    #             head_length=3
+    #         )
+    #         ax.arrow(
+    #             self.origin[0],
+    #             self.origin[1],
+    #             self.a2_star[0],
+    #             self.a2_star[1],
+    #             fc='green',
+    #             ec='white',
+    #             width=0.1,
+    #             length_includes_head=True,
+    #             head_width=2,
+    #             head_length=3
+    #         )
+
+    #         if self.datatype == 'image':
+    #             plot_window = np.max(
+    #                 np.abs(self.recip_latt.loc[:, 'x_ref':'y_ref'].to_numpy()
+    #                        - origin)) * 1.5
+
+    #             if plot_window > U:
+    #                 plot_window = U
+
+    #             ax.set_xlim(U - plot_window, U + plot_window)
+    #             ax.set_ylim(U - plot_window, U + plot_window)
+
+    #         ax.set_xticks([])
+    #         ax.set_yticks([])
+    #         plt.title('Reciprocal Lattice Fit')
+
     def initalize_bragg_lattice(
         self,
         a1_order=1,
         a2_order=1,
-        sigma=5,
-        thresh_factor_std=1,
-        max_order=5,
+        sigma=3,
+        # min_dist=5,
         buffer=5,
+        thresh_factor_std=1,
+        detection_thresh='auto',
+        peak_max_thresh_factor=0.01,
+        max_order=5,
+        # origin=None,
+        # a_star=None,
         show_fit=True,
         verbose=True,
     ):
@@ -1166,13 +1557,10 @@ class MeasureLattice:
             The order of the first peak along the a1* and a2* directions.
             (e.g.: if the first spot corresponds to an (002) reflection, then
              set equal to 2.)
-        sigma : scalar
-            Gaussian blur in pixels to be applied to the FFT in if an image
-            is being analized. Helps reduce the number of peaks found and
-            yields more accurate initial positions. For images, final peak
-            measurement is performed using the continuous Fourier transform
-            of the original image, so this parameter does not manipulate the
-            resulting measurement.
+        sigma : int or float
+            The Laplacian of Gaussian sigma value to use for sharpening of the
+            peaks for the peak finding algorithm. Usually a value between 2
+            and 10 will work well.
         thresh_factor_std : scalar
             Relative adjustment of the threshold level for detecting peaks.
             Greater values will detect fewer peaks; smaller values, more.
@@ -1180,20 +1568,11 @@ class MeasureLattice:
             peak and its surrounding area. Dim peaks will have low standard
             deviations.
             Default: 1.
-        max_order : ints
-            The maximum order of peaks to locate, use for lattice
-            registration and to retain in the lattice DataFrame.
-            Limiting the maximum order may prevent errors stemming from
-            detection of noise peaks where real peaks are too dim or
-            non-existant. For analizing an imaged lattice by FFT,
-            Default: 5
-        buffer : int
-            Number of pixels near edge of a diffraction pattern or FFT in which
-            to ignore detected peaks.
-        show_fit : bool
-            Whether to plot the final fitted lattice and basis vectors.
-        verbose : bool
-            Whether to print resulting basis vector angle and length ratio.
+        detection_thresh : scalar
+            The threshold (in % max image intensith) of peak amplitude to
+            consider as a possible reciprocal lattice spot. Used to remove
+            noise peaks with high local standard devaition from being detected
+            as Bragg peaks.
 
         Returns
         -------
@@ -1214,17 +1593,20 @@ class MeasureLattice:
             n_picks = 3
             fix_origin = False
             # pwr_factor = 0.2
-            display_im = self.data_mean
+            display_im = image_norm(gaussian_filter(self.data_mean, sigma))
         else:
             raise Exception(
                 "'datatype' must be 'image' or 'dp'."
             )
 
+        if detection_thresh == 'auto':
+            detection_thresh = np.mean(display_im) * 2
+
         h, w = display_im.shape
 
         peak_map = detect_peaks(
-            display_im,
-            min_dist=2,
+            copy.deepcopy(display_im),
+            min_dist=4,
             thresh=0
         )
 
@@ -1241,78 +1623,84 @@ class MeasureLattice:
         )
 
         min_dist = get_feature_size(image_thresh)
+        if min_dist < 3:
+            min_dist = 3
         self.sigma = min_dist
 
-        _, peaks = detect_peaks(
+        masks, num_masks, _, peaks = watershed_segment(
             display_im,
-            min_dist=min_dist,
-            return_DataFrame=True
+            local_thresh_factor=0,
+            peak_max_thresh_factor=peak_max_thresh_factor,
+            buffer=buffer,
+            min_dist=min_dist
         )
+        peaks = peaks[peaks.loc[:, 'max'] > detection_thresh]
 
         # Remove edge pixels:
         if buffer > 0:
             peaks = peaks[
                 ((peaks.x >= buffer) &
-                 (peaks.x <= w - buffer) &
+                 (peaks.x <= self.dp_w - buffer) &
                  (peaks.y >= buffer) &
-                 (peaks.y <= h - buffer))
+                 (peaks.y <= self.dp_h - buffer))
             ].reset_index(drop=True)
 
-        if min_dist < 3:
-            min_dist = 3
-
         peaks['stdev'] = [
-            np.std(display_im[int(y-int(min_dist)):int(y+int(min_dist)+1),
-                              int(x-int(min_dist)):int(x+int(min_dist)+1)])
+            np.std(display_im[
+                int(np.max([y-sigma, 0])):int(np.min([y+sigma+1, self.dp_h])),
+                int(np.max([x-sigma, 0])):int(np.min([x+sigma+1, self.dp_w]))
+            ])
             for [x, y]
             in np.around(peaks.loc[:, 'x':'y']).to_numpy(dtype=int)
         ]
 
-        thresh = 0.005 * thresh_factor_std
+        thresh = 0.003 * thresh_factor_std
 
         if thresh > 0:
-            peaks = peaks[peaks.loc[:, 'stdev'] > thresh
-                          ].reset_index(drop=True)
+            peaks = peaks[
+                (peaks.loc[:, 'stdev'] > thresh) &
+                (peaks.loc[:, 'max'] > detection_thresh)
+            ].reset_index(drop=True)
 
         xy = peaks.loc[:, 'x':'y'].to_numpy(dtype=float)
-        self.all_peaks = copy.deepcopy(xy)
+        for i, xy_ in enumerate(xy):
+            mask_num = masks[int(xy_[1]), int(xy_[0])]
+            mask = np.where(masks == mask_num, 1, 0)
+            com = np.flip(center_of_mass(display_im*mask))
+            peaks.loc[i, ['x_com', 'y_com']] = com
 
-        # Get vmin for plotting (helps with dead camera pixels)
-        vmin = np.max([np.mean(display_im) - 5*np.std(display_im), 0])
+        xy = peaks.loc[:, 'x_com':'y_com'].to_numpy(dtype=float)
 
-        if n_picks > 0:
-            fig, ax = plt.subplots(figsize=(10, 10))
-            ax.imshow(display_im, cmap='gray', vmin=vmin)
-            ax.scatter(xy[:, 0], xy[:, 1], c='black', marker='+')
-            if self.datatype == 'image':
-                ax.scatter(origin[0], origin[1], c='white', marker='+')
-                fig.suptitle(
-                    'Pick peaks for the a1* and a2* reciprocal basis vectors' +
-                    ' \n in that order).',
-                    fontsize=12,
-                    c='black',
-                )
+        fig, ax = plt.subplots(figsize=(10, 10))
+        ax.imshow((display_im)**(0.5), cmap='gray')
+        ax.scatter(xy[:, 0], xy[:, 1], c='red', marker='+')
+        if self.datatype == 'fft':
+            ax.scatter(origin[0], origin[1], c='white', marker='+')
+            fig.suptitle(
+                'Pick peaks for the a1* and a2* reciprocal basis vectors' +
+                ' \n in that order).',
+                fontsize=12,
+                c='black',
+            )
 
-            elif self.datatype == 'dp':
-                fig.suptitle(
-                    'Pick peaks for the origin, a1* and a2* reciprocal basis' +
-                    ' \n vectors (in that order).',
-                    fontsize=12,
-                    c='black',
-                )
+        elif self.datatype == 'dp':
+            fig.suptitle(
+                'Pick peaks for the origin, a1* and a2* reciprocal basis' +
+                ' \n vectors (in that order).',
+                fontsize=12,
+                c='black',
+            )
 
-            ax.set_xticks([])
-            ax.set_yticks([])
+        ax.set_xticks([])
+        ax.set_yticks([])
 
-            if self.datatype == 'image':
-                plot_window = np.min([np.max(np.abs(xy - origin)) * 1.5, U])
+        if self.datatype == 'fft':
+            ax.set_xlim(np.min(xy[:, 0]) - 100, np.max(xy[:, 0]) + 100)
+            ax.set_ylim(np.max(xy[:, 1]) + 100, np.min(xy[:, 1]) - 100)
 
-                ax.set_xlim(U - plot_window, U + plot_window)
-                ax.set_ylim(U - plot_window, U + plot_window)
+        basis_picks_xy = np.array(plt.ginput(n_picks, timeout=30))
 
-            basis_picks_xy = np.array(plt.ginput(n_picks, timeout=30))
-
-            plt.close('all')
+        plt.close('all')
 
         # Match peaks to basis click points or passed a_star/origin data
         vects = np.array([xy - i for i in basis_picks_xy])
@@ -1322,7 +1710,7 @@ class MeasureLattice:
         a1_pick = basis_picks_xy[-2, :]
         a2_pick = basis_picks_xy[-1, :]
 
-        if ((self.datatype == 'dp') & (origin is None)):
+        if self.datatype == 'dp':
             origin = basis_picks_xy[0, :]
 
         # Generate reciprocal lattice
@@ -1337,54 +1725,39 @@ class MeasureLattice:
              for j in range(-max_order, max_order+1)]
         )
 
-        xy_reg = recip_latt_indices @ a_star + origin
+        xy_ref = recip_latt_indices @ a_star + origin
 
         # Match reciprocal lattice points to peaks; make DataFrame
-        vects = np.array([xy - xy_ for xy_ in xy_reg])
+        vects = np.array([xy - xy_ for xy_ in xy_ref])
         inds = np.argmin(norm(vects, axis=2), axis=1)
 
         self.recip_latt = pd.DataFrame({
             'h': recip_latt_indices[:, 0],
             'k': recip_latt_indices[:, 1],
-            'x_reg': xy_reg[:, 0],
-            'y_reg': xy_reg[:, 1],
-            'x_max': [xy[ind, 0] for ind in inds],
-            'y_max': [xy[ind, 1] for ind in inds],
+            'x_ref': xy_ref[:, 0],
+            'y_ref': xy_ref[:, 1],
+            'x_com': [xy[ind, 0] for ind in inds],
+            'y_com': [xy[ind, 1] for ind in inds],
             'mask_ind': inds
         })
 
         # Remove peaks that are too far from initial reciprocal lattice
         self.recip_latt = self.recip_latt[norm(
-            self.recip_latt.loc[:, 'x_max':'y_max'].to_numpy(dtype=float)
-            - self.recip_latt.loc[:, 'x_reg':'y_reg'].to_numpy(dtype=float),
+            self.recip_latt.loc[:, 'x_com':'y_com'].to_numpy(dtype=float)
+            - self.recip_latt.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float),
             axis=1
-        ) < np.max([0.1*np.max(norm(a_star, axis=1)), 1])
+        ) < 0.1*np.max(norm(a_star, axis=1))
         ].reset_index(drop=True)
 
-        if self.datatype == 'image':
-            print('Finding peaks using continuous Fourier transform...')
-
-            hann = hann_2d(self.data_mean.shape[-1])
-
-            im = image_norm(self.data_mean) * hann
-            peaks_xy = self.recip_latt .loc[:, 'x_max':'y_max'].to_numpy()
-
-            cft_xy = np.array([find_ewpc_peak(
-                coords,
-                im,
-                2)
-                for coords in tqdm(peaks_xy)])
-            self.recip_latt .loc[:, 'x_max':'y_max'] = cft_xy
-
-        # Initial refinement of reciprocal basis vectors
+        # Refine reciprocal basis vectors
         M_star = self.recip_latt.loc[:, 'h':'k'].to_numpy(dtype=float)
-        xy = self.recip_latt.loc[:, 'x_max':'y_max'].to_numpy(dtype=float)
+        xy = self.recip_latt.loc[:, 'x_com':'y_com'].to_numpy(dtype=float)
 
         p0 = np.concatenate((a_star.flatten(), origin))
 
         params = fit_lattice(p0, xy, M_star, fix_origin=fix_origin)
 
-        # Save initial refinement data
+        # Save data and report key values
         self.a1_star = params[:2]
         self.a2_star = params[2:4]
         if len(params) == 6:
@@ -1393,40 +1766,9 @@ class MeasureLattice:
             self.origin = origin
 
         self.a_star = np.array([self.a1_star, self.a2_star])
+        self.basis_mean_recip_px = self.a_star
 
-        self.recip_latt[['x_reg', 'y_reg']] = (
-            self.recip_latt.loc[:, 'h':'k'].to_numpy(dtype=float)
-            @ self.a_star
-            + self.origin
-        )
-
-        # Remove peaks that are too far from refined reciprocal lattice
-        self.recip_latt = self.recip_latt[norm(
-            self.recip_latt.loc[:, 'x_max':'y_max'].to_numpy(dtype=float)
-            - self.recip_latt.loc[:, 'x_reg':'y_reg'].to_numpy(dtype=float),
-            axis=1
-        ) < np.max([0.02*np.max(norm(a_star, axis=1)), 1])
-        ].reset_index(drop=True)
-
-        # Final refinement of reciprocal basis vectors on reduced set
-        M_star = self.recip_latt.loc[:, 'h':'k'].to_numpy(dtype=float)
-        xy = self.recip_latt.loc[:, 'x_max':'y_max'].to_numpy(dtype=float)
-
-        p0 = np.concatenate((a_star.flatten(), origin))
-
-        params = fit_lattice(p0, xy, M_star, fix_origin=fix_origin)
-
-        # Save final refinement data
-        self.a1_star = params[:2]
-        self.a2_star = params[2:4]
-        if len(params) == 6:
-            self.origin = params[4:]
-        else:
-            self.origin = origin
-
-        self.a_star = np.array([self.a1_star, self.a2_star])
-
-        self.recip_latt[['x_reg', 'y_reg']] = (
+        self.recip_latt[['x_ref', 'y_ref']] = (
             self.recip_latt.loc[:, 'h':'k'].to_numpy(dtype=float)
             @ self.a_star
             + self.origin
@@ -1441,22 +1783,22 @@ class MeasureLattice:
         ratio = norm(self.a1_star)/norm(self.a2_star)
 
         if verbose:
-            print(f'Reciproal lattice angle (degrees): {theta :.{5}f}')
-            print(f'Reciproal vector ratio (a1*/a2*): {ratio :.{6}f}')
+            print(f'Reciproal lattice angle (degrees): {theta :.{3}f}')
+            print(f'Reciproal vector ratio (a1*/a2*): {ratio :.{5}f}')
 
         # Plot refined basis
         if show_fit:
             fig2, ax = plt.subplots(figsize=(10, 10))
-            ax.imshow(display_im, cmap='plasma', vmin=vmin)
+            ax.imshow(display_im**0.2, cmap='plasma')
             ax.scatter(
-                self.recip_latt.loc[:, 'x_reg'].to_numpy(dtype=float),
-                self.recip_latt.loc[:, 'y_reg'].to_numpy(dtype=float),
+                self.recip_latt.loc[:, 'x_ref'].to_numpy(dtype=float),
+                self.recip_latt.loc[:, 'y_ref'].to_numpy(dtype=float),
                 marker='+',
                 c='red'
             )
             ax.scatter(
-                self.recip_latt.loc[:, 'x_max'].to_numpy(dtype=float),
-                self.recip_latt.loc[:, 'y_max'].to_numpy(dtype=float),
+                self.recip_latt.loc[:, 'x_com'].to_numpy(dtype=float),
+                self.recip_latt.loc[:, 'y_com'].to_numpy(dtype=float),
                 marker='+',
                 c='black'
             )
@@ -1487,16 +1829,11 @@ class MeasureLattice:
                 head_length=3
             )
 
-            if self.datatype == 'image':
-                plot_window = np.max(
-                    np.abs(self.recip_latt.loc[:, 'x_reg':'y_reg'].to_numpy()
-                           - origin)) * 1.5
-
-                if plot_window > U:
-                    plot_window = U
-
-                ax.set_xlim(U - plot_window, U + plot_window)
-                ax.set_ylim(U - plot_window, U + plot_window)
+            if self.datatype == 'fft':
+                ax.set_xlim(np.min(self.recip_latt.loc[:, 'x_ref']) - 100,
+                            np.max(self.recip_latt.loc[:, 'x_ref']) + 100)
+                ax.set_ylim(np.max(self.recip_latt.loc[:, 'y_ref']) + 100,
+                            np.min(self.recip_latt.loc[:, 'y_ref']) - 100)
 
             ax.set_xticks([])
             ax.set_yticks([])
@@ -1506,6 +1843,7 @@ class MeasureLattice:
         self,
         n_superlatt=1,
         superlatt_order=(1,),
+        min_order=1,
         max_order=2,
         show_fit=True,
         verbose=True,
@@ -1536,10 +1874,8 @@ class MeasureLattice:
 
         """
 
-        n_superlatt = 3
-        superlatt_order = (1, 1, 1)
-        max_order = 2
-        origin = None
+        if min_order < 1:
+            min_order = 1
 
         if self.datatype == 'image':
             n_picks = n_superlatt
@@ -1565,11 +1901,11 @@ class MeasureLattice:
 
         if n_picks > 0:
             fig, ax = plt.subplots(figsize=(10, 10))
-            ax.imshow(display_im, cmap='gray', vmin=vmin)
+            ax.imshow(display_im, cmap='plasma', vmin=vmin)
             ax.scatter(xy[:, 0], xy[:, 1], c='black', marker='+')
             ax.scatter(
-                self.recip_latt.loc[:, 'x_reg'],
-                self.recip_latt.loc[:, 'y_reg'],
+                self.recip_latt.loc[:, 'x_ref'],
+                self.recip_latt.loc[:, 'y_ref'],
                 ec='white',
                 fc='none',
                 marker='o',
@@ -1609,7 +1945,7 @@ class MeasureLattice:
         inds = np.argmin(norm(vects, axis=2), axis=1)
         basis_picks_xy = xy[inds, :]
 
-        if ((self.datatype == 'dp') & (origin is None)):
+        if self.datatype == 'dp':
             origin = basis_picks_xy[0, :]
 
         a_4_star = np.array([
@@ -1618,7 +1954,7 @@ class MeasureLattice:
         ])
 
         super_latt_indices = np.array([
-            i for i in range(-max_order, max_order+1) if i != 0
+            i for i in range(-max_order, max_order+1) if np.abs(i) >= min_order
         ])
 
         # Make array of all superlattice reflection vectors to max_order
@@ -1629,14 +1965,14 @@ class MeasureLattice:
         ])
 
         # Record the reflection order for each vector
-        q_order = np.identity(3)[:, :, None] * super_latt_indices
+        q_order = np.identity(n_superlatt)[:, :, None] * super_latt_indices
         q_order = np.concatenate([
             q_order[:, :, i]
             for i in range(q_order.shape[-1])
         ])
 
         # Get all superlattice reflection positions from all Bragg peaks
-        xy_bragg = self.recip_latt[['x_reg', 'y_reg']].to_numpy()
+        xy_bragg = self.recip_latt[['x_ref', 'y_ref']].to_numpy()
         q_pos = np.concatenate([
             q_vects + bragg_peak
             for bragg_peak in xy_bragg
@@ -1653,14 +1989,14 @@ class MeasureLattice:
         k_inds = np.concatenate([[k_ind] * q_vects.shape[0]
                                  for k_ind in k_inds])
 
-        q_keys = [f'q{i+1}' for i in range(3)]
+        q_keys = [f'q{i+1}' for i in range(n_superlatt)]
         q_order = np.concatenate([q_order] * xy_bragg.shape[0]).T
 
         self.recip_suplatt = pd.DataFrame({
             'h': h_inds,
             'k': k_inds,
-            'x_reg': q_pos[:, 0],
-            'y_reg': q_pos[:, 1],
+            'x_ref': q_pos[:, 0],
+            'y_ref': q_pos[:, 1],
             'x_max': [xy[ind, 0] for ind in inds],
             'y_max': [xy[ind, 1] for ind in inds],
         })
@@ -1671,7 +2007,7 @@ class MeasureLattice:
         # Remove peaks that are too far from initial reciprocal lattice
         self.recip_suplatt = self.recip_suplatt[norm(
             self.recip_suplatt.loc[:, 'x_max':'y_max'].to_numpy(dtype=float)
-            - self.recip_suplatt.loc[:, 'x_reg':'y_reg'].to_numpy(dtype=float),
+            - self.recip_suplatt.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float),
             axis=1
         ) < 0.1*np.max(norm(a_4_star, axis=1))
         ].reset_index(drop=True)
@@ -1679,7 +2015,7 @@ class MeasureLattice:
         # Refine reciprocal basis vectors
         M_star = self.recip_suplatt.loc[:, 'h': 'k'].to_numpy(dtype=float)
 
-        xy_bragg = M_star @ self.a_star + self.origin
+        xy_bragg = M_star @ basis_vects + self.origin
 
         q_vect_xy = self.recip_suplatt.loc[:, 'x_max': 'y_max'
                                            ].to_numpy(dtype=float) - xy_bragg
@@ -1694,7 +2030,7 @@ class MeasureLattice:
         # Save data and report key values
         self.a_4_star = params[:n_superlatt*2].reshape((n_superlatt, 2))
 
-        self.recip_suplatt[['x_reg', 'y_reg']] = (
+        self.recip_suplatt[['x_ref', 'y_ref']] = (
             q_order @ self.a_4_star + xy_bragg
         )
 
@@ -1788,10 +2124,10 @@ class MeasureLattice:
                 )
 
             if self.datatype == 'image':
-                ax.set_xlim(np.min(self.recip_suplatt.loc[:, 'x_reg']) - 100,
-                            np.max(self.recip_suplatt.loc[:, 'x_reg']) + 100)
-                ax.set_ylim(np.max(self.recip_suplatt.loc[:, 'y_reg']) + 100,
-                            np.min(self.recip_suplatt.loc[:, 'y_reg']) - 100)
+                ax.set_xlim(np.min(self.recip_suplatt.loc[:, 'x_ref']) - 100,
+                            np.max(self.recip_suplatt.loc[:, 'x_ref']) + 100)
+                ax.set_ylim(np.max(self.recip_suplatt.loc[:, 'y_ref']) + 100,
+                            np.min(self.recip_suplatt.loc[:, 'y_ref']) - 100)
 
             ax.set_xticks([])
             ax.set_yticks([])

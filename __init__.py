@@ -36,9 +36,15 @@ from SingleOrigin.utils import (
     write_image_array_to_tif,
     band_pass_filter,
     fast_rotate_90deg,
+    rotation_matrix,
+    rotate_xy,
+    rotate_image_kde,
     std_local,
     binary_find_largest_rectangle,
     binary_find_smallest_rectangle,
+    plane_2d,
+    plane_ss,
+    plane_fit,
     fft_square,
     hann_2d,
     get_fft_pixel_size,
@@ -57,6 +63,10 @@ from SingleOrigin.utils import (
     cft,
     find_ewpc_peak,
     get_ewpc,
+    get_ewic,
+    center_image_point,
+    find_dp_center_flip,
+    find_dp_center_ewicmin,
     pcf_radial,
     get_vpcf,
     get_vpcf_peak_params,
@@ -66,6 +76,7 @@ from SingleOrigin.utils import (
     disp_vect_sum_squares,
     fit_lattice,
     fft_amplitude_area,
+    quickplot,
 )
 
 from SingleOrigin.cell_transform import UnitCell
@@ -74,7 +85,5 @@ from SingleOrigin.find_atom_columns import (
     HRImage,
     AtomicColumnLattice,
 )
-
-from SingleOrigin.reciprocal_lattice_analyzer import ReciprocalImage
 
 from SingleOrigin.measure_lattice import MeasureLattice

@@ -15,7 +15,6 @@
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see https://www.gnu.org/licenses"""
 
-
 import copy
 import time
 from tqdm import tqdm
@@ -58,12 +57,13 @@ from scipy.ndimage import (
     binary_erosion,
 )
 
-from skimage.draw import polygon2mask
+from skimage.draw import polygon2mask, polygon
 from skimage.transform import (downscale_local_mean, rescale)
 from skimage.morphology import erosion
 
 from SingleOrigin.utils import (
     image_norm,
+    linearKDE_2D,
     img_ellip_param,
     gaussian_2d,
     fit_gaussian_ellip,
@@ -75,7 +75,11 @@ from SingleOrigin.utils import (
     fft_square,
     get_vpcf,
     fit_lattice,
-    get_feature_size
+    get_feature_size,
+    rotation_matrix,
+    rotate_xy,
+    rotation_angle_bt_vectors,
+    quickplot,
 )
 
 # %%
@@ -255,8 +259,10 @@ class HRImage:
         elif align_basis == 'a2':
             align_vect = self.latt_dict[lattice_to_align].a2
 
+        self.latt_dict[lattice_to_align]
+
         '''Find the rotation angle and direction'''
-        angle = np.arctan2(align_vect[1], align_vect[0])
+        angle = np.degrees(np.arctan2(align_vect[1], align_vect[0]))
         if align_dir == 'right':
             pass
         elif align_dir == 'up':
@@ -270,22 +276,21 @@ class HRImage:
                 "align_dir must be 'right' or 'left' or 'up' or 'down'"
             )
 
-        print('Rotation angle:', np.degrees(angle))
+        print('Rotation angle:', angle)
 
-        rot_.image = rotate(rot_.image, np.degrees(angle))
+        rot_.image = rotate(rot_.image, angle)
         [rot_.h, rot_.w] = rot_.image.shape
         rot_.fft = fft_square(rot_.image)
 
-        lattice_dict = {}
         for key, lattice in self.latt_dict.items():
-            lattice_dict[key] = copy.deepcopy(lattice)
-            lattice_rot = lattice_dict[key]
+            key += '_rot'
+            rot_.latt_dict[key] = copy.deepcopy(lattice)
+            lattice_rot = rot_.latt_dict[key]
 
             lattice_rot.image = rot_.image
             lattice_rot.roi_mask = rotate(lattice_rot.roi_mask,
-                                          np.degrees(angle))
-            # lattice_rot.peak_masks = None
-            # lattice_rot.group_masks = None
+                                          angle)
+
             lattice_rot.at_cols_uncropped = None
 
             '''Translation of image center due to increased image array size
@@ -297,53 +302,36 @@ class HRImage:
             )
             '''Find the origin-shifted rotation matrix for transforming atomic
                 column position data'''
-            dir_struct_matrix = np.array(
-                [[np.cos(angle), np.sin(angle), 0],
-                 [-np.sin(angle), np.cos(angle), 0],
-                 [0, 0, 1]]
-            )
-            tau = np.array(
-                [[1, 0, (self.image.shape[1]-1)/2],
-                 [0, 1, (self.image.shape[0]-1)/2],
-                 [0, 0, 1]]
-            )
-            tau_ = np.array(
-                [[1, 0, -(self.image.shape[1]-1)/2],
-                 [0, 1, -(self.image.shape[0]-1)/2],
-                 [0, 0, 1]]
-            )
-            dir_struct_matrix = tau @ dir_struct_matrix @ tau_
 
-            xy_fit = np.array(np.append(
-                lattice_rot.at_cols.loc[:, 'x_fit':'y_fit'].to_numpy(
-                    dtype=float),
-                np.ones((lattice_rot.at_cols.shape[0], 1)),
-                axis=1)
-            ).T
+            xy_fit = lattice_rot.at_cols.loc[:, 'x_fit':'y_fit'].to_numpy(
+                dtype=float)
 
-            lattice_rot.at_cols[['x_fit', 'y_fit']] = (
-                (dir_struct_matrix @ xy_fit).T[:, :2] + origin_shift
-            )
+            rotation_origin = (np.array(self.image.shape)-1)/2
 
-            xy_ref = np.append(
-                lattice_rot.at_cols.loc[:, 'x_ref':'y_ref'].to_numpy(
-                    dtype=float),
-                np.ones((lattice_rot.at_cols.shape[0], 1)),
-                axis=1).T
+            lattice_rot.at_cols[['x_fit', 'y_fit']] = \
+                rotate_xy(xy_fit, angle, rotation_origin) \
+                + origin_shift
 
-            lattice_rot.at_cols[['x_ref', 'y_ref']] = (
-                (dir_struct_matrix @ xy_ref).T[:, :2] + origin_shift)
+            xy_ref = lattice_rot.at_cols.loc[:, 'x_ref':'y_ref'].to_numpy(
+                dtype=float)
 
-            [lattice_rot.x0, lattice_rot.y0] = list((
-                np.array([lattice_rot.x0, lattice_rot.y0, 1], ndmin=2)
-                @ dir_struct_matrix.T
-            )[0, 0:2] + origin_shift[0, :]
-            )
+            lattice_rot.at_cols[['x_ref', 'y_ref']] = \
+                rotate_xy(xy_ref, angle, rotation_origin) \
+                + origin_shift
+
+            [lattice_rot.x0, lattice_rot.y0] = (rotate_xy(
+                np.array([[lattice_rot.x0, lattice_rot.y0]]),
+                angle,
+                rotation_origin
+            ) + origin_shift).squeeze()
 
             '''Transform data'''
+            tmat = rotation_matrix(angle, rotation_origin)
+            print(tmat)
+
             lattice_rot.dir_struct_matrix = (
                 lattice_rot.dir_struct_matrix
-                @ dir_struct_matrix[0:2, 0:2].T
+                @ tmat[0:2, 0:2].T
             )
 
             lattice_rot.a1 = lattice_rot.dir_struct_matrix[0, :]
@@ -358,15 +346,13 @@ class HRImage:
                 np.linalg.inv(lattice_rot.dir_struct_matrix).T
             )[1, :]
 
-            lattice_rot.at_cols.theta += np.degrees(angle)
+            lattice_rot.at_cols.theta += angle
             lattice_rot.at_cols.theta -= np.trunc(
                 lattice_rot.at_cols.theta.to_numpy(dtype=float).astype('float')
                 / 90) * 180
             lattice_rot.angle = angle
 
-            rot_.latt_dict = lattice_dict
-
-        return rot_, lattice_dict
+        return rot_
 
     def plot_atom_column_positions(
             self,
@@ -1955,10 +1941,11 @@ class AtomicColumnLattice:
                                    [self.w-buffer, self.h-buffer],
                                    [buffer, self.h-buffer]]))
 
-        if self.sigma == None:
+        if self.sigma is None:
             self.sigma = get_feature_size(self.image)
 
-        LoG_sigma = self.sigma * 0.75
+        if LoG_sigma is None:
+            LoG_sigma = self.sigma * 0.75
 
         if mask is not None:
             self.roi_mask = mask
@@ -3098,6 +3085,124 @@ class AtomicColumnLattice:
         print(f'R-squared of all atom column fits: {R_sq :.{6}f} \n')
 
         return fig
+
+    def get_avg_unitcell(self, upsample=1, supercell=(1, 1), plot=True):
+        """
+        Get the average unitcell based on the registered lattice.
+
+        Parameters
+        ----------
+        upsample : int
+            Factor by which to upsample the output unit cell.
+            *** Note: upsampling is not currently implimented in a rigurous way
+            and results may be less than desirable. Not advised to upsample
+            more than 2x.
+
+        supercell : two-tuple
+            The number of basic unit cells to include in the output averaged
+            unitcell along the two basis vectors.
+
+        plot : bool
+            Whether to plot the result.
+
+        Returns
+        -------
+        H : array
+            The resulting average unitcell.
+
+        """
+
+        # Get U,V combinations for all unit cells
+        uv = np.unique(
+            np.floor(self.at_cols.loc[:, 'u':'v'].to_numpy()),
+            axis=0
+        )
+
+        # Lattice vector information
+        dsm = self.dir_struct_matrix * np.array([supercell]).T
+        a1 = dsm[0]
+        a2 = dsm[1]
+
+        a1unit = a1 / norm(a1)
+        a2unit = a2 / norm(a2)
+
+        # Get origin point for each lattice cell
+        x0y0 = uv @ dsm + [self.x0, self.y0]
+
+        # Mask off the image
+        im = self.image * self.roi_mask
+
+        # Get values for each unit cell, subtracting origin coordinates
+        x = []
+        y = []
+        z = []
+
+        print('Getting unit cell data')
+        for x0, y0 in tqdm(x0y0):
+            xverts = [
+                x0 - 1.5*a1unit[0] - 1.5*a2unit[0],
+                x0 + a1[0] + 1.5*a1unit[0] - 1.5*a2unit[0],
+                x0 + a1[0] + 1.5*a1unit[0] + a2[0] + 1.5*a2unit[0],
+                x0 + a2[0] + 1.5*a2unit[0] - 1.5*a1unit[0]
+            ]
+
+            yverts = [
+                y0 - 1.5*a1unit[1] - 1.5*a2unit[1],
+                y0 + a1[1] + 1.5*a1unit[1] - 1.5*a2unit[1],
+                y0 + a1[1] + 1.5*a1unit[1] + a2[1] + 1.5*a2unit[1],
+                y0 + a2[1] + 1.5*a2unit[1] - 1.5*a1unit[1]
+            ]
+
+            yind, xind = polygon(yverts, xverts, im.shape)
+
+            imint = im[yind, xind]
+
+            unmasked_data = np.nonzero(imint)
+            imint = np.take(imint, unmasked_data).flatten()
+            xind = np.take(xind, unmasked_data
+                           ).flatten() - x0
+            yind = np.take(yind, unmasked_data
+                           ).flatten() - y0
+
+            z += imint.tolist()
+            x += xind.tolist()
+            y += yind.tolist()
+
+        # Rotate coordinates so a1 is horizontal
+        xy = np.vstack([x, y]).T
+
+        theta = rotation_angle_bt_vectors([1, 0], a1)
+
+        xy = rotate_xy(xy, theta, [0, 0])
+
+        a1 = rotate_xy(a1, theta, [0, 0]).squeeze()
+
+        a2 = rotate_xy(a2, theta, [0, 0]).squeeze()
+
+        dsm = np.vstack([a1, a2])
+
+        x = xy[:, 0]
+        y = xy[:, 1]
+
+        h = np.max([dsm[:, 1]]) - np.min(dsm[:, 1]) + 1
+        w = np.max([dsm[:, 0]]) - np.min(dsm[:, 0]) + 1
+
+        data_coords = np.vstack([x, y]).T
+
+        print('Getting density estimate')
+        H = linearKDE_2D(
+            data_coords,
+            xlim=(np.min(dsm[:, 0]), np.min(dsm[:, 0]) + w),
+            ylim=(np.min(dsm[:, 1]), np.min(dsm[:, 1]) + h),
+            d=1/upsample,
+            r=upsample,
+            weights=z)
+
+        quickplot(H, pixel_size=self.pixel_size_est/10, pixel_unit='nm')
+
+        self.mean_unitcell = H
+
+        return H
 
     def get_vpcfs(
         self,
