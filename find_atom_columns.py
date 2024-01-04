@@ -3198,7 +3198,8 @@ class AtomicColumnLattice:
             r=upsample,
             weights=z)
 
-        quickplot(H, pixel_size=self.pixel_size_est/10, pixel_unit='nm')
+        if plot:
+            quickplot(H, pixel_size=self.pixel_size_est/10, pixel_unit='nm')
 
         self.mean_unitcell = H
 
