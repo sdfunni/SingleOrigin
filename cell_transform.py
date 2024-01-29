@@ -362,6 +362,24 @@ class UnitCell():
         self.alpha_t = np.identity(3)
         self.path = path
 
+    def uc_volume(self):
+        """Calcualte volume of the unit cell
+
+        Parameters
+        ----------
+        None.
+
+        Returns
+        -------
+        volume : scalar
+            The volume of the unit cell in Angstroms^3.
+
+        """
+
+        volume = np.cross(self.a_3d[0], self.a_3d[1]) @ self.a_3d[2]
+
+        return volume
+
     def transform_basis(
             self,
             a1_,

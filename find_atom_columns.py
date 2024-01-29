@@ -167,7 +167,7 @@ class HRImage:
             image,
             pixel_size_cal=None,
     ):
-        self.image = copy.deepcopy(image)
+        self.image = copy.deepcopy(image.astype(np.float32))
         self.h, self.w = self.image.shape
         self.pixel_size_cal = pixel_size_cal
         self.latt_dict = {}
@@ -1454,13 +1454,12 @@ class AtomicColumnLattice:
         self.pixel_size_est = self.get_est_pixel_size()
 
     def get_roi_mask_std(
-            self,
-            r=4,
-            # sigma=8,
-            thresh=0.5,
-            fill_holes=True,
-            buffer=10,
-            show_mask=True
+        self,
+        r=4,
+        thresh=0.5,
+        fill_holes=True,
+        buffer=10,
+        show_mask=True
     ):
         """Get mask for specific region of image based on local standard
         deviation.
@@ -1477,10 +1476,6 @@ class AtomicColumnLattice:
             Kernel radius. STD is calculated in a square kernel of size
             2*r + 1.
             Default: 4.
-
-        sigma : scalar
-            Gaussian blur to be added to std image prior to thresholding.
-            Default: 8.
 
         thresh : scalar
             Thresholding level for binarizing the result into a mask.
@@ -1508,10 +1503,11 @@ class AtomicColumnLattice:
 
         if self.sigma is None:
             self.sigma = get_feature_size(self.image)
+            sigma = self.sigma
 
         image_std = image_norm(gaussian_filter(
             std_local(self.image, r),
-            sigma=self.sigma)
+            sigma=sigma)
         )
         new_mask = np.where(image_std > thresh, 1, 0)
         if fill_holes:
@@ -3108,7 +3104,7 @@ class AtomicColumnLattice:
         Returns
         -------
         H : array
-            The resulting average unitcell.
+            The resulting average unitcell. Also stored in self.avg_unitcell.
 
         """
 
@@ -3190,18 +3186,18 @@ class AtomicColumnLattice:
         data_coords = np.vstack([x, y]).T
 
         print('Getting density estimate')
-        H = linearKDE_2D(
+        H = image_norm(linearKDE_2D(
             data_coords,
             xlim=(np.min(dsm[:, 0]), np.min(dsm[:, 0]) + w),
             ylim=(np.min(dsm[:, 1]), np.min(dsm[:, 1]) + h),
             d=1/upsample,
             r=upsample,
-            weights=z)
+            weights=z))
 
         if plot:
             quickplot(H, pixel_size=self.pixel_size_est/10, pixel_unit='nm')
 
-        self.mean_unitcell = H
+        self.avg_unitcell = H
 
         return H
 

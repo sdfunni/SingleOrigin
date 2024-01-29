@@ -10,7 +10,8 @@ Incorporates a number of different methods to visualize the atom column position
 4) Plot inter-atom column distances (or distance deviations from the reference lattice) corresponding to a vector (or vectors) in a vPCF.
 
 Secondary module(s) for diffraction and 4D STEM analysis is under development. Currently operational methods are:
--Exit wave power cepstrum (EWPC) strain mapping is implimented in the Datacube class. [Padgett, E. et al. The exit-wave power-cepstrum transform for scanning nanobeam electron diffraction: robust strain mapping at subnanometer resolution and subpicometer precision. Ultramicroscopy 214, (2020)]
--Reciprocal lattice measurements for phase identification from single diffraction patterns or HRSTEM FFTs can also be made using the ReciprocalLattice class.
+-Strain mapping is implimented in the Datacube class. [Padgett, E. et al. The exit-wave power-cepstrum transform for scanning nanobeam electron diffraction: robust strain mapping at subnanometer resolution and subpicometer precision. Ultramicroscopy 214, (2020)]
+-Reciprocal lattice measurements from single diffraction patterns 4D STEM datasets or HRSTEM FFTs can be made using the ReciprocalLattice class.
+
 
 See example script files at: https://github.com/sdfunni/SingleOrigin 

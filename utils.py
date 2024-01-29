@@ -50,7 +50,6 @@ from scipy.ndimage import (
 )
 from scipy.interpolate import make_interp_spline
 from scipy.fft import (fft2, fftshift)
-from scipy.stats import gaussian_kde
 
 from PyQt5.QtWidgets import QFileDialog as qfd
 
@@ -70,10 +69,6 @@ from skimage.draw import polygon2mask
 
 from skimage.measure import (moments, moments_central)
 from skimage.feature import hessian_matrix_det
-
-# from sklearn.neighbors import KernelDensity
-
-from KDEpy import FFTKDE, NaiveKDE, TreeKDE
 
 from tifffile import imwrite
 
@@ -383,14 +378,38 @@ def elec_wavelength(V=200e3):
 
     """
 
-    m_e = 9.109e-31  # electron mass (kg)
+    m_0 = 9.109e-31  # electron rest mass (kg)
     e = 1.602e-19  # elementary charge (C)
     c = 2.997e8  # speed of light (m/s)
     h = 6.626e-34  # Plank's constant (Nms)
 
-    wavelength = h/(2*m_e*e*V*(1+e*V/(2*m_e*c**2)))**.5
+    wavelength = h/(2*m_0*e*V*(1+e*V/(2*m_0*c**2)))**.5
 
     return wavelength
+
+
+def elec_velocity(V=200e3):
+    """Electron veolcity as a function of accelerating voltage
+
+    Parameters
+    ----------
+    V : int or float
+         Accelerating voltage in V.
+
+    Returns
+    -------
+    wavelength : float
+        Electron veolcity in m/s.
+
+    """
+
+    m_0 = 9.109e-31  # electron rest mass (kg)
+    e = 1.602e-19  # elementary charge (C)
+    c = 2.997e8  # speed of light (m/s)
+
+    v = c * (1 - 1/(1+e*V/(m_0*c**2))**2)**0.5
+
+    return v
 
 
 # %%
@@ -612,7 +631,6 @@ def load_image(
             else:
                 dset_ind = dsets_to_load_inds[i]
                 images[dset_] = np.array(emd[dset_ind])
-                print(images[dset_].shape)
 
             # Change DPC vector images from complex type to an image stack
             if images[dset_].dtype == 'complex64':
@@ -1023,7 +1041,7 @@ def linearKDE_2D(
     ylim : two-tuple of scalars
         The y limits of the resulting density estimate.
 
-    d : scalar
+    d : positive scalar
         The bin width.
 
     w : int
@@ -1070,39 +1088,45 @@ def linearKDE_2D(
     if weights is None:
         weights = np.ones(coords.shape[0])
 
-    # Get relative pixel shift values
+    # Get relative pixel shift values for binning
     xs = [i for i in range(-r, r, 1)]
     ys = [i for i in range(-r, r, 1)]
 
     # Get reference pixel for each data point
     xyC = np.ceil(coords / d) * d
 
-    # Get x and y position weights for the floor pixels
+    # Calculate eash pixel shifted histogram and sum together
     for j in ys:
         for i in xs:
-            # Find bin indices for the shift
+            # Find bin indices for the current shift
             xyB = xyC + np.array([[i*d, j*d]])
 
-            # Find distance weighting for high sampling:
-            # Method results in density being slightly off from 1,
-            # but close for sufficient sampling (i.e. r >= 2)
-
+            # Find distance weighting for high sampling rate:
+            # Method results in total density per data point deviating slightly
+            # from 1, but close with sufficient sampling (i.e. r >= 2)
+            # This method is a KDE using a linear kernel with euclidian
+            # distance metric.
             if r > 1:
                 dW = 3/np.pi * (1 - norm(xyB - coords, axis=1) / (d*r)) / r**2
-                # print(type(dW))
 
             # Find distance weighting if low sampling (i.e. r == 1):
-                # Method ensures density for each data point is 1
+            # Method is effectively a reverse bilineaer interpolation.
+            # That is, it distributes the density from each datapoint over four
+            # nearest neighbor pixels using bilinear weighting. This ensures
+            # the density contribution from each data point is exactly 1.
             elif r == 1:
                 dW = np.prod(1 - np.abs(xyB - coords) / (d*r), axis=1) / r**2
+
+            else:
+                raise Exception(
+                    "'r' must be >= 1"
+                )
 
             H += np.histogram2d(
                 xyB[:, 1], xyB[:, 0],
                 bins=[yedges, xedges],
                 weights=dW * weights
             )[0]
-
-    H = image_norm(H)
 
     if return_binedges:
         return H, xedges, yedges
@@ -1334,14 +1358,14 @@ def rotate_image_kde(
          np.int(np.ceil(np.max(coords[:, 0])) + 1)),
         np.fliplr(vertices))
 
-    image_rot = NaiveKDE(kernel='gaussian', bw=bandwidth
-                         ).fit(coords_, weights).evaluate(coords)
+    # TODO: Use my KDE fumction instead
+    print('Need to update with my KDE function... This method does not currently work.')
 
-    image_rot = np.reshape(image_rot, (h, w))
+    # image_rot = np.reshape(image_rot, (h, w))
 
-    image_rot = np.where(mask, image_rot, fill_value)
+    # image_rot = np.where(mask, image_rot, fill_value)
 
-    return image_rot
+    # return image_rot
 
 
 def std_local(image, r):
@@ -3888,7 +3912,6 @@ def fit_lattice(p0, xy, M, fix_origin=False):
     if fix_origin is True:
         params = (lstsq(M, xy - x0y0, rcond=-1)[0]).flatten()
     else:
-        # TODO : use linalg.lstsq w/ origin shift to solve for unfixed origin
         params = minimize(
             disp_vect_sum_squares,
             p0,
