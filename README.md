@@ -1,7 +1,7 @@
 # SingleOrigin
 
 A Python module for crystallographic analysis of S/TEM data.
-Main module is for atomic column position finding intended for structural analysis of high resolution scanning transmission electron microscope images of crystalline lattices. The module uses 2D Gaussian fitting and automatically accounts for intensity overlap between closely spaced columns based on image morphology. Atom columns are initially found by registering a projectedreference lattice to the image based on a CIF of the the imaged structure (or a similar one).
+Main module is for atomic column position finding intended for structural analysis of high resolution scanning transmission electron microscope images of crystalline lattices. The module uses 2D Gaussian fitting and automatically accounts for intensity overlap between closely spaced columns based on image morphology. Atom columns are initially found by registering a projected reference lattice to the image based on a CIF of the the imaged structure (or a similar one).
 
 Incorporates a number of different methods to visualize the atom column positions:
 1) Diretly plotting the fitted positions.
@@ -10,8 +10,16 @@ Incorporates a number of different methods to visualize the atom column position
 4) Plot inter-atom column distances (or distance deviations from the reference lattice) corresponding to a vector (or vectors) in a vPCF.
 
 Secondary module(s) for diffraction and 4D STEM analysis is under development. Currently operational methods are:
--Strain mapping is implimented in the Datacube class. [Padgett, E. et al. The exit-wave power-cepstrum transform for scanning nanobeam electron diffraction: robust strain mapping at subnanometer resolution and subpicometer precision. Ultramicroscopy 214, (2020)]
--Reciprocal lattice measurements from single diffraction patterns 4D STEM datasets or HRSTEM FFTs can be made using the ReciprocalLattice class.
+-Strain mapping is implimented in the ReciprocalLattice class.
+-Reciprocal lattice measurements from single diffraction patterns 4D STEM datasets or HRSTEM FFTs can be made using the ReciprocalLattice class. Superlattice may also be measured.
 
+Installation:
+It is recommended to install by pip in a clean Python environment. SingleOrigin may be used in Spyder or Jupyter notebooks/lab. To install, activate your environment and run the following in a command line prompt if you downloaded the tarball:
 
-See example script files at: https://github.com/sdfunni/SingleOrigin 
+pip install "pathtofile/SingleOrigin-2.5.3.tar.gz"
+
+OR from PyPI:
+
+pip install SingleOrigin
+
+See example scripts and Jupyter-lab notebooks at: https://github.com/sdfunni/SingleOrigin 
