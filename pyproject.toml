@@ -40,8 +40,8 @@ dependencies = [
 # NOT have to specify this line.
 include-package-data = true
 
-[tool.setuptools.packages.find]
-where = ["src"]
+# [tool.setuptools.packages.find]
+# where = ["SingleOrigin"]
 
 [tool.setuptools.package-data]
 SingleOrigin = ["*.txt", "*.py"]
