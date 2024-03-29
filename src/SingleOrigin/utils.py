@@ -363,7 +363,7 @@ def TwoTheta(hkl, g, wavelength):
     return two_theta
 
 
-def elec_wavelength(V=200e3):
+def elec_wavelength(V):
     """Electron wavelength as a function of accelerating voltage
 
     Parameters
@@ -388,7 +388,7 @@ def elec_wavelength(V=200e3):
     return wavelength
 
 
-def elec_velocity(V=200e3):
+def elec_velocity(V):
     """Electron veolcity as a function of accelerating voltage
 
     Parameters
@@ -592,7 +592,7 @@ def load_image(
             dsets = np.array([emd[i].metadata.General.title
                               for i in range(len(emd))])
 
-            # print('Datasets found: ', ', '.join(dsets))
+            print('Datasets found: ', ', '.join(dsets))
 
             # Get list of all datasets to load if "all" specified.
             # Remove EDS datasets because they cause problems.

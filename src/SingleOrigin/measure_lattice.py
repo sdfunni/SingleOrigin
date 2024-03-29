@@ -21,7 +21,6 @@
     subpicometer precision. Ultramicroscopy 214, (2020).
     """
 
-# import warnings
 import psutil
 from tqdm import tqdm
 import copy
@@ -326,7 +325,9 @@ class ReciprocalLattice:
             peak, vmax (not considering the central EWPC peak). An individual
             peak must have a maximum > thresh * vmax to be detected.
 
-        window_size='auto',
+        window_size : scalar
+            Width of field of view in the picking window in pixels.
+            Default: 'auto'
 
         Returns
         -------
@@ -348,11 +349,11 @@ class ReciprocalLattice:
         # vmax will also be used as the upper limit of the imshow cmap.
         ewpc_thresh = np.where(
             self.ewpc_mean > self.ewpc_vmax,
-            0,
+            self.ewpc_vmax,
             self.ewpc_mean
         )
 
-        min_dist = get_feature_size(ewpc_thresh) * 1.5
+        min_dist = get_feature_size(ewpc_thresh) * 1
 
         # Detect peaks and get x,y coordinates
         peaks = detect_peaks(
@@ -363,8 +364,16 @@ class ReciprocalLattice:
 
         xy_peaks = np.fliplr(np.argwhere(peaks))
 
+        # Remove origin peak
+        xy_peaks = xy_peaks[norm(xy_peaks - self.origin, axis=1) > 2]
+
         if window_size == 'auto':
-            window_size = np.std(np.abs(xy_peaks - self.origin)) * 2
+            window_size = int(np.min(norm(xy_peaks - self.origin, axis=1)
+                                     ) * np.max(pick_basis_order)) * 5
+
+            if window_size > np.min([self.dp_h, self.dp_w]):
+                window_size = np.min([self.dp_h, self.dp_w])
+            print(window_size)
 
         if graphical_picking or (pick_labels is None):
             basis_picks = pick_points(
@@ -463,7 +472,7 @@ class ReciprocalLattice:
 
         theta = np.radians(self.dp_rotation)
         t = [time.time()]
-        m = self.ewpc_mean.shape[0] / 2
+        m = self.ewpc_mean.shape[0]  # / 2
         p0 = np.concatenate([self.basis.flatten(), self.origin]
                             ) / self.upsample_factor
 
@@ -790,7 +799,6 @@ class ReciprocalLattice:
 
             )
 
-            # cbar.ax.tick_params(labelsize=16)
             cbar.set_label(label=units[i], fontsize=20, fontweight='bold',
                            rotation='horizontal')
             axs[i].text(self.scan_w/50, self.scan_h/50,
@@ -798,14 +806,6 @@ class ReciprocalLattice:
                         size=24, fontweight='bold',
                         bbox=dict(facecolor='white', alpha=0.7, lw=0)
                         )
-
-            # if self.ref_region is not None:
-            #     dx = self.ref_region[0, 1] - self.ref_region[0, 0]
-            #     dy = self.ref_region[1, 0] - self.ref_region[1, 1]
-            #     corner = [self.ref_region[0, 0], self.ref_region[1, 1] - 1]
-
-            #     rect = Rectangle(corner, dx, dy, fill=False)
-            #     axs[i].add_patch(rect)
 
         if return_fig:
             return fig, axs
@@ -1006,41 +1006,52 @@ class ReciprocalLattice:
         axs = axs.flatten()
         plots = []
         for i, comp in enumerate(keys):
-            if (i == 0) & plot_strain_axes:
+            if (comp in ['exx', 'eyy']) & plot_strain_axes:
                 print('plotting strain axes')
                 axis_origin = [self.scan_w * strain_axes_origin[0],
                                self.scan_h * strain_axes_origin[1]]
+
+                ax_scale = 0.1 * np.min([self.scan_h, self.scan_w])
+
+                xxwidth = 1 if comp == 'exx' else 0.3
+                yywidth = 1 if comp == 'eyy' else 0.3
                 axs[i].arrow(
                     axis_origin[0],
                     axis_origin[1],
-                    self.strain_basis[0, 0],
-                    self.strain_basis[0, 1],
+                    *(ax_scale * self.strain_basis[0]
+                      / norm(self.strain_basis[0])),
                     fc='black',
                     ec='black',
-                    width=0.1,
-                    length_includes_head=True,
-                    # head_width=2,
+                    width=xxwidth,
+                    length_includes_head=False,
+                    head_width=int(xxwidth)*3,
                     # head_length=3,
                     label='1',
                 )
                 axs[i].arrow(
                     axis_origin[0],
                     axis_origin[1],
-                    self.strain_basis[1, 0],
-                    self.strain_basis[1, 1],
+                    *(ax_scale * self.strain_basis[1]
+                      / norm(self.strain_basis[1])),
                     fc='black',
                     ec='black',
-                    width=0.1,
-                    length_includes_head=True,
-                    # head_width=2,
+                    width=yywidth,
+                    length_includes_head=False,
+                    head_width=int(yywidth)*3,
                     # head_length=3,
                 )
-                axs[i].text(axis_origin[0]+self.strain_basis[0, 0] * 1.2,
-                            axis_origin[1]+self.strain_basis[0, 1] * 1.2,
-                            'xx')
-                axs[i].text(axis_origin[0]+self.strain_basis[1, 0] * 1.2,
-                            axis_origin[1]+self.strain_basis[1, 1] * 1.2,
-                            'yy')
+                # axs[i].text(axis_origin[0]+self.strain_basis[0, 0] * 1.2,
+                #             axis_origin[1]+self.strain_basis[0, 1] * 1.2,
+                #             'xx',
+                #             fontsize=20,
+                #             )
+
+                # axs[i].text(axis_origin[0]+self.strain_basis[1, 0] * 1.2,
+                #             axis_origin[1]+self.strain_basis[1, 1] * 1.2,
+                #             'yy',
+                #             fontsize=20,
+                #             va='top',
+                #             )
 
             units = r'$\circ$' if comp == 'theta' else '%'
             plots += [axs[i].imshow(
@@ -1083,6 +1094,24 @@ class ReciprocalLattice:
         return fig, axs
 
     def plot_dp_basis(self, dp_origin=None, basis_factor=[1, 1]):
+        """Plot the mean DP with measured basis vectors.
+
+        Parameters
+        ----------
+        dp_origin : 2-list or None
+            The coordinates of the direct beam or desired origin point. If
+            None, will use the pixel with maximum intensity as the origin.
+            Default: None
+        basis_factor : 2-list
+            The factors by which to scale the two basis vectors to check
+            alignment with higher order spots.
+            Default: [1, 1]
+
+        Returns
+        -------
+        None.
+
+        """"
 
         basis_factor = np.array(basis_factor, ndmin=2).T
 
@@ -1102,6 +1131,20 @@ class ReciprocalLattice:
         ax.legend()
 
     def plot_ewpc_basis(self, basis_factor=[1, 1]):
+        """Plot the mean EWPC with measured basis vectors.
+
+        Parameters
+        ----------
+        basis_factor : 2-list
+            The factors by which to scale the two basis vectors to check
+            alignment with higher order spots.
+            Default: [1, 1]
+
+        Returns
+        -------
+        None.
+
+        """"
 
         fig, ax = plot_basis(
             self.ewpc_mean,
@@ -1112,17 +1155,22 @@ class ReciprocalLattice:
             vmin=None)
         ax.legend()
 
-    def calibrate_dp(self, g1, g2, cif_path):
-        """Calibrate detector pixel size from EWPC basis vectors.
+    def calibrate_dp(self, g1, g2, cif_path=None):
+        """Calibrate detector pixel size from EWPC or DP Bragg basis.
 
         Parameters
         ----------
         g1, g2 : array-like of shape (3,)
             The [h,k,l] indices of the plane spacings described by the basis
-            vectors chosen for the EWPC analysis.
+            vectors chosen for the EWPC analysis. Best to use two vectors in
+            the same family (e.g. [100] & [010]). Otherwise, be careful to
+            specify with the same handedness and order as the two measured
+            vectors.
 
         cif_path : str
-            Path to the .cif file describing the evaluated structure.
+            Path to the .cif file describing the evaluated structure. If None,
+            will prompt to select a .cif file.
+            Default: None.
 
         Returns
         -------
@@ -1139,7 +1187,6 @@ class ReciprocalLattice:
         """
 
         alpha_meas = copy.copy(self.basis_mean_recip_px)
-        print(self.basis_mean_recip_px)
 
         uc = UnitCell(cif_path)
 
@@ -1151,12 +1198,7 @@ class ReciprocalLattice:
 
         # Make sure basis systems have the same handedness
         if np.cross(alpha_meas[0], alpha_meas[1]) < 0:
-            # alpha_meas[0] *= -1
             alpha_meas = np.flipud(alpha_meas)
-
-        if np.cross(a_star_2d[0], a_star_2d[1]) < 0:
-            # alpha_meas[0] *= -1
-            a_star_2d = np.flipud(a_star_2d)
 
         theta1 = np.radians(rotation_angle_bt_vectors(
             alpha_meas[0], a_star_2d[0])
@@ -1164,7 +1206,6 @@ class ReciprocalLattice:
         theta2 = np.radians(rotation_angle_bt_vectors(
             alpha_meas[1], a_star_2d[1])
         )
-        print(theta1, theta2)
         theta = (theta1 + theta2) / 2
 
         rot_mat = np.array([[np.cos(theta), -np.sin(theta)],
@@ -1187,6 +1228,9 @@ class ReciprocalLattice:
         thresh_factor_std=1,
         detection_thresh='auto',
         peak_max_thresh_factor=0.1,
+        max_order=5,
+        verbose=True,
+        show_fit=True,
     ):
         """Find peaks in a reciprocal lattice image (i.e. FFT or diffraction
         pattern) and get the reciprocal lattice parameters.
@@ -1230,7 +1274,7 @@ class ReciprocalLattice:
 
         peak_max_thresh_factor : scalar
             Thresholding factor applied to the watershed region of each peak.
-            Threshold value for each peak determined as: 
+            Threshold value for each peak determined as:
                 peak_max_thresh_factor * (peak_max - edge_max) + edge_max.
             Where edge_max is the maximum value of the edge pixels of the
             watershed region and peak_max is the maximum of the region. This
@@ -1278,7 +1322,7 @@ class ReciprocalLattice:
             )
 
         if detection_thresh == 'auto':
-            detection_thresh = np.mean(display_im) * 2
+            detection_thresh = np.mean(display_im)
 
         h, w = display_im.shape
 
@@ -1355,7 +1399,7 @@ class ReciprocalLattice:
             com = np.flip(center_of_mass(display_im*mask))
             peaks.loc[i, ['x_com', 'y_com']] = com
 
-        xy = peaks.loc[:, 'x_com':'y_com'].to_numpy(dtype=float)
+        xy = peaks.loc[:, 'x':'y'].to_numpy(dtype=float)
 
         fig, ax = plt.subplots(figsize=(10, 10))
         ax.imshow((display_im)**(0.5), cmap='gray')
@@ -1422,22 +1466,22 @@ class ReciprocalLattice:
             'k': recip_latt_indices[:, 1],
             'x_ref': xy_ref[:, 0],
             'y_ref': xy_ref[:, 1],
-            'x_com': [xy[ind, 0] for ind in inds],
-            'y_com': [xy[ind, 1] for ind in inds],
+            'x_max': [xy[ind, 0] for ind in inds],
+            'y_max': [xy[ind, 1] for ind in inds],
             'mask_ind': inds
         })
 
         # Remove peaks that are too far from initial reciprocal lattice
         self.recip_latt = self.recip_latt[norm(
-            self.recip_latt.loc[:, 'x_com':'y_com'].to_numpy(dtype=float)
+            self.recip_latt.loc[:, 'x_max':'y_max'].to_numpy(dtype=float)
             - self.recip_latt.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float),
             axis=1
-        ) < 0.1*np.max(norm(a_star, axis=1))
+        ) < np.max([0.1*np.max(norm(a_star, axis=1)), 1.5])
         ].reset_index(drop=True)
 
         # Refine reciprocal basis vectors
         M_star = self.recip_latt.loc[:, 'h':'k'].to_numpy(dtype=float)
-        xy = self.recip_latt.loc[:, 'x_com':'y_com'].to_numpy(dtype=float)
+        xy = self.recip_latt.loc[:, 'x_max':'y_max'].to_numpy(dtype=float)
 
         p0 = np.concatenate((a_star.flatten(), origin))
 
@@ -1483,8 +1527,8 @@ class ReciprocalLattice:
                 c='red'
             )
             ax.scatter(
-                self.recip_latt.loc[:, 'x_com'].to_numpy(dtype=float),
-                self.recip_latt.loc[:, 'y_com'].to_numpy(dtype=float),
+                self.recip_latt.loc[:, 'x_max'].to_numpy(dtype=float),
+                self.recip_latt.loc[:, 'y_max'].to_numpy(dtype=float),
                 marker='+',
                 c='black'
             )
