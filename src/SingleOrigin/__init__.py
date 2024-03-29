@@ -16,7 +16,7 @@
     along with this program.  If not, see https://www.gnu.org/licenses"""
 
 
-__version__ = "2.5.4"
+__version__ = "2.5.5"
 
 from SingleOrigin.utils import (
     metric_tensor,
