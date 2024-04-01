@@ -723,19 +723,25 @@ class ReciprocalLattice:
             sharey=True,
             figsize=figsize,
             tight_layout=True,
-            # layout='constrained',
+            layout='constrained',
         )
         axs = axs.flatten()
         plots = []
 
         for i, comp in enumerate(self.lattice_maps.keys()):
             decimals = 2 if i < 2 else 1
-            vmin = np.around(np.nanmin(
-                np.where(mask, self.lattice_maps[comp], np.nan)),
-                decimals)
-            vmax = np.around(np.nanmax(
-                np.where(mask, self.lattice_maps[comp], np.nan)),
-                decimals)
+
+            masked = np.where(mask, self.lattice_maps[comp], np.nan)
+
+            vmid = np.around(np.nanmean(masked), decimals)
+            vstd = np.around(np.nanstd(masked), decimals)
+            vmin = np.around(np.nanmin(masked), decimals)
+            vmax = np.around(np.nanmax(masked), decimals)
+
+            vdiff = np.min([3*vstd, vmid-vmin, vmax-vmid])
+
+            vmin = vmid - vdiff
+            vmax = vmid + vdiff
 
             if i == 0:
                 size = np.mean(norm(self.basis_mean_real_px, axis=1))
@@ -804,7 +810,7 @@ class ReciprocalLattice:
             axs[i].text(self.scan_w/50, self.scan_h/50,
                         labels[i], ha='left', va='top',
                         size=24, fontweight='bold',
-                        bbox=dict(facecolor='white', alpha=0.7, lw=0)
+                        bbox=dict(facecolor='white', alpha=0.8, lw=0)
                         )
 
         if return_fig:
@@ -1005,41 +1011,58 @@ class ReciprocalLattice:
         )
         axs = axs.flatten()
         plots = []
+
+        ax_scale = 0.1 * np.min([self.scan_h, self.scan_w])
+        axes_mag = (ax_scale * self.strain_basis
+                    / norm(self.strain_basis, axis=1))
+
         for i, comp in enumerate(keys):
             if (comp in ['exx', 'eyy']) & plot_strain_axes:
                 print('plotting strain axes')
                 axis_origin = [self.scan_w * strain_axes_origin[0],
                                self.scan_h * strain_axes_origin[1]]
 
-                ax_scale = 0.1 * np.min([self.scan_h, self.scan_w])
+                strain_axis = axes_mag[i]
 
-                xxwidth = 1 if comp == 'exx' else 0.3
-                yywidth = 1 if comp == 'eyy' else 0.3
-                axs[i].arrow(
-                    axis_origin[0],
-                    axis_origin[1],
-                    *(ax_scale * self.strain_basis[0]
-                      / norm(self.strain_basis[0])),
-                    fc='black',
-                    ec='black',
-                    width=xxwidth,
-                    length_includes_head=False,
-                    head_width=int(xxwidth)*3,
-                    # head_length=3,
-                    label='1',
+                # xxwidth=1 if comp == 'exx' else 0.3
+                # yywidth=1 if comp == 'eyy' else 0.3
+                # axs[i].arrow(
+                #     axis_origin[0],
+                #     axis_origin[1],
+                #     *(ax_scale * self.strain_basis[0]
+                #       / norm(self.strain_basis[0])),
+                #     fc='black',
+                #     ec='black',
+                #     width=xxwidth,
+                #     length_includes_head=False,
+                #     head_width=int(xxwidth)*3,
+                #     # head_length=3,
+                #     label='1',
+                # )
+
+                axs[i].annotate(
+                    text='',
+                    xy=axis_origin - strain_axis/2,
+                    xytext=axis_origin + strain_axis/2,
+                    arrowprops=dict(
+                        arrowstyle="<->",
+                        linewidth=3,
+                        # widthA=xxwidth,
+                    ),
                 )
-                axs[i].arrow(
-                    axis_origin[0],
-                    axis_origin[1],
-                    *(ax_scale * self.strain_basis[1]
-                      / norm(self.strain_basis[1])),
-                    fc='black',
-                    ec='black',
-                    width=yywidth,
-                    length_includes_head=False,
-                    head_width=int(yywidth)*3,
-                    # head_length=3,
-                )
+
+                # axs[i].arrow(
+                #     axis_origin[0],
+                #     axis_origin[1],
+                #     *(ax_scale * self.strain_basis[1]
+                #       / norm(self.strain_basis[1])),
+                #     fc='black',
+                #     ec='black',
+                #     width=yywidth,
+                #     length_includes_head=False,
+                #     head_width=int(yywidth)*3,
+                #     # head_length=3,
+                # )
                 # axs[i].text(axis_origin[0]+self.strain_basis[0, 0] * 1.2,
                 #             axis_origin[1]+self.strain_basis[0, 1] * 1.2,
                 #             'xx',
@@ -1078,9 +1101,7 @@ class ReciprocalLattice:
             cbar.set_label(label=units, fontsize=20, fontweight='bold')
             axs[i].text(self.scan_w/50, self.scan_h/50,
                         labels[i], ha='left', va='top', size=24,
-                        # bbox={'alpha' : 0.2,
-                        #       'color' : 'white',
-                        #       'fill' : True},
+                        bbox=dict(facecolor='white', alpha=0.8, lw=0)
                         )
 
             if self.ref_region is not None:
@@ -1111,7 +1132,7 @@ class ReciprocalLattice:
         -------
         None.
 
-        """"
+        """
 
         basis_factor = np.array(basis_factor, ndmin=2).T
 
@@ -1144,7 +1165,7 @@ class ReciprocalLattice:
         -------
         None.
 
-        """"
+        """
 
         fig, ax = plot_basis(
             self.ewpc_mean,
