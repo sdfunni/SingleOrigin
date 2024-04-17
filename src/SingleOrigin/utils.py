@@ -49,7 +49,7 @@ from scipy.ndimage import (
     binary_dilation,
 )
 from scipy.interpolate import make_interp_spline
-from scipy.fft import (fft2, fftshift)
+from scipy.fft import (fft2, ifft2, fftshift)
 
 from PyQt5.QtWidgets import QFileDialog as qfd
 
@@ -1046,6 +1046,9 @@ def linearKDE_2D(
     d : positive scalar
         The bin width.
 
+    r : int
+        The bandwidth of the KDE.
+
     w : int
         The width of the kernal in integer number of bins.
 
@@ -1070,8 +1073,8 @@ def linearKDE_2D(
     """
 
     # Get bin spacing
-    xedges = np.arange(xlim[0], xlim[1], d)
-    yedges = np.arange(ylim[0], ylim[1], d)
+    xedges = np.arange(xlim[0], xlim[1], d).astype(float)
+    yedges = np.arange(ylim[0], ylim[1], d).astype(float)
 
     # Find edge closest to 0 and shift edges so (0,0) is exactly at the center
     # of a pixel
@@ -1252,9 +1255,7 @@ def rotate_image_kde(
     """Rotate an image to arbitrary angle & interpolate using KDE.
 
     Apply an aribtrary image rotation and interpolate new pixel values using
-    the kernel density estimate (KDE) method with a Gaussian kernel. This
-    method is fairly slow and MAY NOT offer improved performance over bilinear
-    interpolation methods.
+    a linear kernel density estimate (KDE).
 
     Parameters
     ----------
@@ -1265,7 +1266,7 @@ def rotate_image_kde(
         The angle by which to rotate the image.
 
     bandwidth : scalar
-        The bandwidth of the Gaussian kernel in pixels.
+        The bandwidth of the linear kernel in pixels.
 
     reshape_method : str
         Final frame shape after rotation: 'fulldata', 'original', or
@@ -1331,24 +1332,31 @@ def rotate_image_kde(
             np.meshgrid(np.arange(0, w), np.arange(0, h))
         ).transpose(1, 2, 0).reshape((-1, 2))
 
-    elif reshape_method == 'original':
+        xlim = (np.min(coords_[:, 0]), np.max(coords_[:, 0]) + 1)
+        ylim = (np.min(coords_[:, 1]), np.max(coords_[:, 1]) + 1)
+
+    elif (reshape_method == 'original') or (reshape_method == 'only_data'):
         # Select coordinates remaining inside original image frame
         coords_ += minxy
         vertices += minxy
 
         inds = np.argwhere(
             ((coords_[:, 0] >= 0) &
-             (coords_[:, 0] < w - 1) &
+             (coords_[:, 0] <= w) &
              (coords_[:, 1] >= 0) &
-             (coords_[:, 1] < h - 1)
+             (coords_[:, 1] <= h)
              )
         )
+
+        xlim = (0, w + 1)
+        ylim = (0, h + 1)
 
         coords_ = np.squeeze(coords_[inds])
         weights = np.squeeze(weights[inds])
 
-    elif reshape_method == 'only_data':
-        raise Exception('Method not yet implimented')
+    # elif :
+    #     xlim = (0, w + 1)
+    #     ylim = (0, h + 1)
 
     else:
         raise Exception('reshape_method must be one of: "fulldata", '
@@ -1356,18 +1364,26 @@ def rotate_image_kde(
 
     # Create rotated frame mask:
     mask = polygon2mask(
-        (np.int(np.ceil(np.max(coords[:, 1])) + 1),
-         np.int(np.ceil(np.max(coords[:, 0])) + 1)),
+        ((np.ceil(np.max(coords[:, 1])) + 1).astype(int),
+         (np.ceil(np.max(coords[:, 0])) + 1).astype(int)),
         np.fliplr(vertices))
 
-    # TODO: Use my KDE fumction instead
-    print('Need to update with my KDE function... This method does not currently work.')
+    image_rot = linearKDE_2D(
+        coords_,
+        xlim,
+        ylim,
+        d=1,
+        r=bandwidth,
+        weights=weights,
+        return_binedges=False,
+    )
+    image_rot *= mask
 
-    # image_rot = np.reshape(image_rot, (h, w))
+    if reshape_method == 'only_data':
+        xlim, ylim, crop_sl = binary_find_largest_rectangle(mask)
+        image_rot = image_rot[ylim[0]:ylim[1], xlim[0]:xlim[1]]
 
-    # image_rot = np.where(mask, image_rot, fill_value)
-
-    # return image_rot
+    return image_rot
 
 
 def std_local(image, r):
@@ -1657,7 +1673,7 @@ def detect_peaks(
         peaks = pd.DataFrame.from_dict({
             'x': list(peak_xy[:, 0]),
             'y': list(peak_xy[:, 1]),
-            'max': image[peak_xy[:, 1], peak_xy[:, 0]],
+            'max': np.array(image[peak_xy[:, 1], peak_xy[:, 0]]).astype(float),
             'label': [i+1 for i in range(peak_xy.shape[0])]
         })
 
@@ -1674,7 +1690,8 @@ def watershed_segment(
         local_thresh_factor=0.95,
         peak_max_thresh_factor=0,
         watershed_line=True,
-        min_dist=5
+        min_dist=5,
+        min_pixels=9,
 ):
     """Segment an image using the Watershed algorithm.
 
@@ -1683,7 +1700,7 @@ def watershed_segment(
     image : 2D array_like
         The image to be segmented.
 
-    sigma : int or float
+    sigma : scalar or None
         The Laplacian of Gaussian sigma value to use for peak sharpening. If
         None, no filtering is applied.
         Default: None
@@ -1700,14 +1717,25 @@ def watershed_segment(
         calculation.
         Default 0.95.
 
+    peak_edge_thresh_factor : float
+        Alternative local thresholding method that thresholds between the
+        watershed region edge maximum and the peak maximum. It is more
+        appropriate if center-of-mass measurements will be made on the
+        segmentation regions.
+
     watershed_line : bool
-        Seperate segmented regions by one pixel.
+        Seperate segmented regions by a 1 pixel wide line of zero-value pixels.
         Default: True.
 
     min_dist : int or float
         The minimum distance allowed between detected peaks. Used to create
         a circular neighborhood kernel for peak detection.
         Default: 4.
+
+    min_pixels : int
+        The minimum number of pixels allowed in a mask region. If less than
+        this value, the mask and associated peak are discarded.
+        Default: 9.
 
     Returns
     -------
@@ -1751,7 +1779,9 @@ def watershed_segment(
             edge = mask_sl - binary_erosion(mask_sl)
             thresh = np.max(edge * img_der_sl) * (local_thresh_factor)
             mask_sl = np.where(mask_sl*img_der_sl >= thresh, i+1, 0)
-            masks_ref[slices[i][0], slices[i][1]] += mask_sl
+            n_pixels = np.count_nonzero(mask_sl)
+            if n_pixels >= min_pixels:
+                masks_ref[slices[i][0], slices[i][1]] += mask_sl
 
         masks = masks_ref
 
@@ -1762,11 +1792,13 @@ def watershed_segment(
             mask_sl = np.where(masks[slices[i][0], slices[i][1]] == i+1, 1, 0)
             img_der_sl = img_der[slices[i][0], slices[i][1]]
             edge = mask_sl - binary_erosion(mask_sl)
-            edge_max = np.max(edge * img_der_sl) * (local_thresh_factor)
+            edge_max = np.max(edge * img_der_sl)
             peak_max = np.max(img_der_sl)
             thresh = peak_max_thresh_factor * (peak_max - edge_max) + edge_max
             mask_sl = np.where(mask_sl*img_der_sl >= thresh, i+1, 0)
-            masks_ref[slices[i][0], slices[i][1]] += mask_sl
+            n_pixels = np.count_nonzero(mask_sl)
+            if n_pixels >= min_pixels:
+                masks_ref[slices[i][0], slices[i][1]] += mask_sl
 
         masks = masks_ref
 
@@ -1776,6 +1808,9 @@ def watershed_segment(
          (peaks.y >= buffer) &
          (peaks.y <= h - buffer))
     ]
+
+    unique_labels = np.unique(masks)
+    peaks = peaks[np.isin(peaks.label.to_numpy(), unique_labels)]
 
     peaks = peaks.reset_index(drop=True)
 
@@ -2648,6 +2683,28 @@ def fit_gaussian_group(
 
 
 def plane_2d(x, y, mx, my, b):
+    """
+    Calculate z values for a plane at specified x and y positions.
+
+    Parameters
+    ----------
+    x, y : ndarrays
+        The x and y coordinates at which to calculate the z height of the
+        plane. Must be the same shape.
+
+    mx, my : scalars
+        The x and y slopes of the plane.
+
+    b : scalar
+        The z-intercept of the plane.
+
+    Returns
+    -------
+    z : ndarray
+        The z values of the plane at the x, y coordinates. Will be the same
+        shape as x & y.
+
+    """
 
     z = mx*x + my*y + b
 
@@ -2655,31 +2712,24 @@ def plane_2d(x, y, mx, my, b):
 
 
 def plane_ss(p0, x, y, z):
-    """Sum of squares for a plane fit to 2D intensity data.
+    """Sum of squared errors for a plane fit to 3D coordinate data or 
+        2D intensity data.
 
     Parameters
     ----------
-    p0 : array_like with shape (n,7)
-        n = number of peaks to fit
-        Array containing the Gaussian function parameter vector(s):
-            [x0, y0, sig_maj, sig_rat, ang, A, I_o]
+    p0 : 3-list
+        [mx, my, b]: the x & y slopes and the z intercept of the plane fit.
 
-    x, y : 1D array_like, must have the same shape
-        The flattened arrays of x and y coordinates of image pixels
+    x, y : list-like
+        The x, y coordinates of the z values.
 
-    z : 1D array_like, must have the same shape as x and y
-        The flattened array of image values at the x, y coordinates
-
-    masks : 2d array_like of size (n, m)
-        n = number of peaks to fit
-        m = number of unmasked pixels
-        The flattened masks for each peak. Each of the "n" rows is 1 where the
-        mask for the corresponding peak and 0 elsewhere.
+    z : list-like
+        The intensity values of the data.
 
     Returns
     -------
     r_sum_sqrd : float
-        The sum of the squares of the residuals
+        The sum of the squares of the residuals.
 
     """
 
@@ -2697,6 +2747,23 @@ def plane_fit(
         data,
         p0,
 ):
+    """Fit a plane to 3D coordinate data or 2D intensity data.
+
+    Parameters
+    ----------
+    data: 2D array
+        The intensity values or z-coordinates in a regularly sampled array.
+
+    p0 : 3-list
+        Initial guess for the plane fitting parameters: the x & y
+        slopes and the z intercept.
+
+    Returns
+    -------
+    params : array
+        The fitted parameters.
+
+    """
 
     y, x = np.indices(data.shape)
     z = data.flatten()
@@ -2710,8 +2777,7 @@ def plane_fit(
         plane_ss,
         p0,
         args=(x, y, z),
-        bounds=[(None, None), (None, None), (0, None)],
-        method='L-BFGS-B'
+        method='L-BFGS-B',
     ).x
 
     return params
@@ -3894,7 +3960,7 @@ def plot_basis(
         return fig, ax
 
 
-def disp_vect_sum_squares(p0, xy, M):
+def disp_vect_sum_squares(p0, xy, M, weights=None):
     """Objective function for 'fit_lattice()'.
 
     Parameters
@@ -3922,14 +3988,16 @@ def disp_vect_sum_squares(p0, xy, M):
 
     dir_struct_matrix = p0[:-2].reshape((-1, 2))
     origin = p0[-2:]
+    if weights is None:
+        weights = 1
 
-    err_xy = xy - M @ dir_struct_matrix - origin
-    sum_sq = np.sum(err_xy**2)
+    err_xy = norm(xy - (M @ dir_struct_matrix + origin), axis=1)
+    sum_sq = np.sum((err_xy * weights)**2)
 
     return sum_sq
 
 
-def fit_lattice(p0, xy, M, fix_origin=False):
+def fit_lattice(p0, xy, M, fix_origin=False, weights=None):
     """Find the best fit of a rigid lattice to a set of points.
 
     Parameters
@@ -3964,14 +4032,18 @@ def fit_lattice(p0, xy, M, fix_origin=False):
     p0 = np.array(p0).flatten()
     x0y0 = p0[-2:]
 
+    dists = norm(xy - x0y0, axis=1)
+
+    # weights = 0 * dists / np.max(dists) + 1
+
     if fix_origin is True:
         params = (lstsq(M, xy - x0y0, rcond=-1)[0]).flatten()
     else:
         params = minimize(
             disp_vect_sum_squares,
             p0,
-            args=(xy, M),
-            method='L-BFGS-B',
+            args=(xy, M, weights),
+            method='BFGS',
         ).x
 
     return params

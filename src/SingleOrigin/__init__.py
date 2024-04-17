@@ -35,6 +35,8 @@ from SingleOrigin.utils import (
     image_norm,
     write_image_array_to_tif,
     band_pass_filter,
+    linearKDE_2D,
+    nearestKDE_2D,
     fast_rotate_90deg,
     rotation_matrix,
     rotate_xy,
