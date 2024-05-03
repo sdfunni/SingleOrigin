@@ -44,6 +44,7 @@ from skimage.morphology import erosion, dilation
 
 from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle, Circle
+from matplotlib.colors import LogNorm, PowerNorm
 
 from SingleOrigin.utils import (
     image_norm,
@@ -203,10 +204,10 @@ class ReciprocalLattice:
                 self.ewpc,
                 axis=(0, 1),
             )
-            im_displayage = self.ewpc_mean
+            im_display = self.ewpc_mean
 
         else:
-            im_displayage = self.data_mean
+            im_display = self.data_mean
 
         if upsample_factor is not None:
             self.origin_shift = self.scan_w * (upsample_factor - 1) / 2
@@ -215,7 +216,7 @@ class ReciprocalLattice:
 
         if show_mean_image:
             fig, ax = plt.subplots(1)
-            ax.imshow(np.log(im_displayage), cmap='gray')
+            ax.imshow(im_display, cmap='gray', norm=LogNorm())
             if self.origin is not None:
                 ax.scatter(*self.origin, c='red', marker='+')
 
@@ -1248,13 +1249,14 @@ class ReciprocalLattice:
         a2_order=1,
         sigma=None,
         buffer=5,
-        n_std_thresh=1,
         detection_thresh='auto',
-        peak_max_thresh_factor=0.1,
+        peak_bkgd_thresh_factor=0.1,
         fit_bkgd=False,
         max_order=5,
         show_fit=True,
         verbose=True,
+        logscale=True,
+        pwrscale=None,
     ):
         """Find peaks in a reciprocal lattice image (i.e. FFT or diffraction
         pattern) and get the reciprocal lattice parameters.
@@ -1283,15 +1285,6 @@ class ReciprocalLattice:
             Distance defining the edge border outside which peaks will be
             ignored.
 
-        n_std_thresh : scalar
-            The threshold number of standard deviations for a detected peak to
-            be retained for lattice fitting. Standard deviations are determined
-            for the mean data pixels each watershed region. If the maximum in
-            the watershed region is n_std_thresh above the minimum of the
-            watershed region, it is considered a peak and used for measuring
-            the lattice, otherwise it is discarded.
-            Default: 1
-
         detection_thresh : scalar or str
             The threshold (in % max data intensity) of peak maxima to
             consider as a possible reciprocal lattice spot. Used to remove
@@ -1299,11 +1292,11 @@ class ReciprocalLattice:
             intensity of the data.
             Default: 'auto'
 
-        peak_max_thresh_factor : scalar
+        peak_bkgd_thresh_factor : scalar
             Thresholding factor applied to remove background pixels from the
             watershed region of each peak. Threshold value for each peak
             determined as:
-                peak_max_thresh_factor * (peak_max - edge_max) + edge_max.
+                peak_bkgd_thresh_factor * (peak_max - edge_max) + edge_max.
             Where edge_max is the maximum value of the edge pixels in the
             watershed region and peak_max is the maximum of the region. This
             This value should be [0 : ~0.8]. The method ensures that the
@@ -1323,6 +1316,17 @@ class ReciprocalLattice:
             Whether to print lattice fitting information to the console.
             Default: True
 
+        logscale : bool
+            Whether to log scale the displayed pattern intensities for
+            diffraction patterns. No effect on measurements.
+            Default: True.
+
+        pwrscale : scalar or None
+            If a scalar and logscale is False, will apply a power scaling
+            (e.g. 0.5) to the displayed pattern intensity for diffraction
+            patterns. No effect on measurements. If None, no scaling.
+            Default: None.
+
         Returns
         -------
         ...
@@ -1334,34 +1338,40 @@ class ReciprocalLattice:
             n_picks = 2
             fix_origin = True
             log_fft = np.log(fft_square(self.data_mean))
-            # im_display = image_norm(gaussian_filter(log_fft, sigma))
-            im_display = image_norm(log_fft)
+            im_meas = im_display = image_norm(log_fft + 1e-6)
             U = im_display.shape[0] // 2
             origin = np.array([U, U])
+            imnorm = None
 
         elif self.datatype == 'dp':
             n_picks = 3
             fix_origin = False
-            im_display = image_norm(self.data_mean)
+            im_meas = self.data_mean
+            if logscale:
+                imnorm = LogNorm()
+            elif pwrscale is not None:
+                imnorm = PowerNorm(pwrscale)
+            else:
+                imnorm = None
         else:
             raise Exception(
                 "'datatype' must be 'image' or 'dp'."
             )
 
         if detection_thresh == 'auto':
-            detection_thresh = np.mean(im_display)
+            detection_thresh = np.mean(im_meas)
 
-        h, w = im_display.shape
+        h, w = im_meas.shape
 
         if sigma == 'auto':
             peak_map = detect_peaks(
-                copy.deepcopy(im_display),
+                im_meas,
                 min_dist=4,
                 thresh=0
             )
 
             # Find the max of the 2nd highest peak (ignores the central peak)
-            vmax = np.unique(peak_map*im_display)[-2]
+            vmax = np.unique(peak_map*im_meas)[-2]
 
             # Get feature size after applying vmax as a maximum threshold.
             # This prevents the central peak from dominating the size
@@ -1369,9 +1379,9 @@ class ReciprocalLattice:
             # imshow cmap.
 
             image_thresh = np.where(
-                im_display > vmax,
+                im_meas > vmax,
                 vmax,
-                im_display
+                im_meas
             )
 
             self.sigma = get_feature_size(image_thresh)
@@ -1381,19 +1391,17 @@ class ReciprocalLattice:
         else:
             self.sigma = sigma
 
-        im_filt = gaussian_filter(im_display, self.sigma)
+        im_filt = gaussian_filter(im_meas, self.sigma)
 
         masks, num_masks, _, peaks = watershed_segment(
             im_filt,
             sigma=None,
-            local_thresh_factor=0,
-            peak_max_thresh_factor=peak_max_thresh_factor,
+            bkgd_thresh_factor=0,
+            peak_bkgd_thresh_factor=peak_bkgd_thresh_factor,
             buffer=buffer,
-            min_dist=3,
-            min_pixels=6,
+            min_dist=self.sigma,
+            min_pixels=self.sigma * 2,
         )
-
-        self.all_peaks = copy.deepcopy(peaks)
 
         # Remove edge pixels:
         if buffer > 0:
@@ -1405,50 +1413,44 @@ class ReciprocalLattice:
             ].reset_index(drop=True)
 
         # # Update peaks DataFrame with unfiltered data values (std, max, min)
-        self.all_peaks = peaks
+        self.all_peaks = copy.deepcopy(peaks)
         for i, peak in peaks.iterrows():
             mask = np.where(masks == peak.label, 1, 0)
-            peak_masked = mask * im_display
+            peak_masked = mask * im_meas
 
             peaks.at[i, 'stdev'] = np.std(peak_masked[peak_masked > 0]
                                           ).astype(float)
             peaks.at[i, 'max'] = np.max(peak_masked[peak_masked > 0]
                                         ).astype(float)
+            peaks.at[i, 'mean'] = np.mean(peak_masked[peak_masked > 0]
+                                          ).astype(float)
 
             mask_bkgd = dilation(mask, footprint=np.ones((3, 3))) - mask
-            bkgd_masked = im_display * mask_bkgd
+            bkgd_masked = im_meas * mask_bkgd
             peaks.at[i, 'min'] = np.mean(bkgd_masked[bkgd_masked > 0]
                                          ).astype(float)
 
         peaks = peaks[peaks.loc[:, 'max'] > detection_thresh
                       ].reset_index(drop=True)
 
-        if n_std_thresh is not None:
-            print(peaks.shape[0])
-            peaks = peaks[
-                (peaks.loc[:, 'max'] >
-                 peaks.loc[:, 'min'] + n_std_thresh * peaks.loc[:, 'stdev'])
-            ].reset_index(drop=True)
-
-            print(peaks.shape[0])
-
         xy = peaks.loc[:, 'x':'y'].to_numpy(dtype=float)
+        xy.shape
 
-        y, x = np.indices(im_display.shape)
+        y, x = np.indices(im_meas.shape)
 
         for i, xy_ in enumerate(xy):
             mask_num = masks[int(xy_[1]), int(xy_[0])]
             mask = np.where(masks == mask_num, 1, 0)
-            masked_peak = im_display*mask
+            masked_peak = im_meas*mask
             if fit_bkgd:
                 bkgd_mask = dilation(mask) - mask
-                bkgd_int = bkgd_mask * im_display
+                bkgd_int = bkgd_mask * im_meas
 
                 params = plane_fit(
                     bkgd_int,
                     p0=[0, 0, np.mean(bkgd_int)]
                 )
-                bkgd = plane_2d(x, y, *params)
+                bkgd = plane_2d(x, y, params)
                 masked_peak = np.where(mask > 0, masked_peak - bkgd, 0)
 
                 # Make sure no (-) numbers and residual background removed
@@ -1459,8 +1461,13 @@ class ReciprocalLattice:
                 min_ = np.min(masked_peak[masked_peak > 0])
                 masked_peak = (masked_peak - min_) * mask
 
-            com = np.flip(center_of_mass(masked_peak))
-            peaks.loc[i, ['x_com', 'y_com']] = com
+            masked_peak[masked_peak < 0] = 0
+
+            if np.sum(masked_peak) > 0:
+                com = np.flip(center_of_mass(masked_peak))
+                peaks.loc[i, ['x_com', 'y_com']] = com
+
+        peaks = peaks.dropna()
 
         xy = peaks.loc[:, 'x_com':'y_com'].to_numpy(dtype=float)
 
@@ -1468,7 +1475,7 @@ class ReciprocalLattice:
         self.masks = masks
 
         fig, ax = plt.subplots(figsize=(10, 10))
-        ax.imshow(im_display, cmap='gray')
+        ax.imshow(im_meas, cmap='gray', norm=imnorm)
         ax.scatter(xy[:, 0], xy[:, 1], c='red', marker='+')
         if self.datatype == 'fft':
             ax.scatter(origin[0], origin[1], c='white', marker='+')
@@ -1553,17 +1560,13 @@ class ReciprocalLattice:
             for i, match in enumerate(nearest)
         ])
 
-        # Remove lattice points outside image bounds
-        self.recip_latt = self.recip_latt[(
-            (self.recip_latt.x_ref >= 0) &
-            (self.recip_latt.x_ref <= self.dp_w-1) &
-            (self.recip_latt.y_ref >= 0) &
-            (self.recip_latt.y_ref <= self.dp_h-1)
-        )]
-
         # Refine reciprocal basis vectors
-        M_star = self.recip_latt.loc[:, 'h':'k'].to_numpy(dtype=float)
+
         xy = self.recip_latt.loc[:, 'x_com':'y_com'].to_numpy(dtype=float)
+        xy_nonan = np.isfinite(xy)[:, 0]
+        xy = xy[xy_nonan]
+        M_star = self.recip_latt.loc[:, 'h':'k'
+                                     ].to_numpy(dtype=float)[xy_nonan]
 
         p0 = np.concatenate((a_star.flatten(), origin))
 
@@ -1574,7 +1577,7 @@ class ReciprocalLattice:
             fix_origin=fix_origin,
         )
 
-        # Save data and report key values
+        # Recalculate reference lattice points
         self.a1_star = params[:2]
         self.a2_star = params[2:4]
         if len(params) == 6:
@@ -1591,6 +1594,14 @@ class ReciprocalLattice:
             + self.origin
         )
 
+        # Remove lattice points outside image bounds
+        self.recip_latt = self.recip_latt[(
+            (self.recip_latt.x_ref >= 0) &
+            (self.recip_latt.x_ref <= self.dp_w-1) &
+            (self.recip_latt.y_ref >= 0) &
+            (self.recip_latt.y_ref <= self.dp_h-1)
+        )]
+
         theta = absolute_angle_bt_vectors(
             self.a1_star,
             self.a2_star,
@@ -1606,7 +1617,7 @@ class ReciprocalLattice:
         # Plot refined basis
         if show_fit:
             fig2, ax = plt.subplots(figsize=(10, 10))
-            ax.imshow(im_display, cmap='plasma', vmax=0.3)
+            ax.imshow(im_meas, cmap='plasma', norm=imnorm)
             ax.scatter(
                 self.recip_latt.loc[:, 'x_ref'].to_numpy(dtype=float),
                 self.recip_latt.loc[:, 'y_ref'].to_numpy(dtype=float),
@@ -1656,8 +1667,8 @@ class ReciprocalLattice:
 
             ax.set_xticks([])
             ax.set_yticks([])
-            ax.set_xlim(0, self.dp_w)
-            ax.set_ylim(self.dp_h, 0)
+            # ax.set_xlim(0, self.dp_w-1)
+            # ax.set_ylim(self.dp_h-1, 0)
             plt.title('Reciprocal Lattice Fit')
 
     def initalize_superlattice(
@@ -1668,6 +1679,8 @@ class ReciprocalLattice:
         max_order=1,
         show_fit=True,
         verbose=True,
+        logscale=True,
+        pwrscale=None,
     ):
         """Find superlattice peaks relative to previously located Bragg peaks.
 
@@ -1718,28 +1731,36 @@ class ReciprocalLattice:
         if self.datatype == 'image':
             n_picks = n_superlatt
             U = self.h // 2
-            im_display = fft_square(self.data_mean)
-            U = im_display.shape[0] // 2
+            im_meas = fft_square(self.data_mean)
+            U = im_meas.shape[0] // 2
             origin = np.array([U, U])
+            imnorm = None
 
         elif self.datatype == 'dp':
-            n_picks = n_superlatt + 1
-            im_display = self.data_mean
+            n_picks = 2 * n_superlatt
+            im_meas = self.data_mean
+            if logscale:
+                imnorm = LogNorm()
+            elif pwrscale is not None:
+                imnorm = PowerNorm(pwrscale)
+            else:
+                imnorm = None
+
         else:
             raise Exception(
                 "'datatype' must be 'image' or 'dp'."
             )
 
-        h, w = im_display.shape
+        h, w = im_meas.shape
 
         xy = self.all_peaks.loc[:, 'x':'y'].to_numpy()
 
         # Get vmin for plotting (helps with dead camera pixels)
-        vmin = np.max([np.mean(im_display) - 5*np.std(im_display), 0])
+        # vmin = np.max([np.mean(im_meas) - 1*np.std(im_meas), 0])
 
         if n_picks > 0:
             fig, ax = plt.subplots(figsize=(10, 10))
-            ax.imshow(im_display, cmap='plasma', vmin=vmin)
+            ax.imshow(im_meas, cmap='plasma', norm=imnorm)
             ax.scatter(xy[:, 0], xy[:, 1], c='black', marker='+')
             ax.scatter(
                 self.recip_latt.loc[:, 'x_ref'],
@@ -1753,16 +1774,15 @@ class ReciprocalLattice:
             if self.datatype == 'image':
                 ax.scatter(origin[0], origin[1], c='white', marker='+')
                 fig.suptitle(
-                    'Pick peaks for the a1* and a2* reciprocal basis vectors' +
-                    ' \n in that order).',
+                    'Pick peaks for the q1, q2, etc. superlattice vectors',
                     fontsize=12,
                     c='black',
                 )
 
             elif self.datatype == 'dp':
                 fig.suptitle(
-                    'Pick peaks for the origin, a1* and a2* reciprocal basis' +
-                    ' \n vectors (in that order).',
+                    'Pick a Bragg peak followed by a corresponding ' +
+                    'superlattice peak. Repeat for each superlattice.',
                     fontsize=12,
                     c='black',
                 )
@@ -1784,12 +1804,11 @@ class ReciprocalLattice:
         basis_picks_xy = xy[inds, :]
 
         if self.datatype == 'dp':
-            origin = basis_picks_xy[0, :]
 
-        a_4_star = np.array([
-            (basis_picks_xy[i+1, :] - origin) / superlatt_order[i]
-            for i in range(n_superlatt)
-        ])
+            origin = basis_picks_xy[::2, :]
+            suplat = basis_picks_xy[1::2, :]
+
+        a_4_star = (suplat - origin) / np.array(superlatt_order)[:, None]
 
         super_latt_indices = np.array([
             i for i in range(-max_order, max_order+1) if np.abs(i) >= min_order
@@ -1872,12 +1891,13 @@ class ReciprocalLattice:
             q_order @ self.a_4_star + xy_bragg
         )
 
-        theta_super = [absolute_angle_bt_vectors(
-            self.a_4_star[i],
-            self.a_4_star[int((i+1) % n_superlatt)],
-            np.identity(2))
-            for i in range(n_superlatt)
-        ]
+        if n_superlatt > 1:
+            theta_super = [absolute_angle_bt_vectors(
+                self.a_4_star[i],
+                self.a_4_star[int((i+1) % n_superlatt)],
+                np.identity(2))
+                for i in range(n_superlatt)
+            ]
 
         self.theta_bragg_to_super = [rotation_angle_bt_vectors(
             self.a1_star, self.a_4_star[i], np.identity(2))
@@ -1886,26 +1906,28 @@ class ReciprocalLattice:
 
         ratios = np.around(
             [norm(self.a_4_star[i]) /
-             norm(self.a_4_star[int((i+1) % n_superlatt)])
+             norm(self.a_star, axis=1)
              for i in range(n_superlatt)],
             decimals=5
         )
 
         if verbose:
-            print(
-                'Rotation angles between superlattice vectors (degrees): ',
-                f'{theta_super}.'
-            )
+            if n_superlatt > 1:
+                print(
+                    'Rotation angles between superlattice vectors (degrees): ',
+                    f'{theta_super}.'
+                )
+
             print(
                 'Superlattice rotation angle from a1_star (degrees): ',
                 f'{self.theta_bragg_to_super}.'
             )
-            print(f'Superlattice vector ratios: {ratios}')
+            print(f'a1 : q norm ratios: {ratios}')
 
         # Plot refined basis
         if show_fit:
             fig2, ax = plt.subplots(figsize=(10, 10))
-            ax.imshow(im_display, cmap='plasma', vmin=vmin)
+            ax.imshow(im_meas, cmap='plasma', norm=imnorm)
             ax.scatter(
                 self.recip_suplatt.loc[:, 'x_ref'].to_numpy(dtype=float),
                 self.recip_suplatt.loc[:, 'y_ref'].to_numpy(dtype=float),

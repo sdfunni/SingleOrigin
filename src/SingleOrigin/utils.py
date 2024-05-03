@@ -25,11 +25,15 @@ from contextlib import redirect_stdout
 from tqdm import tqdm
 
 import numpy as np
+from numpy import exp, sin, cos
 from numpy.linalg import norm, lstsq
 
 import pandas as pd
 
 from matplotlib import pyplot as plt
+from matplotlib.backend_bases import MouseButton
+from matplotlib.colors import LogNorm, PowerNorm
+
 
 from matplotlib_scalebar.scalebar import ScaleBar
 
@@ -63,10 +67,8 @@ from ncempy.io.emdVelox import fileEMDVelox
 from ncempy.io.emd import emdReader
 
 from skimage.segmentation import watershed
-from skimage.morphology import binary_erosion  # erosion
+from skimage.morphology import binary_erosion, erosion
 from skimage.draw import polygon2mask
-
-
 from skimage.measure import (moments, moments_central)
 from skimage.feature import hessian_matrix_det
 
@@ -82,7 +84,7 @@ no_mask_error = (
     "Float division by zero during moment estimation. No image intensity "
     + "columns, this means that no pixel region was found for fitting of at "
     + "least one atom column. This situation may result from: \n"
-    + "1) Too high a 'local_thresh_factor' value resulting in no pixels "
+    + "1) Too high a 'bkgd_thresh_factor' value resulting in no pixels "
     + "remaining for some atom columns. Check 'self.fit_masks' to see if some "
     + "atom columns do not have mask regions. \n "
     + "2) Due to mask regions splitting an atom column as a result of too "
@@ -121,9 +123,9 @@ def metric_tensor(a, b, c, alpha, beta, gamma):
     [alpha, beta, gamma] = np.radians([alpha, beta, gamma])
 
     g = np.array(
-        [[a**2, a*b*np.cos(gamma), a*c*np.cos(beta)],
-         [b*a*np.cos(gamma), b**2, b*c*np.cos(alpha)],
-         [c*a*np.cos(beta), c*b*np.cos(alpha), c**2]]
+        [[a**2, a*b*cos(gamma), a*c*cos(beta)],
+         [b*a*cos(gamma), b**2, b*c*cos(alpha)],
+         [c*a*cos(beta), c*b*cos(alpha), c**2]]
     )
 
     g[abs(g) <= 1e-10] = 0
@@ -211,6 +213,7 @@ def absolute_angle_bt_vectors(vec1, vec2, g):
     p_q = np.array([vec1, vec2])
 
     [[pp, pq], [qp, qq]] = np.array(p_q @ g @ p_q.T)
+
     theta = np.degrees(np.arccos(pq/(pp**0.5 * qq**0.5)))
 
     return theta
@@ -329,7 +332,7 @@ def get_astar_2d_matrix(g1, g2, g):
 
     a_star_2d = np.array([
         [a1_star, 0],
-        [a2_star*np.cos(alpha_star), a2_star*np.sin(alpha_star)]
+        [a2_star*cos(alpha_star), a2_star*sin(alpha_star)]
     ])
     a_star_2d[abs(a_star_2d) <= 1e-10] = 0
 
@@ -490,6 +493,7 @@ def load_image(
         return_path=False,
         norm_image=True,
         full_metadata=False,
+        bin_dims=None,
 ):
     """Select image from 'Open File' dialog box, import and (optionally) plot
 
@@ -523,6 +527,11 @@ def load_image(
         ncempy reader (including pixel size). If True, all metadata available
         in the file is loaded. It is a lot of metadata!
         Default: False
+
+    bin_dims : tuple or list or None
+        Binning factor for each dimension in the loaded dataset. If None, no
+        binning applied.
+        Default: None.
 
     Returns
     -------
@@ -690,11 +699,6 @@ def load_image(
             0: {key: val for key, val in ser_file.items() if key != 'data'}
         }
 
-        # images = {dsets_to_load: ser_file['data']}
-        # metadata = {dsets_to_load: {
-        #     key: val for key, val in ser_file.items() if key != 'data'
-        # }}
-
     else:
         images = {'image': imageio.volread(path)}
         # metadata = {'image': images['image'].meta}
@@ -729,6 +733,21 @@ def load_image(
             axs.imshow(image_, cmap='gray')
             axs.set_xticks([])
             axs.set_yticks([])
+
+        if (type(bin_dims) in [tuple, list]):
+            if (len(bin_dims) != len(images[key].shape)):
+                raise Exception(
+                    'If binning, must specify binning factor for each ' +
+                    'dimension in the dataset and must be valid for all ' +
+                    'loaded datasets.')
+
+            dims = list(images[key].shape)
+            new_dims = np.array([
+                [dims[i]//bin_dims[i], bin_dims[i]] for i in range(len(dims))
+            ]).ravel()
+
+            images[key] = images[key].reshape(new_dims).mean(
+                axis=tuple([i for i in range(1, len(new_dims), 2)]))
 
     # If only one image, extract from dictionaries
     if len(images) == 1:
@@ -910,116 +929,6 @@ def nearestKDE_2D(coords, xlim, ylim, d, weights=None, return_binedges=False):
         return H
 
 
-# def linearKDE_2D_old(
-#         coords,
-#         xlim,
-#         ylim,
-#         d,
-#         w=1,
-#         weights=None,
-#         return_binedges=False
-# ):
-#     """
-#     Apply linear KDE to 2D coordinate set with optional weights.
-
-#     Parameters
-#     ----------
-#     coords : array of scalars (n, 2)
-#         the x, y coordinates of the data points.
-
-#     xlim : two-tuple of scalars
-#         The x limits of the resulting density estimate.
-
-#     ylim : two-tuple of scalars
-#         The y limits of the resulting density estimate.
-
-#     d : scalar
-#         The bin width.
-
-#     w : int
-#         The width of the kernal in integer number of bins.
-
-#     weights : array of scalars (n,) or None
-#         The values by which to weight each coordinates for the KDE. (e.g.
-#         the image intensity value of a pixel). If None, all data points are
-#         considered equal.
-
-#     return_binedges : bool
-#         Whether to return arrays with x & y coordinates of the bin edges.
-#         Default: False
-
-#     Returns
-#     -------
-#     H : array of scalars (h, w)
-#         The density estimate as a 2D histogram with shape defined by the
-#         specified xlim, ylim and d arguments.
-
-#     xedges, yedges : arrays of scalars with shapes (w+1,) and (h+1,)
-#         The bin edges of the pixels in H.
-
-#     """
-
-#     # Get bin spacing
-#     xedges = np.arange(xlim[0], xlim[1], d)
-#     yedges = np.arange(ylim[0], ylim[1], d)
-
-#     # Find edge closest to 0 and shift edges so (0,0) is exactly at the center
-#     # of a pixel
-#     x_min_ind = np.argmin(np.abs(xedges))
-#     y_min_ind = np.argmin(np.abs(yedges))
-#     xedges -= xedges[x_min_ind] + d/2
-#     yedges -= yedges[y_min_ind] + d/2
-
-#     # Get bin centers
-#     xcents = xedges[:-1] + d/2
-#     ycents = yedges[:-1] + d/2
-
-#     H = np.zeros((ycents.shape[0], xcents.shape[0]))
-
-#     xF = (coords[:, 0] // d) * d
-#     yF = (coords[:, 1] // d) * d
-
-#     # Get x and y position weights for the floor pixels
-#     xFw = 1 - coords[:, 0] % d
-#     yFw = 1 - coords[:, 1] % d
-
-#     # If intensity weights were not passed, get equal weighting array
-#     if weights is None:
-#         weights = np.ones(coords.shape[0])
-
-#     # Weighted histogram for x floor, y floor pixels
-#     H += np.histogram2d(
-#         yF, xF,
-#         bins=[yedges, xedges],
-#         weights=xFw * yFw * weights
-#     )[0]
-
-#     # Weighted histogram for x ceiling, y floor pixels
-#     H += np.histogram2d(
-#         yF, xF + d,
-#         bins=[yedges, xedges],
-#         weights=(1 - xFw) * yFw * weights
-#     )[0]
-
-#     # Weighted histogram for x floor, y ceiling pixels
-#     H += np.histogram2d(
-#         yF + d, xF,
-#         bins=[yedges, xedges],
-#         weights=xFw * (1 - yFw) * weights
-#     )[0]
-
-#     # Weighted histogram for x ceiling, y ceiling pixels
-#     H += np.histogram2d(
-#         yF + d, xF + d,
-#         bins=[yedges, xedges],
-#         weights=(1 - xFw) * (1 - yFw) * weights
-#     )[0]
-
-#     if return_binedges:
-#         return H, xedges, yedges
-#     else:
-#         return H
-
 def linearKDE_2D(
         coords,
         xlim,
@@ -1192,8 +1101,8 @@ def rotation_matrix(angle, origin):
     theta = np.radians(angle)
 
     tmat = np.array(
-        [[np.cos(theta), np.sin(theta), 0],
-         [-np.sin(theta), np.cos(theta), 0],
+        [[cos(theta), sin(theta), 0],
+         [-sin(theta), cos(theta), 0],
          [0, 0, 1]]
     )
     tau = np.array(
@@ -1255,7 +1164,8 @@ def rotate_image_kde(
     """Rotate an image to arbitrary angle & interpolate using KDE.
 
     Apply an aribtrary image rotation and interpolate new pixel values using
-    a linear kernel density estimate (KDE).
+    a linear kernel density estimate (KDE). Check result carefully. May
+    produce artifacts.
 
     Parameters
     ----------
@@ -1386,6 +1296,31 @@ def rotate_image_kde(
     return image_rot
 
 
+def get_circular_kernel(r):
+    """Get circular kernel
+
+    Parameters
+    ----------
+    r : int
+        Kernel radius.
+
+    Returns
+    -------
+    kernel : 2D array
+        The circular kernel.
+    """
+
+    kern_rad = int(np.floor(r))
+    size = 2*kern_rad + 1
+    kernel = np.array(
+        [1 if np.hypot(i - kern_rad, j - kern_rad) <= r
+         else 0
+         for j in range(size) for i in range(size)]
+    ).reshape((size, size))
+
+    return kernel
+
+
 def std_local(image, r):
     """Get local standard deviation of an image
     Parameters
@@ -1406,14 +1341,7 @@ def std_local(image, r):
     im2 = im**2
     ones = np.ones(im.shape)
 
-    # kernel = np.ones((2*r+1, 2*r+1))
-    kern_rad = int(np.floor(r))
-    size = 2*kern_rad + 1
-    kernel = np.array(
-        [1 if np.hypot(i - kern_rad, j - kern_rad) <= r
-         else 0
-         for j in range(size) for i in range(size)]
-    ).reshape((size, size))
+    kernel = get_circular_kernel(r)
 
     s = convolve2d(im, kernel, mode="same")
     s2 = convolve2d(im2, kernel, mode="same")
@@ -1603,7 +1531,7 @@ def get_feature_size(image):
 
     scale = np.arange(min_scale, max_scale, scale_step)
     hess_max = np.array([
-        np.max(hessian_matrix_det(image, sigma=i))
+        np.max(hessian_matrix_det(image, sigma=i)[64:-64, 64:-64])
         for i in scale
     ])
 
@@ -1613,6 +1541,7 @@ def get_feature_size(image):
     scale_max = scale_interp[np.argmax(hess_max_interp)]
 
     sigma = scale_max/2
+    print(sigma)
 
     return sigma
 
@@ -1687,8 +1616,8 @@ def watershed_segment(
         image,
         sigma=None,
         buffer=0,
-        local_thresh_factor=0.95,
-        peak_max_thresh_factor=0,
+        bkgd_thresh_factor=0.95,
+        peak_bkgd_thresh_factor=0,
         watershed_line=True,
         min_dist=5,
         min_pixels=9,
@@ -1709,19 +1638,20 @@ def watershed_segment(
         The border within which peaks are ignored.
         Default: 0
 
-    local_thresh_factor : float
+    bkgd_thresh_factor : float
         Removes background from each segmented region by thresholding.
         Threshold value determined by finding the maximum value of edge pixels
         in the segmented region and multipling this value by the
-        local_thresh_factor value. The filtered image is used for this
+        bkgd_thresh_factor value. The filtered image is used for this
         calculation.
         Default 0.95.
 
-    peak_edge_thresh_factor : float
+    peak_bkgd_thresh_factor : float
         Alternative local thresholding method that thresholds between the
         watershed region edge maximum and the peak maximum. It is more
         appropriate if center-of-mass measurements will be made on the
-        segmentation regions.
+        segmentation regions. Only active if bkgd_thresh_factor <= 0.
+        Default: 0.
 
     watershed_line : bool
         Seperate segmented regions by a 1 pixel wide line of zero-value pixels.
@@ -1730,7 +1660,7 @@ def watershed_segment(
     min_dist : int or float
         The minimum distance allowed between detected peaks. Used to create
         a circular neighborhood kernel for peak detection.
-        Default: 4.
+        Default: 5.
 
     min_pixels : int
         The minimum number of pixels allowed in a mask region. If less than
@@ -1750,6 +1680,7 @@ def watershed_segment(
         each peak not outside the buffer
 
     """
+
     img_der = copy.deepcopy(image)
     [h, w] = image.shape
 
@@ -1769,15 +1700,15 @@ def watershed_segment(
     slices = find_objects(masks)
     num_masks = int(np.max(masks))
 
-    """Refine masks with local_thresh_factor"""
-    if local_thresh_factor > 0:
+    # Refine masks with an optional threshold
+    if bkgd_thresh_factor > 0:
         masks_ref = np.zeros(image.shape)
 
         for i in range(0, num_masks):
             mask_sl = np.where(masks[slices[i][0], slices[i][1]] == i+1, 1, 0)
             img_der_sl = img_der[slices[i][0], slices[i][1]]
             edge = mask_sl - binary_erosion(mask_sl)
-            thresh = np.max(edge * img_der_sl) * (local_thresh_factor)
+            thresh = np.max(edge * img_der_sl) * (bkgd_thresh_factor)
             mask_sl = np.where(mask_sl*img_der_sl >= thresh, i+1, 0)
             n_pixels = np.count_nonzero(mask_sl)
             if n_pixels >= min_pixels:
@@ -1785,7 +1716,7 @@ def watershed_segment(
 
         masks = masks_ref
 
-    elif peak_max_thresh_factor > 0:
+    elif peak_bkgd_thresh_factor > 0:
         masks_ref = np.zeros(image.shape)
 
         for i in range(0, num_masks):
@@ -1794,7 +1725,7 @@ def watershed_segment(
             edge = mask_sl - binary_erosion(mask_sl)
             edge_max = np.max(edge * img_der_sl)
             peak_max = np.max(img_der_sl)
-            thresh = peak_max_thresh_factor * (peak_max - edge_max) + edge_max
+            thresh = peak_bkgd_thresh_factor * (peak_max - edge_max) + edge_max
             mask_sl = np.where(mask_sl*img_der_sl >= thresh, i+1, 0)
             n_pixels = np.count_nonzero(mask_sl)
             if n_pixels >= min_pixels:
@@ -1809,12 +1740,128 @@ def watershed_segment(
          (peaks.y <= h - buffer))
     ]
 
-    unique_labels = np.unique(masks)
-    peaks = peaks[np.isin(peaks.label.to_numpy(), unique_labels)]
+    # Reduce all return elements to common remaining peaks/masks
+    unique_masks = np.unique(masks)
 
+    remaining = np.intersect1d(
+        unique_masks,
+        peaks.label.to_numpy()
+    ).astype(int)
+
+    masks = np.where(np.isin(masks, remaining), masks, 0)
+
+    peaks = peaks[np.isin(peaks.label.to_numpy(), remaining)]
     peaks = peaks.reset_index(drop=True)
 
+    slices = [slices[i] for i in range(len(slices)) if i in (remaining - 1)]
+
+    num_masks = remaining.shape[0]
+
     return masks, num_masks, slices, peaks
+
+
+def get_mask_polygon(
+        data,
+        vertices=None,
+        buffer=0,
+        invert=False,
+        show_mask=True,
+        return_vertices=False
+):
+    """Get a binary mask for an arbitrary shaped polygon.
+
+    Parameters
+    ----------
+    data : 2D array or 2-tuple
+        The data or data shape the mask will be applied to.
+
+    vertices : n x 2 array or None
+        The x, y coordinates of the polygon vertices. If None, will prompt to
+        graphically pick vertices with mouse clicks.
+        Default: None.
+
+    buffer : int
+        Edge border outside of which the mask will be cropped off regardless of
+        the vertices chosen.
+        Default: 0.
+
+    invert : bool
+        Whether to invert the mask so that pixel outside the specified polygon
+        are selected as the mask region (if True).
+        Default: False.
+
+    show_mask : bool
+        Whether to plot the resuting mask for verification.
+        Default: True.
+
+    return_vertices : bool
+        Whether to return the chosen vertices as an n x 2 array.
+        Default: False.
+
+    Returns
+    -------
+    mask : 2d array
+        The mask.
+
+    vertices : n x 2 array (optional)
+        The chosen vertices.
+
+    """
+
+    if type(data) == tuple:
+        data = np.zeros(data)
+
+    if vertices is not None:
+        vertices = np.fliplr(np.array(vertices))
+    if vertices is None:
+        fig, ax = plt.subplots(figsize=(8, 10))
+        ax.imshow(data, cmap='gist_gray')
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+        ax.set_title(
+            'Left click to add vertices.\n' +
+            'Right click or backspace key to remove last.\n' +
+            'Center click or enter key to complete.\n' +
+            'Must select in clockwise order.'
+        )
+
+        vertices = plt.ginput(
+            n=-1,
+            timeout=0,
+            show_clicks=True,
+            mouse_add=MouseButton.LEFT,
+            mouse_pop=MouseButton.RIGHT,
+            mouse_stop=MouseButton.MIDDLE
+        )
+
+        plt.close()
+        vertices = np.fliplr(np.array(vertices))
+
+    mask = polygon2mask(data.shape, vertices)
+
+    if buffer:
+        mask = erosion(
+            mask,
+            footprint=np.ones((3, 3))
+        )
+
+    if invert:
+        mask = np.where(mask == 1, 0, 1)
+
+    fig, ax = plt.subplots()
+    ax.imshow(data, cmap='gist_gray')
+
+    ax.imshow(
+        mask,
+        alpha=0.2,
+        cmap='Reds'
+    )
+
+    if return_vertices:
+        return mask, vertices
+    else:
+        return mask
 
 
 def img_equ_ellip(image):
@@ -1920,46 +1967,54 @@ def img_ellip_param(image):
     return x0, y0, eccen, theta, sig_maj, sig_min
 
 
-def gaussian_2d(x, y, x0, y0, sig_1, sig_2, ang, A=1, I_o=0):
-    """Sample a 2D, ellpitical Gaussian function.
-
-    Samples a specified 2D Gaussian function at an array of points.
+def gaussian_2d(x, y, x0, y0, sig_maj, sig_rat, ang, A=1, b=0):
+    """Sample a 2D, ellpitical Gaussian function or group of Gaussians.
 
     Parameters
     ----------
     x, y : ndarrays, must have the same shape
-        They x and y coordinates of each sampling point. If given arrays
+        The x and y coordinates of each sampling point. If given arrays
         generated by numpy.mgrid or numpy.meshgrid, will return an image
         of the Gaussian.
 
-    x0, y0 : center of the Gaussian
+    x0, y0 : scalars
+        Center coordinates of Gaussian(s).
 
-    sig_1 : sigma of the major axis
+    sig_maj : scalar(s)
+        Sigma of the major axix of the Gaussian(s).
 
-    sig_ratio : ratio of sigma major to sigma minor
+    sig_ratio : scalar(s)
+        Ratio of major to minor axis sigmas of the Gaussian(s).
 
-    ang : rotation angle of the major axis from horizontal
+    ang : scalar(s)
+        Rotation angle of the major axis from horizontal for the Gaussian(s).
+        In degrees.
 
-    A : Peak amplitude of the Gaussian
+    A : scalar(s)
+        Peak amplitude of the Gaussian(s).
 
-    I_o : Constant background value
+    b : scalar
+        Constant background value for the Gaussian(s).
 
     Returns
     -------
-    I : the value of the function at the specified points. Will have the same
+    z : the value of the function at the specified points. Will have the same
         shape as x, y inputs
 
     """
 
     ang = np.radians(-ang)  # negative due to inverted y axis in python
-    I = I_o + A*np.exp(-1/2*(
-        ((np.cos(ang) * (x - x0) + np.sin(ang) * (y - y0)) / sig_1)**2
-        + ((-np.sin(ang) * (x - x0) + np.cos(ang) * (y - y0)) / sig_2)**2))
+    sig_min = sig_maj / sig_rat
 
-    return I
+    z = np.sum(A * exp(-0.5 * (
+        ((cos(ang) * (x - x0) + sin(ang) * (y - y0)) / sig_maj)**2
+        + ((-sin(ang) * (x - x0) + cos(ang) * (y - y0)) / sig_min)**2)),
+        axis=0) + b
+
+    return z
 
 
-def gaussian_ellip_ss(p0, x, y, z, masks=None):
+def gaussian_ellip_ss(p0, x, y, z):
     """Sum of squares for a Gaussian function.
 
     Takes a parameter vector, coordinates, and corresponding data values;
@@ -1970,19 +2025,13 @@ def gaussian_ellip_ss(p0, x, y, z, masks=None):
     p0 : array_like with shape (n,7)
         n = number of peaks to fit
         Array containing the Gaussian function parameter vector(s):
-            [x0, y0, sig_maj, sig_rat, ang, A, I_o]
+            [x0, y0, sig_maj, sig_rat, ang, A, b]
 
     x, y : 1D array_like, must have the same shape
         The flattened arrays of x and y coordinates of image pixels
 
     z : 1D array_like, must have the same shape as x and y
         The flattened array of image values at the x, y coordinates
-
-    masks : 2d array_like of size (n, m)
-        n = number of peaks to fit
-        m = number of unmasked pixels
-        The flattened masks for each peak. Each of the "n" rows is 1 where the
-        mask for the corresponding peak and 0 elsewhere.
 
     Returns
     -------
@@ -1992,22 +2041,16 @@ def gaussian_ellip_ss(p0, x, y, z, masks=None):
     """
 
     if p0.shape[0] > 7:
-        I0 = p0[-1]
+        b = p0[-1]
         p0_ = p0[:-1].reshape((-1, 6))
         x0, y0, sig_maj, sig_rat, ang, A = np.split(p0_, 6, axis=1)
     else:
-        x0, y0, sig_maj, sig_rat, ang, A, I0 = p0
+        x0, y0, sig_maj, sig_rat, ang, A, b = p0
 
-    sig_min = sig_maj/sig_rat
+    ang *= -1
 
     # Sum the functions for each peak:
-    model = np.sum(A*np.exp(-1/2*(((np.cos(ang) * (x - x0)
-                                  + np.sin(ang) * (y - y0))
-                                   / sig_maj)**2
-                                  + ((-np.sin(ang) * (x - x0)
-                                      + np.cos(ang) * (y - y0))
-                                     / sig_min)**2)),
-                   axis=0) + I0
+    model = gaussian_2d(x, y, x0, y0, sig_maj, sig_rat, ang, A, b)
 
     # Subtract from data to get residuals:
     R = z - model
@@ -2016,7 +2059,7 @@ def gaussian_ellip_ss(p0, x, y, z, masks=None):
     return r_sum_sqrd
 
 
-def gaussian_circ_ss(p0, x, y, z, masks=None):
+def gaussian_circ_ss(p0, x, y, z):
     """Sum of squares for a Gaussian function.
 
     Takes a parameter vector, coordinates, and corresponding data values;
@@ -2027,19 +2070,13 @@ def gaussian_circ_ss(p0, x, y, z, masks=None):
     p0 : array_like with shape (n,7)
         n = number of peaks to fit
         Array containing the Gaussian function parameter vector(s):
-            [x0, y0, sig_maj, sig_rat, ang, A, I_o]
+            [x0, y0, sig_maj, sig_rat, ang, A, b]
 
     x, y : 1D array_like, must have the same shape
         The flattened arrays of x and y coordinates of image pixels
 
     z : 1D array_like, must have the same shape as x and y
         The flattened array of image values at the x, y coordinates
-
-    masks : 2d array_like of size (n, m)
-        n = number of peaks to fit
-        m = number of unmasked pixels
-        The flattened masks for each peak. Each of the "n" rows is 1 where the
-        mask for the corresponding peak and 0 elsewhere.
 
     Returns
     -------
@@ -2049,17 +2086,14 @@ def gaussian_circ_ss(p0, x, y, z, masks=None):
     """
 
     if p0.shape[0] > 5:
-        I0 = p0[-1]
+        b = p0[-1]
         p0_ = p0[:-1].reshape((-1, 4))
         x0, y0, sig, A = np.split(p0_, 4, axis=1)
     else:
-        x0, y0, sig, A, I0 = p0
+        x0, y0, sig, A, b = p0
 
     # Sum the functions for each peak:
-    model = np.sum(A*np.exp(-1/2*(
-        (((x - x0)) / sig)**2
-        + (((y - y0)) / sig)**2)),
-        axis=0) + I0
+    model = gaussian_2d(x, y, x0, y0, sig, 1, 0, A, b)
 
     # Subtract from data to get residuals:
     R = z - model
@@ -2068,12 +2102,12 @@ def gaussian_circ_ss(p0, x, y, z, masks=None):
     return r_sum_sqrd
 
 
-def fit_gaussian_ellip(
+def fit_gaussians(
         data,
         p0,
-        masks=None,
         method='BFGS',
-        bounds=None
+        bounds=None,
+        circular=True,
 ):
     """Fit an elliptical 2D Gaussain function to data.
 
@@ -2088,14 +2122,8 @@ def fit_gaussian_ellip(
     p0 : array_like with shape (n*6 + 1,)
         Initial guess for the n-Gaussian parameter vector where each peak
         has 6 independent parameters (x0, y0, sig_maj, sig_ratio, ang, A) the
-        whole region has a constant background (I_0) which is the last item in
+        whole region has a constant background (b) which is the last item in
         the array.
-
-    masks : 2d array_like of size (n, m)
-        n = number of peaks to fit
-        m = number of unmasked pixels
-        The flattened masks for each peak. Each of the "n" rows is 1 where the
-        mask for the corresponding peak and 0 elsewhere.
 
     method : str, the minimization solver name
         Supported solvers are: ''BFGS', 'L-BFGS-B', 'Powell', 'trust-constr'.
@@ -2106,8 +2134,13 @@ def fit_gaussian_ellip(
         that accept bounds (e.g. 'L-BFGS-B', but not 'BFGS'). Otherwise must
         be set to None.
         Each two-tuple is in the form: (upper, lower).
-        Order of bounds must be: [x0, y0, sig_maj, sig_ratio, ang, A, I_0] * n
+        Order of bounds must be: [x0, y0, sig_maj, sig_ratio, ang, A, b] * n
         Default: None
+
+    circular : bool
+        Whether to use a circular Gaussian for fitting. If False, uses an
+        elliptical Gaussian.
+        Default: True
 
     Returns
     -------
@@ -2119,11 +2152,6 @@ def fit_gaussian_ellip(
     num_gauss = int(np.ceil(p0.shape[0]/7))
     img_shape = data.shape
 
-    I0 = p0[-1]
-    p0_ = p0[:-1].reshape((num_gauss, 6))
-
-    p0_[:, 4] *= -1
-
     y, x = np.indices(img_shape)
     z = data.flatten()
 
@@ -2131,31 +2159,6 @@ def fit_gaussian_ellip(
     z = np.take(z, unmasked_data)
     x = np.take(x.flatten(), unmasked_data)
     y = np.take(y.flatten(), unmasked_data)
-
-    x0y0 = p0_[:, :2]
-    if masks is None:
-        image = np.zeros(img_shape)
-        image[y, x] = z
-        masks_labeled, _ = label(image)
-
-    elif (type(masks) is imageio.core.util.Array
-          or type(masks) is np.ndarray):
-        masks_labeled, _ = label(masks)
-
-    masks_to_peaks = map_coordinates(
-        masks_labeled,
-        np.flipud(x0y0.T),
-        order=0
-    ).astype(int)
-
-    masks_labeled = np.take(masks_labeled, unmasked_data).flatten()
-
-    masks_labeled = np.array(
-        [np.where(masks_labeled == mask_num, 1, 0)
-         for i, mask_num in enumerate(masks_to_peaks)]
-    )
-
-    p0_ = np.append(p0_.flatten(), I0)
 
     with warnings.catch_warnings():
         warnings.filterwarnings(
@@ -2170,141 +2173,39 @@ def fit_gaussian_ellip(
             lineno=579
         )
 
-    params = minimize(
-        gaussian_ellip_ss,
-        p0_,
-        args=(x, y, z, masks_labeled),
-        bounds=bounds,
-        method=method
-    ).x
+    if circular:
+        params = minimize(
+            gaussian_circ_ss,
+            p0,
+            args=(x, y, z),
+            bounds=bounds,
+            method=method
+        ).x
+
+        n_params = 4
+
+    else:
+        params = minimize(
+            gaussian_ellip_ss,
+            p0,
+            args=(x, y, z),
+            bounds=bounds,
+            method=method
+        ).x
+
+        n_params = 6
 
     params = np.concatenate(
-        (params[:-1].reshape((-1, 6)),
+        (params[:-1].reshape((-1, n_params)),
          np.ones((num_gauss, 1))*params[-1]),
         axis=1
     )
+    if circular:
+        params = np.insert(params, [-1, -1], [1, 0], axis=1)
 
-    params[:, 4] *= -1
-    params[:, 4] = ((params[:, 4] + np.pi/2) % np.pi) - np.pi/2
-
-    return params
-
-
-def fit_gaussian_circ(
-        data,
-        p0,
-        masks=None,
-        method='BFGS',
-        bounds=None
-):
-    """Fit a circular 2D Gaussain function to data.
-
-    Fits a 2D, elliptical Gaussian to an image. Intensity values equal to zero
-    are ignored.
-
-    Parameters
-    ----------
-    data : ndarray
-        Image containing a Gaussian peak
-
-    p0 : array_like with shape (n, 5)
-        Initial guess for the n-Gaussian parameter vector where each peak
-        has 4 independent parameters (x0, y0, sig, A) the
-        whole region has a constant background (I_0).
-
-    masks : 2d array_like of size (n, m)
-        n = number of peaks to fit
-        m = number of unmasked pixels
-        The flattened masks for each peak. Each of the "n" rows is 1 where the
-        mask for the corresponding peak and 0 elsewhere.
-
-    method : str, the minimization solver name
-        Supported solvers are: 'BFGS', 'L-BFGS-B', 'Powell', 'trust-constr'.
-        Default: 'BFGS'
-
-    bounds : list of two-tuples of length 7*n or None
-        The bounds for Gaussian fitting parameters. Only works with methods
-        that accept bounds (e.g. 'L-BFGS-B', but not 'BFGS'). Otherwise must
-        be set to None.
-        Each two-tuple is in the form: (upper, lower).
-        Order of bounds must be: [x0, y0, sig, A, I_0] * n
-        Default: None
-
-    Returns
-    -------
-    params : 1D array
-        The best fit parameter vector found by least squares
-
-    """
-
-    num_gauss = p0.shape[0] // 4
-    img_shape = data.shape
-    I0 = p0[-1]
-    p0_ = p0[:-1].reshape((num_gauss, 4))
-
-    y, x = np.indices(img_shape)
-    z = data.flatten()
-
-    unmasked_data = np.nonzero(z)
-    z = np.take(z, unmasked_data)
-    x = np.take(x.flatten(), unmasked_data)
-    y = np.take(y.flatten(), unmasked_data)
-
-    x0y0 = p0_[:, :2]
-    if masks is None:
-        image = np.zeros(img_shape)
-        image[y, x] = z
-        masks_labeled, _ = label(image)
-
-    elif (type(masks) is imageio.core.util.Array
-          or type(masks) is np.ndarray):
-        masks_labeled, _ = label(masks)
-
-    masks_to_peaks = map_coordinates(
-        masks_labeled,
-        np.flipud(x0y0.T),
-        order=0
-    ).astype(int)
-
-    masks_labeled = np.take(
-        masks_labeled,
-        unmasked_data
-    ).flatten()
-
-    masks_labeled = np.array(
-        [np.where(masks_labeled == mask_num, 1, 0)
-         for i, mask_num in enumerate(masks_to_peaks)]
-    )
-
-    p0_ = np.append(p0_.flatten(), I0)
-
-    with warnings.catch_warnings():
-        warnings.filterwarnings('ignore', category=UserWarning,
-                                lineno=182)
-        warnings.filterwarnings('ignore', category=RuntimeWarning,
-                                lineno=579)
-
-    params = minimize(
-        gaussian_circ_ss,
-        p0_,
-        args=(x, y, z, masks_labeled),
-        bounds=bounds,
-        method=method
-    ).x
-
-    params = np.concatenate(
-        (params[:-1].reshape((-1, 4)),
-         np.ones((num_gauss, 1))*params[-1]),
-        axis=1
-    )
-
-    # Add dummy columns for sigma ratio and rotation angle:
-    params = np.insert(
-        params,
-        3,
-        np.array([1, 0]*num_gauss).reshape(-1, 2).T,
-        axis=1
-    )
+    else:
+        params[:, 4] *= -1
+        params[:, 4] = ((params[:, 4] + 90) % 180) - 90
 
     return params
 
@@ -2319,7 +2220,6 @@ def pack_data_prefit(
         pos_bound_dist=None,
         use_circ_gauss=False,
         use_bounds=False,
-        use_background_param=True,
 ):
     """Function to group data for the parallelized fitting process.
 
@@ -2376,7 +2276,6 @@ def pack_data_prefit(
         pos_bound_dist,
         use_circ_gauss,
         use_bounds,
-        use_background_param,
     ]
         for counter, inds
         in enumerate(peak_groups)
@@ -2394,7 +2293,6 @@ def fit_gaussian_group(
         pos_bound_dist=None,
         use_circ_gauss=False,
         use_bounds=False,
-        use_background_param=True,
 ):
     """Master function for simultaneously fitting one or more Gaussians to a
     piece of data.
@@ -2444,12 +2342,6 @@ def fit_gaussian_group(
         unbounded.
         Default: False
 
-    use_background_param : bool
-        Whether to use the background parameter when fitting each atom
-        column or group of columns. If False, background value is forced
-        to be 0.
-        Default: True
-
     Returns
     -------
     params : array of shape (n,2)
@@ -2476,39 +2368,31 @@ def fit_gaussian_group(
             theta = 0
 
         sig_rat = sig_1/sig_2
-        I0 = (
+
+        b = (
             np.average(img_msk[img_msk != 0])
             - np.std(img_msk[img_msk != 0])
         )
-        A0 = np.max(img_msk) - I0
+        A0 = np.max(img_msk) - b
 
         if use_circ_gauss:
             if use_bounds:
                 bounds = [
                     (x0-pos_bound_dist/2, x0+pos_bound_dist),
                     (y0-pos_bound_dist/2, y0+pos_bound_dist),
-                    (1, None),
-                    (0, 1.2),
-                ] * num + [(0, None)]
-                method = 'L-BFGS-B'
+                    (1, 1.2),
+                    (0, None),
+                ] * num
 
-                if not use_background_param:
-                    bounds[-1] = (0, 0)
+                + [(0, None)]
+                method = 'L-BFGS-B'
 
             else:
                 bounds = None
                 method = 'BFGS'
 
             p0 = np.array(
-                [x0, y0, np.mean([sig_1, sig_2]),  A0, I0]
-            )
-
-            params = fit_gaussian_circ(
-                img_msk,
-                p0,
-                masks,
-                method=method,
-                bounds=bounds
+                [x0, y0, A0, np.mean([sig_1, sig_2]), b]
             )
 
         else:
@@ -2523,34 +2407,11 @@ def fit_gaussian_group(
                 ] * num + [(0, None)]
                 method = 'L-BFGS-B'
 
-                if not use_background_param:
-                    bounds[-1] = (0, 0)
-
             else:
                 bounds = None
                 method = 'BFGS'
 
-            p0 = np.array(
-                [x0, y0, sig_1, sig_rat,  np.radians(theta), A0, I0]
-            )
-
-            params = fit_gaussian_ellip(
-                img_msk,
-                p0,
-                masks,
-                method=method,
-                bounds=bounds
-            )
-
-        params = np.array(
-            [params[:, 0] + xy_start[0],
-             params[:, 1] + xy_start[1],
-             params[:, 2],
-             params[:, 2]/params[:, 3],
-             np.degrees(params[:, 4]),
-             params[:, 5],
-             params[:, 6]]
-        ).T
+            p0 = np.array([x0, y0, sig_1, sig_rat, theta, A0, b])
 
     if num > 1:
         x0y0 = xy_peaks - xy_start
@@ -2561,7 +2422,7 @@ def fit_gaussian_group(
         sig_2 = []
         sig_rat = []
         theta = []
-        I0 = []
+        b = []
         A0 = []
 
         for i, mask_num in enumerate(mask_nums):
@@ -2583,10 +2444,10 @@ def fit_gaussian_group(
             sig_1 += [sig_1_]
             sig_2 += [sig_2_]
             sig_rat += [sig_1_ / sig_2_]
-            theta += [np.radians(theta_)]
-            I0 += [(np.average(masked_sl[masked_sl != 0])
-                    - np.std(masked_sl[masked_sl != 0]))]
-            A0 += [np.max(masked_sl) - I0[i]]
+            theta += [theta_]
+            b += [(np.average(masked_sl[masked_sl != 0])
+                   - np.std(masked_sl[masked_sl != 0]))]
+            A0 += [np.max(masked_sl) - b[i]]
 
         if use_circ_gauss:
             if use_bounds:
@@ -2606,9 +2467,6 @@ def fit_gaussian_group(
 
                 method = 'L-BFGS-B'
 
-                if not use_background_param:
-                    bounds[-1] = (0, 0)
-
             else:
                 bounds = None
                 method = 'BFGS'
@@ -2617,15 +2475,7 @@ def fit_gaussian_group(
                 [x0, y0, np.mean([sig_1, sig_2], axis=0), A0]
             ).T
 
-            p0 = np.append(p0.flatten(), np.mean(I0))
-
-            params = fit_gaussian_circ(
-                img_msk,
-                p0,
-                masks,
-                method=method,
-                bounds=bounds
-            )
+            p0 = np.append(p0.flatten(), np.mean(b))
 
         else:
             if use_bounds:
@@ -2648,9 +2498,6 @@ def fit_gaussian_group(
 
                 method = 'L-BFGS-B'
 
-                if not use_background_param:
-                    bounds[-1] = (0, 0)
-
             else:
                 bounds = None
                 method = 'BFGS'
@@ -2659,30 +2506,30 @@ def fit_gaussian_group(
                 [x0, y0, sig_1, sig_rat, theta, A0]
             ).T
 
-            p0 = np.append(p0.flatten(), np.mean(I0))
+            p0 = np.append(p0.flatten(), np.mean(b))
 
-            params = fit_gaussian_ellip(
-                img_msk,
-                p0,
-                masks,
-                method=method,
-                bounds=bounds
-            )
+    params = fit_gaussians(
+        img_msk,
+        p0,
+        method=method,
+        bounds=bounds,
+        circular=use_circ_gauss,
+    )
 
-        params = np.array(
-            [params[:, 0] + xy_start[0],
-             params[:, 1] + xy_start[1],
-             params[:, 2],
-             params[:, 2]/params[:, 3],
-             np.degrees(params[:, 4]),
-             params[:, 5],
-             params[:, 6]]
-        ).T
+    params = np.array(
+        [params[:, 0] + xy_start[0],
+         params[:, 1] + xy_start[1],
+         params[:, 2],
+         params[:, 2]/params[:, 3],
+         params[:, 4],
+         params[:, 5],
+         params[:, 6]]
+    ).T
 
     return params
 
 
-def plane_2d(x, y, mx, my, b):
+def plane_2d(x, y, params):
     """
     Calculate z values for a plane at specified x and y positions.
 
@@ -2692,11 +2539,8 @@ def plane_2d(x, y, mx, my, b):
         The x and y coordinates at which to calculate the z height of the
         plane. Must be the same shape.
 
-    mx, my : scalars
-        The x and y slopes of the plane.
-
-    b : scalar
-        The z-intercept of the plane.
+    params : 3-typle of scalars
+        The x and y slopes and z-intercept of the plane.
 
     Returns
     -------
@@ -2706,35 +2550,18 @@ def plane_2d(x, y, mx, my, b):
 
     """
 
+    [mx, my, b] = params
+
     z = mx*x + my*y + b
 
     return z
 
 
-def plane_ss(p0, x, y, z):
-    """Sum of squared errors for a plane fit to 3D coordinate data or 
-        2D intensity data.
-
-    Parameters
-    ----------
-    p0 : 3-list
-        [mx, my, b]: the x & y slopes and the z intercept of the plane fit.
-
-    x, y : list-like
-        The x, y coordinates of the z values.
-
-    z : list-like
-        The intensity values of the data.
-
-    Returns
-    -------
-    r_sum_sqrd : float
-        The sum of the squares of the residuals.
-
-    """
+def sum_squares(p0, args, fn):
 
     # Sum the functions for each peak:
-    model = plane_2d(x, y, *p0)
+    z = args[-1]
+    model = fn(*args[:-1], p0)
 
     # Subtract from data to get residuals:
     R = z - model
@@ -2773,10 +2600,12 @@ def plane_fit(
     x = np.take(x.flatten(), unmasked_data)
     y = np.take(y.flatten(), unmasked_data)
 
+    args = [x, y, z]
+
     params = minimize(
-        plane_ss,
+        sum_squares,
         p0,
-        args=(x, y, z),
+        args=(args, plane_2d),
         method='L-BFGS-B',
     ).x
 
@@ -2787,12 +2616,13 @@ def plane_fit(
 """Fourier Analysis"""
 
 
-def fft_square(image,
-               hann_window=False,
-               upsample_factor=None,
-               abs_val=True,
-               pre_shift=False,
-               ):
+def fft_square(
+    image,
+    hann_window=False,
+    upsample_factor=None,
+    abs_val=True,
+    pre_shift=False,
+):
     """Gets FFT with equal x & y pixel sizes
 
     Parameters
@@ -2886,7 +2716,7 @@ def hann_2d(dim):
     r = norm(np.array(np.meshgrid(inds, inds)) - origin, axis=0
              ) * 2*np.pi / dim
 
-    hann = np.where(r > np.pi, 0, np.cos(r) + 1) / 2
+    hann = np.where(r > np.pi, 0, cos(r) + 1) / 2
 
     return hann
 
@@ -2946,8 +2776,8 @@ def cft(xy, im):
     x += w/2  # because the coordinates are zero-centered
     y += h/2
 
-    val = np.sum((im * (np.exp(-2 * np.pi * 1j * j * y / h) @
-                        np.exp(-2 * np.pi * 1j * k * x / w))))
+    val = np.sum((im * (exp(-2 * np.pi * 1j * j * y / h) @
+                        exp(-2 * np.pi * 1j * k * x / w))))
 
     return val
 
@@ -3084,8 +2914,8 @@ def center_image_point(image, x0y0):
 
     shift = [0 for _ in range(len(image.shape)-2)] + [y0, x0]
 
-    im_cent = np.abs(np.fft.ifft2(
-        fourier_shift(np.fft.fft2(image, axes=(-2, -1)), shift),
+    im_cent = np.abs(ifft2(
+        fourier_shift(fft2(image, axes=(-2, -1)), shift),
         axes=(-2, -1)))
 
     return im_cent
@@ -3514,7 +3344,7 @@ def get_vpcf_peak_params(
         pcf_sm,
         min_dist=sigma,
         # max_thresh_factor=0.5,
-        # local_thresh_factor=0,
+        # bkgd_thresh_factor=0,
         sigma=None,
         buffer=buffer,
         watershed_line=False,
@@ -3547,7 +3377,7 @@ def get_vpcf_peak_params(
         group_masks, _, _, _ = watershed_segment(
             pcf_sm,
             min_dist=sigma_group,
-            local_thresh_factor=0,
+            bkgd_thresh_factor=0,
             sigma=None,
             buffer=0,
             watershed_line=True
@@ -3638,12 +3468,12 @@ def get_vpcf_peak_params(
             p0 = np.array(p0 + [0])
             bounds += [(0, 0)]
 
-            params = fit_gaussian_ellip(
+            params = fit_gaussians(
                 pcf_masked,
                 p0,
-                masks=None,
                 method='L-BFGS-B',
-                bounds=bounds
+                bounds=bounds,
+                shape='ellip'
             )
 
             # params = params[:, :-1]
@@ -4032,7 +3862,7 @@ def fit_lattice(p0, xy, M, fix_origin=False, weights=None):
     p0 = np.array(p0).flatten()
     x0y0 = p0[-2:]
 
-    dists = norm(xy - x0y0, axis=1)
+    # dists = norm(xy - x0y0, axis=1)
 
     # weights = 0 * dists / np.max(dists) + 1
 
@@ -4103,7 +3933,7 @@ def fft_amplitude_area(
             raise Exception("If'r' is not an int or float, its length "
                             "must match the first dimension of xy_fft.")
 
-    fft = np.fft.fftshift(np.fft.fft2(image))
+    fft = fftshift(fft2(image))
     mask = np.zeros(fft.shape)
     xy = np.mgrid[:mask.shape[0], : mask.shape[1]]
     xy = np.array([xy[1], xy[0]]).transpose((1, 2, 0))
@@ -4115,7 +3945,7 @@ def fft_amplitude_area(
         for i, xy_ in enumerate(xy_fft):
             mask += np.where(norm(xy - xy_, axis=2) <= r[i], 1, 0)
 
-    amplitude = np.abs(np.fft.ifft2(np.fft.fftshift(fft * mask)))
+    amplitude = np.abs(ifft2(fftshift(fft * mask)))
     amplitude = image_norm(gaussian_filter(amplitude, sigma=blur))
     mask = np.where(amplitude > thresh, 1, 0)
     if fill_holes:
@@ -4135,6 +3965,9 @@ def quickplot(
         pixel_unit=None,
         scalebar_len=None,
         return_figax=False,
+        scaling='linear',
+        vmin=None,
+        vmax=None,
 ):
     """Convienience image plotting function.
 
@@ -4174,15 +4007,31 @@ def quickplot(
         Whether to return the figure and axes objects for modification by user.
         Default: False
 
+    scaling : float or str
+        Linear ('linear'), log ('log') or power law (float on interval [0, 1])
+        scaling of the image intensity.
+        Default: 'linear'
+
     Returns
     -------
-    mask : 2D array
-        The final amplitude mask.
+    fig, ax : matplotlib figure and axes objects
+        The resulting figure and axes objects for possible further
+        modifications.
 
     """
 
+    if scaling == 'log':
+        norm = LogNorm(vmin=vmin, vmax=vmax)
+    elif type(scaling) in [float, int]:
+        norm = PowerNorm(scaling, vmin=vmin, vmax=vmax)
+    else:
+        norm = None
+
     fig, ax = plt.subplots(1, figsize=figsize)
-    ax.imshow(im, cmap=cmap)
+    if scaling is not None:
+        ax.imshow(im, cmap=cmap, norm=norm)
+    else:
+        ax.imshow(im, cmap=cmap, vmin=vmin, vmax=vmax)
 
     if hide_ticks:
         ax.set_xticks([])

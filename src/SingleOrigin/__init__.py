@@ -1,6 +1,6 @@
 """SingleOrigin is a module for atomic column position finding intended for 
     high resolution scanning transmission electron microscope images.
-    Copyright (C) 2023  Stephen D. Funni
+    Copyright (C) 2024  Stephen D. Funni
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -16,7 +16,7 @@
     along with this program.  If not, see https://www.gnu.org/licenses"""
 
 
-__version__ = "2.5.6"
+__version__ = "2.5.8"
 
 from SingleOrigin.utils import (
     metric_tensor,
@@ -41,11 +41,11 @@ from SingleOrigin.utils import (
     rotation_matrix,
     rotate_xy,
     rotate_image_kde,
+    get_circular_kernel,
     std_local,
     binary_find_largest_rectangle,
     binary_find_smallest_rectangle,
     plane_2d,
-    plane_ss,
     plane_fit,
     fft_square,
     hann_2d,
@@ -56,10 +56,7 @@ from SingleOrigin.utils import (
     img_equ_ellip,
     img_ellip_param,
     gaussian_2d,
-    gaussian_ellip_ss,
-    gaussian_circ_ss,
-    fit_gaussian_ellip,
-    fit_gaussian_circ,
+    fit_gaussians,
     pack_data_prefit,
     fit_gaussian_group,
     cft,
@@ -79,6 +76,8 @@ from SingleOrigin.utils import (
     fit_lattice,
     fft_amplitude_area,
     quickplot,
+    gaussian_circ_ss,
+    gaussian_ellip_ss,
 )
 
 from SingleOrigin.cell_transform import UnitCell

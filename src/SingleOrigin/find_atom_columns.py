@@ -66,11 +66,12 @@ from SingleOrigin.utils import (
     linearKDE_2D,
     img_ellip_param,
     gaussian_2d,
-    fit_gaussian_ellip,
     pack_data_prefit,
+    fit_gaussians,
     fit_gaussian_group,
     detect_peaks,
     watershed_segment,
+    get_circular_kernel,
     std_local,
     fft_square,
     get_vpcf,
@@ -328,7 +329,6 @@ class HRImage:
 
             '''Transform data'''
             tmat = rotation_matrix(angle, rotation_origin)
-            print(tmat)
 
             lattice_rot.dir_struct_matrix = (
                 lattice_rot.dir_struct_matrix
@@ -461,6 +461,7 @@ class HRImage:
         else:
             pixel_size = np.mean([latt.pixel_size_est
                                   for latt in self.latt_dict.values()])
+            print(pixel_size)
             flag_estimated_pixel_size = True
 
         if (type(outlier_disp_cutoff) == float or
@@ -771,7 +772,6 @@ class HRImage:
         else:
             ncols_ = ncols
 
-        # print(nrows, ncols_)
         gs = fig.add_gridspec(
             nrows=nrows,
             ncols=ncols_,
@@ -1072,7 +1072,7 @@ class AtomicColumnLattice:
     fit_atom_columns(
         self,
         buffer=0,
-        local_thresh_factor=1,
+        bkgd_thresh_factor=1,
         peak_sharpening_filter='auto',
         peak_grouping_filter='auto',
         filter_by='elem',
@@ -1379,7 +1379,7 @@ class AtomicColumnLattice:
             fft_der_ds = fft_der
         masks, num_masks, _, spots = watershed_segment(
             fft_der_ds,
-            local_thresh_factor=0,
+            bkgd_thresh_factor=0,
             buffer=2*sigma
         )
 
@@ -1504,20 +1504,23 @@ class AtomicColumnLattice:
 
         if self.sigma is None:
             self.sigma = get_feature_size(self.image)
-            sigma = self.sigma
+            # sigma = self.sigma
 
         image_std = image_norm(gaussian_filter(
             std_local(self.image, r),
-            sigma=sigma)
+            sigma=self.sigma)
         )
         new_mask = np.where(image_std > thresh, 1, 0)
         if fill_holes:
             new_mask = binary_fill_holes(new_mask)
         if buffer:
-            new_mask = erosion(
-                new_mask,
-                footprint=np.ones((3, 3))
-            )
+            footprint = get_circular_kernel(1)
+
+            for _ in range(buffer):
+                new_mask = erosion(
+                    new_mask,
+                    footprint=footprint
+                )
 
         self.roi_mask *= new_mask
 
@@ -2093,12 +2096,9 @@ class AtomicColumnLattice:
 
         t = [time.time()]
 
-        for i, mult in enumerate([1, 3, 9]):
+        for i, mult in enumerate([1, 3, 10]):
             lim = mult * init_inc
 
-            # print(f'Refinement iteration {i+1}')
-
-            # if lim > init_inc:
             at_cols_orig_type[['x_ref', 'y_ref']] = (
                 at_cols_orig_type.loc[:, 'u':'v'].to_numpy(dtype=float)
                 @ self.dir_struct_matrix
@@ -2148,8 +2148,6 @@ class AtomicColumnLattice:
             self.y0 = params[5]
 
             t += [time.time()]
-            # print(f'{int((t[-1]-t[-2]) // 60)} min '
-            #       + f'{(t[-1]-t[-2]) % 60 :.{2}f} sec')
 
         at_cols[['x_ref', 'y_ref']] = (
             at_cols.loc[:, 'u':'v'].to_numpy(dtype=float)
@@ -2241,7 +2239,7 @@ class AtomicColumnLattice:
     def fit_atom_columns(
             self,
             buffer=0,
-            local_thresh_factor=0.95,
+            bkgd_thresh_factor=0.95,
             pos_toler=None,
             peak_sharpening_filter='auto',
             peak_grouping_filter='auto',
@@ -2251,7 +2249,6 @@ class AtomicColumnLattice:
             parallelize=True,
             use_circ_gauss=False,
             use_bounds=False,
-            use_background_param=True,
             pos_bound_dist=None
     ):
         """Algorithm for fitting 2D Gaussians to HR STEM image.
@@ -2283,11 +2280,11 @@ class AtomicColumnLattice:
             Distance defining the image border used to ignore atom columns
             whose fits my be questionable.
 
-        local_thresh_factor : scalar
+        bkgd_thresh_factor : scalar
             Removes background from each segmented region by thresholding.
             Threshold value determined by finding the maximum value of edge
             pixels in the segmented region and multipling this value by the
-            local_thresh_factor value. The LoG-filtered image (with
+            bkgd_thresh_factor value. The LoG-filtered image (with
             sigma=peak_sharpening_filter) is used for this calculation.
             Default: 0.95.
 
@@ -2361,12 +2358,6 @@ class AtomicColumnLattice:
             unbounded.
             Default: False
 
-        use_background_param : bool
-            Whether to use the background parameter when fitting each atom
-            column or group of columns. If False, background value is forced
-            to be 0.
-            Default: True
-
         pos_bound_dist : 'auto' or scalar or None
             The +/- distance in Angstroms used to bound the x, y position of
             each atom column fit from its initial guess location. If 'auto',
@@ -2387,8 +2378,6 @@ class AtomicColumnLattice:
         process, and check for exceptions"""
         t = [time.time()]
         self.buffer = buffer
-        if not use_background_param:
-            use_bounds = True
 
         if self.at_cols_uncropped.shape[0] == 0:
             raise Exception(
@@ -2471,10 +2460,10 @@ class AtomicColumnLattice:
         """Find minimum distance (in pixels) between atom columns for peak
         detection neighborhood"""
 
-        min_dist = self.get_min_atom_col_dist()
+        self.min_dist = self.get_min_atom_col_dist()
 
         if pos_bound_dist == 'auto':
-            pos_bound_dist = min_dist/2
+            pos_bound_dist = self.min_dist/2
         elif pos_bound_dist is None:
             pos_bound_dist = np.inf
         elif (np.isin(type(pos_bound_dist), [float, int]).item() &
@@ -2492,9 +2481,9 @@ class AtomicColumnLattice:
         masks"""
         peak_masks, num_peak_masks, slices_LoG, xy_peak = watershed_segment(
             img_LoG,
-            local_thresh_factor=local_thresh_factor,
+            bkgd_thresh_factor=bkgd_thresh_factor,
             watershed_line=watershed_line,
-            min_dist=min_dist * 0.75
+            min_dist=self.min_dist * 0.75
         )
 
         t += [time.time()]
@@ -2505,9 +2494,9 @@ class AtomicColumnLattice:
         if peak_grouping_filter is not None:
             group_masks, _, _, _ = watershed_segment(
                 img_gauss,
-                local_thresh_factor=0,
+                bkgd_thresh_factor=0,
                 watershed_line=watershed_line,
-                min_dist=min_dist
+                min_dist=self.min_dist
             )
 
             t += [time.time()]
@@ -2527,6 +2516,8 @@ class AtomicColumnLattice:
         )
         xy_peak = np.array([xy_peak[ind, :] for ind in inds])
         slices_LoG = [slices_LoG[ind] for ind in inds]
+
+        self.slices_LoG = slices_LoG
 
         """If the difference between detected peak position and reference
         position is greater than the position tolerance, the reference is taken
@@ -2618,6 +2609,7 @@ class AtomicColumnLattice:
             np.min(group[2]): np.max(group[3])]
             for group in group_fit_slices
         ]
+        self.group_slices = group_slices
 
         """Pack image slices and metadata together for the fitting routine"""
 
@@ -2631,7 +2623,6 @@ class AtomicColumnLattice:
             pos_bound_dist=pos_bound_dist,
             use_circ_gauss=use_circ_gauss,
             use_bounds=use_bounds,
-            use_background_param=use_background_param,
         )
 
         self.args_packed = args_packed
@@ -3428,7 +3419,7 @@ class AtomicColumnLattice:
             masks_indiv, n_peaks, _, peaks = watershed_segment(
                 pcf_sm,
                 min_dist=sigma,
-                local_thresh_factor=0,
+                bkgd_thresh_factor=0,
                 sigma=None,
                 buffer=buffer,
                 watershed_line=False,
@@ -3461,7 +3452,7 @@ class AtomicColumnLattice:
                 group_masks, _, _, _ = watershed_segment(
                     pcf_sm,
                     min_dist=sigma_group,
-                    local_thresh_factor=0,
+                    bkgd_thresh_factor=0,
                     sigma=None,
                     buffer=0,
                     watershed_line=True
@@ -3552,12 +3543,12 @@ class AtomicColumnLattice:
                     p0 = np.array(p0 + [0])
                     bounds += [(0, 0)]
 
-                    params = fit_gaussian_ellip(
+                    params = fit_gaussians(
                         pcf_masked,
                         p0,
-                        masks=None,
                         method='L-BFGS-B',
-                        bounds=bounds
+                        bounds=bounds,
+                        shape='ellip'
                     )
 
                     params = params[:, :-1]
@@ -3981,8 +3972,6 @@ class AtomicColumnLattice:
             number_of_peaks_to_pick=number_of_peaks_to_pick,
             plot_equ_ellip=plot_equ_ellip,
         )
-
-        # print(vects)
 
         if dist_along_vector is not None:
             dist_along_vector = dist_along_vector.reshape(-1, 2)
