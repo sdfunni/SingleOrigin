@@ -3203,6 +3203,7 @@ class AtomicColumnLattice:
         sublattice_list=None,
         get_only_partial_vpcfs=False,
         affine_transform=False,
+        method='linearKDE'
     ):
         """Calculates pair-pair vPCFs for all sublattices in the
         AtomColumnLattice object or a specified subset.
@@ -3258,6 +3259,11 @@ class AtomicColumnLattice:
             CIF file is to the actual sample imaged. Realtive information
             (i.e. size of one peak compared to another) will be mostly
             unaffected.
+
+        method: str
+            Must be either 'bin' or 'linearKDE'. See the documentation of
+            utils.get_vpcf for details.
+            Default: 'linearKDE'
 
         Returns
         -------
@@ -3325,7 +3331,7 @@ class AtomicColumnLattice:
                 coords2=sub2,
                 d=d,
                 area=area,
-                method='weighted',
+                method=method,
             )
 
         self.vpcfs['metadata'] = {'origin': origin,

@@ -163,3 +163,7 @@ SingleOrigin-2.3.0.tar.gz
 find_dp_peaks.py
 *.gz
 *.gz
+.idea/modules.xml
+.idea/SingleOrigin.iml
+.idea/misc.xml
+.idea/workspace.xml

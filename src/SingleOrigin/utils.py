@@ -2149,7 +2149,6 @@ def fit_gaussians(
 
     """
 
-    num_gauss = int(np.ceil(p0.shape[0]/7))
     img_shape = data.shape
 
     y, x = np.indices(img_shape)
@@ -2195,9 +2194,10 @@ def fit_gaussians(
 
         n_params = 6
 
+    params_shaped = params[:-1].reshape((-1, n_params))
     params = np.concatenate(
-        (params[:-1].reshape((-1, n_params)),
-         np.ones((num_gauss, 1))*params[-1]),
+        (params_shaped,
+         np.ones((params_shaped.shape[0], 1))*params[-1]),
         axis=1
     )
     if circular:
