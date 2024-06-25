@@ -855,10 +855,10 @@ class HRImage:
             disp_pm = (norm(dxy, axis=1) * pixel_size * 100)
             normed = disp_pm / max_colorwheel_range_pm
             print(rf'Displacement statistics for {site}:',
-                  f'average: {np.mean(disp_pm)  :.{2}f} (pm)',
-                  f'standard deviation: {np.std(disp_pm)  :.{2}f} (pm)',
-                  f'maximum: {np.max(disp_pm)  :.{2}f} (pm)',
-                  f'minimum: {np.min(disp_pm)  :.{2}f} (pm)',
+                  f'average: {np.mean(disp_pm):.{2}f} (pm)',
+                  f'standard deviation: {np.std(disp_pm):.{2}f} (pm)',
+                  f'maximum: {np.max(disp_pm):.{2}f} (pm)',
+                  f'minimum: {np.min(disp_pm):.{2}f} (pm)',
                   '\n',
                   sep='\n')
             hsv[:, 2] = np.where(normed > 1, 1, normed)
@@ -2475,7 +2475,7 @@ class AtomicColumnLattice:
             )
 
         t += [time.time()]
-        print(f'Step 1 (Initial checks): {(t[-1]-t[-2]) :.{2}f} sec')
+        print(f'Step 1 (Initial checks): {(t[-1]-t[-2]):.{2}f} sec')
 
         """Use Watershed segmentation with LoG filtering to generate fitting
         masks"""
@@ -2487,7 +2487,7 @@ class AtomicColumnLattice:
         )
 
         t += [time.time()]
-        print(f'Step 2 (fitting masks): {(t[-1]-t[-2]) :.{2}f} sec')
+        print(f'Step 2 (fitting masks): {(t[-1]-t[-2]):.{2}f} sec')
 
         """Use Watershed segmentation with Gaussian blur to group columns for
         simultaneous fitting"""
@@ -2500,7 +2500,7 @@ class AtomicColumnLattice:
             )
 
             t += [time.time()]
-            print(f'Step 3 (grouping masks): {(t[-1]-t[-2]) :.{2}f} sec')
+            print(f'Step 3 (grouping masks): {(t[-1]-t[-2]):.{2}f} sec')
 
         else:
             group_masks = peak_masks
@@ -2635,7 +2635,7 @@ class AtomicColumnLattice:
         self.unpacking_inds = unpacking_inds
 
         t += [time.time()]
-        print(f'Step 4 (Final prep): {(t[-1]-t[-2]) % 60 :.{2}f} sec')
+        print(f'Step 4 (Final prep): {(t[-1]-t[-2]) % 60:.{2}f} sec')
 
         """Run fitting routine"""
         print('Fitting atom columns...')
@@ -2668,7 +2668,7 @@ class AtomicColumnLattice:
         )
 
         t += [time.time()]
-        print(f'Step 5 (Fitting): {(t[-1]-t[-2]) % 60 :.{2}f} sec')
+        print(f'Step 5 (Fitting): {(t[-1]-t[-2]) % 60:.{2}f} sec')
 
         """Post-process results"""
 
@@ -2747,7 +2747,7 @@ class AtomicColumnLattice:
         ]
 
         t += [time.time()]
-        print(f'Step 6 (Post-processing): {(t[-1]-t[-2]) % 60 :.{2}f} sec',
+        print(f'Step 6 (Post-processing): {(t[-1]-t[-2]) % 60:.{2}f} sec',
               '\n Done.')
 
     def show_masks(
@@ -2926,9 +2926,9 @@ class AtomicColumnLattice:
         print(
             'Residual distortion of reference lattice basis vectors from .cif:'
         )
-        print(f'Scalar component: {scale_distortion_res * 100 :.{4}f} %')
-        print(f'Shear component: {shear_distortion_res :.{6}f} (radians)')
-        print(f'Estimated Pixel Size: {self.pixel_size_est * 100 :.{3}f} (pm)')
+        print(f'Scalar component: {scale_distortion_res * 100:.{4}f} %')
+        print(f'Shear component: {shear_distortion_res:.{6}f} (radians)')
+        print(f'Estimated Pixel Size: {self.pixel_size_est * 100:.{3}f} (pm)')
 
     def get_fitting_residuals(self):
         """Calculates fitting residuals for each atom column. Plots all
@@ -3069,8 +3069,8 @@ class AtomicColumnLattice:
 
         chi_sq = np.sum((r**2) / v)
 
-        print(f'chi-squared of all atom column fits: {chi_sq :.{4}e} \n')
-        print(f'R-squared of all atom column fits: {R_sq :.{6}f} \n')
+        print(f'chi-squared of all atom column fits: {chi_sq:.{4}e} \n')
+        print(f'R-squared of all atom column fits: {R_sq:.{6}f} \n')
 
         return fig
 
@@ -3325,7 +3325,7 @@ class AtomicColumnLattice:
                 coords2=sub2,
                 d=d,
                 area=area,
-                method='weighted',
+                method='linearKDE',
             )
 
         self.vpcfs['metadata'] = {'origin': origin,

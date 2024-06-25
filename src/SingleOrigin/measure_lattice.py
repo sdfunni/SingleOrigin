@@ -1170,9 +1170,11 @@ class ReciprocalLattice:
 
         """
 
+        basis_factor = np.array(basis_factor, ndmin=2).T
+
         fig, ax = plot_basis(
             self.ewpc_mean,
-            self.basis_mean_real_px,
+            self.basis_mean_real_px * basis_factor,
             self.origin,
             return_fig=True,
             vmax=self.ewpc_vmax,
@@ -1677,6 +1679,7 @@ class ReciprocalLattice:
         superlatt_order=(1,),
         min_order=1,
         max_order=1,
+        known_qvects=None,
         show_fit=True,
         verbose=True,
         logscale=True,
@@ -1719,14 +1722,7 @@ class ReciprocalLattice:
 
         """
 
-        if min_order < 1:
-            min_order = 1
-
-        if (len(superlatt_order) != n_superlatt) & (superlatt_order == (1,)):
-            superlatt_order *= n_superlatt
-
-        elif len(superlatt_order) != n_superlatt:
-            raise Exception('len(superlatt_order) must equal n_superlatt')
+        xy = self.all_peaks.loc[:, 'x':'y'].to_numpy()
 
         if self.datatype == 'image':
             n_picks = n_superlatt
@@ -1751,67 +1747,79 @@ class ReciprocalLattice:
                 "'datatype' must be 'image' or 'dp'."
             )
 
-        h, w = im_meas.shape
+        if known_qvects is None:
+            if min_order < 1:
+                min_order = 1
 
-        xy = self.all_peaks.loc[:, 'x':'y'].to_numpy()
+            if ((len(superlatt_order) != n_superlatt)
+                    & (superlatt_order == (1,))):
+                superlatt_order *= n_superlatt
 
-        # Get vmin for plotting (helps with dead camera pixels)
-        # vmin = np.max([np.mean(im_meas) - 1*np.std(im_meas), 0])
+            elif len(superlatt_order) != n_superlatt:
+                raise Exception('len(superlatt_order) must equal n_superlatt')
 
-        if n_picks > 0:
-            fig, ax = plt.subplots(figsize=(10, 10))
-            ax.imshow(im_meas, cmap='plasma', norm=imnorm)
-            ax.scatter(xy[:, 0], xy[:, 1], c='black', marker='+')
-            ax.scatter(
-                self.recip_latt.loc[:, 'x_ref'],
-                self.recip_latt.loc[:, 'y_ref'],
-                ec='white',
-                fc='none',
-                marker='o',
-                s=100,
-            )
+            h, w = im_meas.shape
 
-            if self.datatype == 'image':
-                ax.scatter(origin[0], origin[1], c='white', marker='+')
-                fig.suptitle(
-                    'Pick peaks for the q1, q2, etc. superlattice vectors',
-                    fontsize=12,
-                    c='black',
+            # Get vmin for plotting (helps with dead camera pixels)
+            # vmin = np.max([np.mean(im_meas) - 1*np.std(im_meas), 0])
+
+            if n_picks > 0:
+                fig, ax = plt.subplots(figsize=(10, 10))
+                ax.imshow(im_meas, cmap='plasma', norm=imnorm)
+                ax.scatter(xy[:, 0], xy[:, 1], c='black', marker='+')
+                ax.scatter(
+                    self.recip_latt.loc[:, 'x_ref'],
+                    self.recip_latt.loc[:, 'y_ref'],
+                    ec='white',
+                    fc='none',
+                    marker='o',
+                    s=100,
                 )
 
-            elif self.datatype == 'dp':
-                fig.suptitle(
-                    'Pick a Bragg peak followed by a corresponding ' +
-                    'superlattice peak. Repeat for each superlattice.',
-                    fontsize=12,
-                    c='black',
-                )
+                if self.datatype == 'image':
+                    ax.scatter(origin[0], origin[1], c='white', marker='+')
+                    fig.suptitle(
+                        'Pick peaks for the q1, q2, etc. superlattice vectors',
+                        fontsize=12,
+                        c='black',
+                    )
 
-            ax.set_xticks([])
-            ax.set_yticks([])
+                elif self.datatype == 'dp':
+                    fig.suptitle(
+                        'Pick a Bragg peak followed by a corresponding ' +
+                        'superlattice peak. Repeat for each superlattice.',
+                        fontsize=12,
+                        c='black',
+                    )
 
-            if self.datatype == 'image':
-                ax.set_xlim(np.min(xy[:, 0]) - 100, np.max(xy[:, 0]) + 100)
-                ax.set_ylim(np.max(xy[:, 1]) + 100, np.min(xy[:, 1]) - 100)
+                ax.set_xticks([])
+                ax.set_yticks([])
 
-            basis_picks_xy = np.array(plt.ginput(n_picks, timeout=60))
+                if self.datatype == 'image':
+                    ax.set_xlim(np.min(xy[:, 0]) - 100, np.max(xy[:, 0]) + 100)
+                    ax.set_ylim(np.max(xy[:, 1]) + 100, np.min(xy[:, 1]) - 100)
 
-            plt.close('all')
+                basis_picks_xy = np.array(plt.ginput(n_picks, timeout=60))
 
-        # Match peaks to  click points to get reciprocal superspace basis
-        vects = np.array([xy - i for i in basis_picks_xy])
-        inds = np.argmin(norm(vects, axis=2), axis=1)
-        basis_picks_xy = xy[inds, :]
+                plt.close('all')
 
-        if self.datatype == 'dp':
+            # Match peaks to  click points to get reciprocal superspace basis
+            vects = np.array([xy - i for i in basis_picks_xy])
+            inds = np.argmin(norm(vects, axis=2), axis=1)
+            basis_picks_xy = xy[inds, :]
 
-            origin = basis_picks_xy[::2, :]
-            suplat = basis_picks_xy[1::2, :]
+            if self.datatype == 'dp':
 
-        a_4_star = (suplat - origin) / np.array(superlatt_order)[:, None]
+                origin = basis_picks_xy[::2, :]
+                suplat = basis_picks_xy[1::2, :]
+
+            a_4_star = (suplat - origin) / np.array(superlatt_order)[:, None]
+
+        else:
+            a_4_star = known_qvects @ self.a_star
 
         super_latt_indices = np.array([
-            i for i in range(-max_order, max_order+1) if np.abs(i) >= min_order
+            i for i in range(1, max_order+1) if np.abs(i) >= min_order
         ])
 
         # Make array of all superlattice reflection vectors to max_order
@@ -1836,8 +1844,14 @@ class ReciprocalLattice:
         ])
 
         # Match reciprocal superlattice points to peaks; make DataFrame
-        vects = np.array([xy - xy_ for xy_ in q_pos])
-        inds = np.argmin(norm(vects, axis=2), axis=1)
+        if known_qvects is None:
+            vects = np.array([xy - xy_ for xy_ in q_pos])
+            inds = np.argmin(norm(vects, axis=2), axis=1)
+
+        else:
+            inds = np.arange(q_pos.shape[0])
+            xy = np.zeros(q_pos.shape)
+            xy[:] = np.nan
 
         h_inds = self.recip_latt.loc[:, 'h'].tolist()
         h_inds = np.concatenate([[h_ind] * q_vects.shape[0]
@@ -1861,68 +1875,82 @@ class ReciprocalLattice:
         for i, col in enumerate(q_order):
             self.recip_suplatt[q_keys[i]] = col
 
-        # Remove peaks that are too far from initial reciprocal lattice
-        self.recip_suplatt = self.recip_suplatt[norm(
-            self.recip_suplatt.loc[:, 'x_com':'y_com'].to_numpy(dtype=float)
-            - self.recip_suplatt.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float),
-            axis=1
-        ) < 0.1*np.max(norm(a_4_star, axis=1))
-        ].reset_index(drop=True)
+        if known_qvects is None:
+            # Remove peaks that are too far from initial reciprocal lattice
+            self.recip_suplatt = self.recip_suplatt[norm(
+                self.recip_suplatt.loc[:, 'x_com':'y_com'].to_numpy(
+                    dtype=float)
+                - self.recip_suplatt.loc[:,
+                                         'x_ref':'y_ref'].to_numpy(dtype=float),
+                axis=1
+            ) < 0.1*np.max(norm(a_4_star, axis=1))
+            ].reset_index(drop=True)
 
-        # Refine reciprocal basis vectors
-        M_star = self.recip_suplatt.loc[:, 'h': 'k'].to_numpy(dtype=float)
+            # Refine reciprocal basis vectors
+            M_star = self.recip_suplatt.loc[:, 'h': 'k'].to_numpy(dtype=float)
 
-        xy_bragg = M_star @ self.a_star + self.origin
+            xy_bragg = M_star @ self.a_star + self.origin
 
-        q_vect_xy = self.recip_suplatt.loc[:, 'x_com': 'y_com'
-                                           ].to_numpy(dtype=float) - xy_bragg
+            q_vect_xy = self.recip_suplatt.loc[:, 'x_com': 'y_com'
+                                               ].to_numpy(dtype=float) - xy_bragg
 
-        q_order = self.recip_suplatt.loc[:, q_keys[0]:q_keys[-1]
-                                         ].to_numpy(dtype=float)
+            q_order = self.recip_suplatt.loc[:, q_keys[0]:q_keys[-1]
+                                             ].to_numpy(dtype=float)
 
-        p0 = np.concatenate((a_4_star.flatten(), np.array([0, 0])))
+            p0 = np.concatenate((a_4_star.flatten(), np.array([0, 0])))
 
-        params = fit_lattice(p0, q_vect_xy, q_order, fix_origin=True)
+            params = fit_lattice(p0, q_vect_xy, q_order, fix_origin=True)
 
-        # Save data and report key values
-        self.a_4_star = params[:n_superlatt*2].reshape((n_superlatt, 2))
+            # Save data and report key values
+            self.a_4_star = params[:n_superlatt*2].reshape((n_superlatt, 2))
 
-        self.recip_suplatt[['x_ref', 'y_ref']] = (
-            q_order @ self.a_4_star + xy_bragg
-        )
+            self.recip_suplatt[['x_ref', 'y_ref']] = (
+                q_order @ self.a_4_star + xy_bragg
+            )
 
-        if n_superlatt > 1:
-            theta_super = [absolute_angle_bt_vectors(
-                self.a_4_star[i],
-                self.a_4_star[int((i+1) % n_superlatt)],
-                np.identity(2))
+            if n_superlatt > 1:
+                theta_super = [absolute_angle_bt_vectors(
+                    self.a_4_star[i],
+                    self.a_4_star[int((i+1) % n_superlatt)],
+                    np.identity(2))
+                    for i in range(n_superlatt)
+                ]
+
+            self.theta_bragg_to_super = [rotation_angle_bt_vectors(
+                self.a1_star, self.a_4_star[i], np.identity(2))
                 for i in range(n_superlatt)
             ]
 
-        self.theta_bragg_to_super = [rotation_angle_bt_vectors(
-            self.a1_star, self.a_4_star[i], np.identity(2))
-            for i in range(n_superlatt)
-        ]
-
-        ratios = np.around(
-            [norm(self.a_4_star[i]) /
-             norm(self.a_star, axis=1)
-             for i in range(n_superlatt)],
-            decimals=5
-        )
-
-        if verbose:
-            if n_superlatt > 1:
-                print(
-                    'Rotation angles between superlattice vectors (degrees): ',
-                    f'{theta_super}.'
-                )
-
-            print(
-                'Superlattice rotation angle from a1_star (degrees): ',
-                f'{self.theta_bragg_to_super}.'
+            ratios = np.around(
+                [norm(self.a_4_star[i]) /
+                 norm(self.a_star, axis=1)
+                 for i in range(n_superlatt)],
+                decimals=5
             )
-            print(f'a1 : q norm ratios: {ratios}')
+
+            if verbose:
+                if n_superlatt > 1:
+                    print(
+                        'Rotation angles between superlattice vectors (degrees): ',
+                        f'{theta_super}.'
+                    )
+
+                print(
+                    'Superlattice rotation angle from a1_star (degrees): ',
+                    f'{self.theta_bragg_to_super}.'
+                )
+                print(f'a1 : q norm ratios: {ratios}')
+
+        else:
+            # Remove superlattice points outside image bounds
+
+            self.a_4_star = a_4_star
+            self.recip_suplatt = self.recip_suplatt[(
+                (self.recip_suplatt.x_ref >= 0) &
+                (self.recip_suplatt.x_ref <= self.dp_w-1) &
+                (self.recip_suplatt.y_ref >= 0) &
+                (self.recip_suplatt.y_ref <= self.dp_h-1)
+            )]
 
         # Plot refined basis
         if show_fit:

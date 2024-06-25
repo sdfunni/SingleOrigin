@@ -17,6 +17,7 @@
 
 
 import os
+from pathlib import Path
 import copy
 import warnings
 import io
@@ -30,11 +31,10 @@ from numpy.linalg import norm, lstsq
 
 import pandas as pd
 
+import matplotlib as mpl
 from matplotlib import pyplot as plt
 from matplotlib.backend_bases import MouseButton
 from matplotlib.colors import LogNorm, PowerNorm
-
-
 from matplotlib_scalebar.scalebar import ScaleBar
 
 from scipy.signal import convolve2d
@@ -434,7 +434,7 @@ def select_folder():
     """
 
     print('Select folder...')
-    path = qfd.getExistingDirectory()
+    path = Path(qfd.getExistingDirectory())
 
     return path
 
@@ -474,7 +474,7 @@ def select_file(folder_path=None, message=None, ftypes=None):
             ftypes = [ftypes]
         ftypes = ['*' + ftype for ftype in ftypes]
         ftypes = f'({", ".join(ftypes)})'
-    path = qfd.getOpenFileName(filter=ftypes)[0]
+    path = Path(qfd.getOpenFileName(filter=ftypes)[0])
 
     os.chdir(cwd)
 
@@ -489,7 +489,7 @@ def load_image(
         path=None,
         display_image=True,
         images_from_stack='all',
-        dsets_to_load=0,
+        dsets_to_load='all',
         return_path=False,
         norm_image=True,
         full_metadata=False,
@@ -561,10 +561,10 @@ def load_image(
             filter="Images (*.png *.jpg *.tif *.dm4 *.dm3 *.emd *.ser)"
         )
 
-    if ((type(dsets_to_load) is int) | (type(dsets_to_load) is str)) \
-            & (dsets_to_load != 'all'):
+    # if ((type(dsets_to_load) is int) | (type(dsets_to_load) is str)) \
+    #         & (dsets_to_load != 'all'):
 
-        dsets_to_load = [dsets_to_load]
+    #     dsets_to_load = [dsets_to_load]
 
     if (type(dsets_to_load) is list) & (len(dsets_to_load) > 1) \
             & (path[-3:] != 'emd'):
@@ -1159,7 +1159,7 @@ def rotate_image_kde(
         angle,
         bandwidth=0.5,
         reshape_method='original',
-        fill_value=0
+        fill_value=np.nan
 ):
     """Rotate an image to arbitrary angle & interpolate using KDE.
 
@@ -1277,6 +1277,7 @@ def rotate_image_kde(
         ((np.ceil(np.max(coords[:, 1])) + 1).astype(int),
          (np.ceil(np.max(coords[:, 0])) + 1).astype(int)),
         np.fliplr(vertices))
+    # mask = erosion(mask, footprint=np.ones((3, 3)))
 
     image_rot = linearKDE_2D(
         coords_,
@@ -1287,11 +1288,14 @@ def rotate_image_kde(
         weights=weights,
         return_binedges=False,
     )
-    image_rot *= mask
+    image_rot = np.where(mask == 0, fill_value, image_rot)
 
     if reshape_method == 'only_data':
         xlim, ylim, crop_sl = binary_find_largest_rectangle(mask)
         image_rot = image_rot[ylim[0]:ylim[1], xlim[0]:xlim[1]]
+
+    else:
+        image_rot = image_rot[1:-1, 1:-1]
 
     return image_rot
 
@@ -1530,8 +1534,10 @@ def get_feature_size(image):
     scale_step = 1
 
     scale = np.arange(min_scale, max_scale, scale_step)
+
+    trim = int(np.min(image.shape) * 0.1)
     hess_max = np.array([
-        np.max(hessian_matrix_det(image, sigma=i)[64:-64, 64:-64])
+        np.max(hessian_matrix_det(image, sigma=i)[trim:-trim, trim:-trim])
         for i in scale
     ])
 
@@ -2149,7 +2155,13 @@ def fit_gaussians(
 
     """
 
-    num_gauss = int(np.ceil(p0.shape[0]/7))
+    if circular:
+        n_params = 4
+    else:
+        n_params = 6
+
+    num_gauss = int((p0.shape[0] - 1) / n_params)
+
     img_shape = data.shape
 
     y, x = np.indices(img_shape)
@@ -2182,8 +2194,6 @@ def fit_gaussians(
             method=method
         ).x
 
-        n_params = 4
-
     else:
         params = minimize(
             gaussian_ellip_ss,
@@ -2193,10 +2203,8 @@ def fit_gaussians(
             method=method
         ).x
 
-        n_params = 6
-
     params = np.concatenate(
-        (params[:-1].reshape((-1, n_params)),
+        (params[:-1].reshape((num_gauss, n_params)),
          np.ones((num_gauss, 1))*params[-1]),
         axis=1
     )
@@ -2791,7 +2799,7 @@ def get_ewpc(data, upsample_factor=1, window=None):
     if window is None:
         window = True
     ewpc = fft_square(
-        (np.log(data - minval + 1e-8)),
+        (np.log(data - minval + 1)),
         hann_window=(window),
         upsample_factor=upsample_factor,
         abs_val=True)
@@ -2808,7 +2816,7 @@ def get_ewic(data, upsample_factor=1, window=None):
     if window is None:
         window = True
     ewcc = fft_square(
-        np.log(data - minval + 1e-8),
+        np.log(data - minval + 1),
         hann_window=window,
         upsample_factor=upsample_factor,
         abs_val=False,
@@ -3073,7 +3081,7 @@ def find_dp_center_ewicmin(dp, xy0=None):
         ewic_center_obj_fn,
         xy0,
         args=dp,
-        method='BFGS',
+        method='Powell',
     ).x
 
     return xy_cent
@@ -3964,8 +3972,8 @@ def quickplot(
         pixel_size=None,
         pixel_unit=None,
         scalebar_len=None,
-        return_figax=False,
-        scaling='linear',
+        figax=False,
+        scaling=None,
         vmin=None,
         vmax=None,
 ):
@@ -4003,14 +4011,15 @@ def quickplot(
         function.
         Default: None
 
-    return_fig : bool
+    figax : bool or matplotlib.Axes object
         Whether to return the figure and axes objects for modification by user.
+        OR the Axes object to plot the spectrum into.
         Default: False
 
     scaling : float or str
-        Linear ('linear'), log ('log') or power law (float on interval [0, 1])
+        Linear (None), log ('log') or power law (float on interval [0, 1])
         scaling of the image intensity.
-        Default: 'linear'
+        Default: None
 
     Returns
     -------
@@ -4021,13 +4030,26 @@ def quickplot(
     """
 
     if scaling == 'log':
+        if vmin is None:
+            vmin = 0
         norm = LogNorm(vmin=vmin, vmax=vmax)
+
+        im -= np.min(im) - 1
+
     elif type(scaling) in [float, int]:
         norm = PowerNorm(scaling, vmin=vmin, vmax=vmax)
     else:
         norm = None
 
-    fig, ax = plt.subplots(1, figsize=figsize)
+    cmap = mpl.colormaps.get_cmap(cmap)
+    cmap.set_bad(color=cmap(0))
+
+    if type(figax) == bool:
+        fig, ax = plt.subplots(1, figsize=(14, 7))
+
+    else:
+        ax = figax
+
     if scaling is not None:
         ax.imshow(im, cmap=cmap, norm=norm)
     else:
@@ -4045,7 +4067,8 @@ def quickplot(
                                  for int_ in [1, 2, 4, 5]])
             fov = np.max(im.shape) * pixel_size
             scalebar_len = sb_sizes[np.argmax(sb_sizes > fov*0.1)]
-            scalebar_len
+            if scalebar_len >= 1:
+                scalebar_len = int(scalebar_len)
 
         scalebar = ScaleBar(
             pixel_size,
@@ -4061,5 +4084,7 @@ def quickplot(
         )
         ax.add_artist(scalebar)
 
-    if return_figax:
+    if figax is True:
         return fig, ax
+    # elif 'axes' in str(type(figax)):
+    #     return ax
