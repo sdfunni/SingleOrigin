@@ -2390,9 +2390,7 @@ def fit_gaussian_group(
                     (y0-pos_bound_dist/2, y0+pos_bound_dist),
                     (1, 1.2),
                     (0, None),
-                ] * num
-
-                + [(0, None)]
+                ] * num + [(0, None)]
                 method = 'L-BFGS-B'
 
             else:
