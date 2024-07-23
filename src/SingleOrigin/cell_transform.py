@@ -211,9 +211,8 @@ class UnitCell():
 
             atoms['Debye_Waller'] = dwf[:, 0]
 
-        # Sort and combine atoms if multiple at one position
-        # atoms = atoms.sort_values(['u', 'v', 'w'])
-        # atoms.reset_index(inplace=True, drop=True)
+        # Sort and combine atoms if multiple at one position using the sorting
+        # functionality of np.unique
 
         _, index, rev_index, counts = np.unique(
             atoms.loc[:, 'u':'w'],
@@ -223,14 +222,27 @@ class UnitCell():
             return_counts=True
         )
 
-        atoms_ = atoms.iloc[index, :].copy()
+        atoms_ = atoms.loc[index, :].copy()
+
+        # Get the forward indexing from the original "atoms" DataFrame to the
+        # sorted unique DataFrame, "atoms_". This allows correct combination of
+        # fractional occupancy positions with two different species into single
+        # DataFrame entries and is essentially the inverse of the "rev_index"
+        # returned by np.unique above.
+
+        fwd_index = [np.where(rev_index == rev_index[i])[0] for i in index]
+
         for i, ind in enumerate(index):
             if counts[i] > 1:
-                for j in range(counts[i]-1):
-                    atoms_.at[ind, 'elem'] += (
-                        '/' + atoms.at[np.sum(counts[:i])+1+j, 'elem'])
-                    atoms_.at[ind, 'site_frac'] += (
-                        '/' + atoms.at[np.sum(counts[:i])+1+j, 'site_frac'])
+
+                atoms_.loc[ind, 'elem'] = '/'.join(
+                    [atoms.loc[f, 'elem'] for f in fwd_index[i]]
+                )
+
+                atoms_.loc[ind, 'site_frac'] = '/'.join(
+                    [atoms.loc[f, 'site_frac'] for f in fwd_index[i]]
+                )
+
         atoms = atoms_.copy()
         del atoms_
 

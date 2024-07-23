@@ -297,18 +297,30 @@ class HRImage:
 
             '''Translation of image center due to increased image array size
                 resulting from the rotation'''
-            origin_shift = np.flip((
-                (np.array(lattice_rot.image.shape, ndmin=2)-1)/2
-                - (np.array(self.image.shape, ndmin=2)-1)/2),
-                axis=1
-            )
+            # print(lattice_rot.image.shape, self.image.shape)
+
+            # origin_shift = np.flip((
+            #     (np.array(lattice_rot.image.shape, ndmin=2)-1)/2
+            #     - (np.array(self.image.shape, ndmin=2)-1)/2),
+            #     axis=1
+            # )
+
+            # origin_shift = (np.array(lattice_rot.image.shape, ndmin=2)-1)/2 \
+            #     - (np.array(self.image.shape, ndmin=2)-1)/2
+
+            origin_shift = np.flip(
+                np.array(lattice_rot.image.shape) -
+                np.array(self.image.shape)) / 2
+
+            print(origin_shift)
+
             '''Find the origin-shifted rotation matrix for transforming atomic
                 column position data'''
 
             xy_fit = lattice_rot.at_cols.loc[:, 'x_fit':'y_fit'].to_numpy(
                 dtype=float)
 
-            rotation_origin = (np.array(self.image.shape)-1)/2
+            rotation_origin = np.flip(np.array(self.image.shape)-1)/2
 
             lattice_rot.at_cols[['x_fit', 'y_fit']] = \
                 rotate_xy(xy_fit, angle, rotation_origin) \
@@ -3842,6 +3854,7 @@ class AtomicColumnLattice:
         )
 
         pts = np.array(plt.ginput(number_of_peaks_to_pick, timeout=30))
+        print(pts)
 
         # # axs[0].scatter(pts[0][0], pts[0][1], marker='+', c='black')
 
@@ -3896,7 +3909,8 @@ class AtomicColumnLattice:
         xlim=None,
         ylim=None,
         scalebar_len=1,
-        outlier_disp_cutoff=None
+        outlier_disp_cutoff=None,
+        cmap='bwr',
     ):
         """Finds vector from vPCF and plots the inter-column distances
         in the image that correspond to that vector.
@@ -4111,7 +4125,7 @@ class AtomicColumnLattice:
                 headaxislength=0,
                 headwidth=0,
                 headlength=0,
-                cmap='bwr',
+                cmap=cmap,
                 width=0.003
             )
 
@@ -4126,7 +4140,7 @@ class AtomicColumnLattice:
             ax.set_ylim(ylim)
 
         cbar = fig.colorbar(
-            ScalarMappable(norm=Normalize(vmin=min_, vmax=max_), cmap='bwr'),
+            ScalarMappable(norm=Normalize(vmin=min_, vmax=max_), cmap=cmap),
             ax=ax,
             orientation='vertical',
             shrink=0.3,
