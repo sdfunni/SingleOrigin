@@ -194,7 +194,7 @@ class HRImage:
             project_uc_2d() method applied. See examples for how to generate
             this.
 
-        origin_atom_column : int
+        origin_atom_column : int | None
             The DataFrame row index (in unitcell.at_cols) of the atom column
             that is later picked by the user to register the reference lattice.
             If None, the closest atom column to the unit cell origin is
