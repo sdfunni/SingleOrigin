@@ -29,9 +29,8 @@ import matplotlib.patches as patches
 
 from CifFile import ReadCif
 
-from PyQt5.QtWidgets import QFileDialog as qfd
-
-from SingleOrigin.utils import (
+from SingleOrigin.system import select_file
+from SingleOrigin.crystalmath import (
     metric_tensor,
     bond_length,
     bond_angle,
@@ -133,11 +132,11 @@ class UnitCell():
 
         if path is None:
             print('Pick an appropriate .cif...')
-            path, _ = qfd.getOpenFileName(
-                filter='*.cif'
-            )
+            path = select_file(message=None, ftypes='.cif')
+
         elif type(path) is str:
             pass
+
         else:
             raise Exception('"Path" must be None or a string.')
 
@@ -298,7 +297,7 @@ class UnitCell():
 
         # Apply origin shift
         xyz = (atoms.loc[:, 'u':'w'] - origin_shift) % 1
-        xyz = np.where(xyz > 0.99, xyz - 1, xyz)
+        # xyz = np.where(xyz > 0.99, xyz - 1, xyz)
 
         atoms[['u', 'v', 'w']] = xyz
         atoms = atoms.sort_values(['u', 'v', 'w'])
@@ -556,12 +555,12 @@ class UnitCell():
         for ignore_element in ignore_elements:
             self.atoms = self.atoms[self.atoms.elem != ignore_element]
 
-        at_cols = self.atoms.copy()
+        at_cols = copy.deepcopy(self.atoms)
 
         if 'Debye_Waller' in at_cols.columns:
             at_cols.drop(['Debye_Waller'], axis=1, inplace=True)
 
-        a_2d = self.a_3d_[1:, 1:]
+        a_2d = self.a_3d[1:, 1:]
 
         at_cols = at_cols.drop(['x', 'u'], axis=1)
 
@@ -694,7 +693,6 @@ class UnitCell():
                     break
 
                 elif dist < toler:
-                    print(np.around(dist, 5))
                     prox_rows.append([j, i])
 
         if len(prox_rows) == 0:
@@ -711,6 +709,7 @@ class UnitCell():
                     if (set(rowsi) & set(rowsj)):
                         combined.append(list(set(rowsi + rowsj)))
 
+            # print(prox_rows)
             combined = np.array(np.unique(combined, axis=0), ndmin=2).tolist()
 
             test = (
@@ -719,6 +718,8 @@ class UnitCell():
             )
 
             prox_rows = combined.copy()
+
+        # TODO: fix the combining method if more than two matches or something
 
         '''Use close-sets to combine dataframe rows and retain all site info'''
         s = '|'
@@ -756,8 +757,6 @@ class UnitCell():
         if new.shape[0] > 0:
             self.at_cols = pd.concat([self.at_cols, new])
         self.at_cols.reset_index(drop=True, inplace=True)
-
-        return self.at_cols
 
     def plot_unit_cell(
             self,
@@ -895,7 +894,7 @@ class UnitCell():
                 sublattice.loc[:, 'y'],
                 color=color_dict[site],
                 label=label_dict[site],
-                **scatter_kwargs_default
+                ** scatter_kwargs_default
             )
 
             if label_dict:

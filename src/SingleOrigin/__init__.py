@@ -16,70 +16,22 @@
     along with this program.  If not, see https://www.gnu.org/licenses"""
 
 
-__version__ = "2.5.9"
+__version__ = "2.6.0"
 
-from SingleOrigin.utils import (
-    metric_tensor,
-    bond_length,
-    bond_angle,
-    absolute_angle_bt_vectors,
-    rotation_angle_bt_vectors,
-    IntPlSpc,
-    IntPlAng,
-    get_astar_2d_matrix,
-    TwoTheta,
-    elec_wavelength,
-    select_folder,
-    select_file,
-    load_image,
-    image_norm,
-    write_image_array_to_tif,
-    band_pass_filter,
-    linearKDE_2D,
-    nearestKDE_2D,
-    fast_rotate_90deg,
-    rotation_matrix,
-    rotate_xy,
-    rotate_image_kde,
-    get_circular_kernel,
-    std_local,
-    binary_find_largest_rectangle,
-    binary_find_smallest_rectangle,
-    plane_2d,
-    plane_fit,
-    fft_square,
-    hann_2d,
-    get_fft_pixel_size,
-    get_feature_size,
-    detect_peaks,
-    watershed_segment,
-    img_equ_ellip,
-    img_ellip_param,
-    gaussian_2d,
-    fit_gaussians,
-    pack_data_prefit,
-    fit_gaussian_group,
-    cft,
-    find_ewpc_peak,
-    get_ewpc,
-    get_ewic,
-    center_image_point,
-    find_dp_center_flip,
-    find_dp_center_ewicmin,
-    pcf_radial,
-    get_vpcf,
-    get_vpcf_peak_params,
-    pick_points,
-    register_lattice_to_peaks,
-    plot_basis,
-    disp_vect_sum_squares,
-    fit_lattice,
-    fft_amplitude_area,
-    quickplot,
-    gaussian_circ_ss,
-    gaussian_ellip_ss,
-)
+# General modules
+from SingleOrigin.system import *
+from SingleOrigin.read import *
+from SingleOrigin.crystalmath import *
+from SingleOrigin.image import *
+from SingleOrigin.fourier import *
+from SingleOrigin.lattice import *
+from SingleOrigin.peakfit import *
+from SingleOrigin.pcf import *
+from SingleOrigin.plot import *
+from SingleOrigin.ndstem import *
+from SingleOrigin.eds import *
 
+# Class modules
 from SingleOrigin.cell_transform import UnitCell
 
 from SingleOrigin.find_atom_columns import (

@@ -57,13 +57,19 @@ from scipy.ndimage import (
     binary_erosion,
 )
 
-from skimage.draw import polygon2mask, polygon
+from skimage.draw import polygon2mask
 from skimage.transform import (downscale_local_mean, rescale)
 from skimage.morphology import erosion
 
-from SingleOrigin.utils import (
+from SingleOrigin.image import (
     image_norm,
-    linearKDE_2D,
+    get_avg_cell,
+    get_circular_kernel,
+    std_local,
+    rotation_matrix,
+    rotate_xy,
+)
+from SingleOrigin.peakfit import (
     img_ellip_param,
     gaussian_2d,
     pack_data_prefit,
@@ -71,17 +77,13 @@ from SingleOrigin.utils import (
     fit_gaussian_group,
     detect_peaks,
     watershed_segment,
-    get_circular_kernel,
-    std_local,
-    fft_square,
-    get_vpcf,
-    fit_lattice,
     get_feature_size,
-    rotation_matrix,
-    rotate_xy,
-    rotation_angle_bt_vectors,
-    quickplot,
 )
+from SingleOrigin.fourier import fft_square
+from SingleOrigin.pcf import get_vpcf
+from SingleOrigin.lattice import fit_lattice
+from SingleOrigin.plot import quickplot
+
 
 # %%
 
@@ -322,16 +324,16 @@ class HRImage:
 
             rotation_origin = np.flip(np.array(self.image.shape)-1)/2
 
-            lattice_rot.at_cols[['x_fit', 'y_fit']] = \
-                rotate_xy(xy_fit, angle, rotation_origin) \
-                + origin_shift
+            lattice_rot.at_cols[['x_fit', 'y_fit']] = rotate_xy(
+                xy_fit, angle, rotation_origin
+            ) + origin_shift
 
             xy_ref = lattice_rot.at_cols.loc[:, 'x_ref':'y_ref'].to_numpy(
                 dtype=float)
 
-            lattice_rot.at_cols[['x_ref', 'y_ref']] = \
-                rotate_xy(xy_ref, angle, rotation_origin) \
-                + origin_shift
+            lattice_rot.at_cols[['x_ref', 'y_ref']] = rotate_xy(
+                xy_ref, angle, rotation_origin
+            ) + origin_shift
 
             [lattice_rot.x0, lattice_rot.y0] = (rotate_xy(
                 np.array([[lattice_rot.x0, lattice_rot.y0]]),
@@ -476,8 +478,9 @@ class HRImage:
             print(pixel_size)
             flag_estimated_pixel_size = True
 
-        if (type(outlier_disp_cutoff) == float or
-                type(outlier_disp_cutoff) == int):
+        if (isinstance(outlier_disp_cutoff, float)
+                or isinstance(outlier_disp_cutoff, int)):
+
             outlier_disp_cutoff /= pixel_size * 100
 
         fig, axs = plt.subplots(
@@ -490,8 +493,8 @@ class HRImage:
 
         if plot_masked_image is True:
             peak_masks = np.sum(np.array([lattice.peak_masks
-                                         for lattice in
-                                         self.latt_dict.values()]),
+                                          for lattice in
+                                          self.latt_dict.values()]),
                                 axis=0)
             axs.imshow(self.image * peak_masks, cmap='gray')
         else:
@@ -745,7 +748,7 @@ class HRImage:
         if sites_to_plot == 'all':
             sites_to_plot = sublatt_list
             sublatt_list.sort()
-        elif type(sites_to_plot) != list:
+        elif not isinstance(sites_to_plot, list):
             raise Exception('"sites_to_plot" must be either "all" or a list')
         else:
             sites_found = np.isin(sites_to_plot, sublatt_list)
@@ -1215,7 +1218,7 @@ class AtomicColumnLattice:
             )
             xy = self.recip_latt.loc[:, 'x':'y'].to_numpy()
 
-        elif (len(spot_numbers) == 2) & (type(spot_numbers) == tuple):
+        elif (len(spot_numbers) == 2) & isinstance(spot_numbers, tuple):
             xy = self.recip_latt.loc[:, 'x':'y'].to_numpy()
             basis_picks_xy = xy[spot_numbers, :]
             print(basis_picks_xy)
@@ -2411,11 +2414,10 @@ class AtomicColumnLattice:
         if peak_grouping_filter == 'auto':
             peak_grouping_filter = self.sigma * 0.75
 
-        elif (
-            (type(peak_grouping_filter) == float or
-             type(peak_grouping_filter) == int)
-            and peak_grouping_filter > 0
-        ) or peak_grouping_filter is None:
+        elif ((isinstance(peak_grouping_filter, float) or
+               isinstance(peak_grouping_filter, int))
+              and peak_grouping_filter > 0
+              ) or peak_grouping_filter is None:
             pass
 
         else:
@@ -2858,12 +2860,12 @@ class AtomicColumnLattice:
         if sites_to_use == ('all' or ['all']):
             filtered = self.at_cols.copy()
         else:
-            if type(sites_to_use) == list:
+            if isinstance(sites_to_use, list):
                 filtered = self.at_cols[
                     self.at_cols.loc[:, filter_by].isin(sites_to_use)
                 ].copy()
 
-            elif type(sites_to_use) == str:
+            elif isinstance(sites_to_use, str):
                 filtered = self.at_cols[
                     self.at_cols.loc[:, filter_by] == sites_to_use
                 ].copy()
@@ -3113,97 +3115,30 @@ class AtomicColumnLattice:
         """
 
         # Get U,V combinations for all unit cells
-        uv = np.unique(
+        M = np.unique(
             np.floor(self.at_cols.loc[:, 'u':'v'].to_numpy()),
             axis=0
         )
 
         # Lattice vector information
         dsm = self.dir_struct_matrix * np.array([supercell]).T
-        a1 = dsm[0]
-        a2 = dsm[1]
 
-        a1unit = a1 / norm(a1)
-        a2unit = a2 / norm(a2)
-
-        # Get origin point for each lattice cell
-        x0y0 = uv @ dsm + [self.x0, self.y0]
-
-        # Mask off the image
-        im = self.image * self.roi_mask
-
-        # Get values for each unit cell, subtracting origin coordinates
-        x = []
-        y = []
-        z = []
-
-        print('Getting unit cell data')
-        for x0, y0 in tqdm(x0y0):
-            xverts = [
-                x0 - 1.5*a1unit[0] - 1.5*a2unit[0],
-                x0 + a1[0] + 1.5*a1unit[0] - 1.5*a2unit[0],
-                x0 + a1[0] + 1.5*a1unit[0] + a2[0] + 1.5*a2unit[0],
-                x0 + a2[0] + 1.5*a2unit[0] - 1.5*a1unit[0]
-            ]
-
-            yverts = [
-                y0 - 1.5*a1unit[1] - 1.5*a2unit[1],
-                y0 + a1[1] + 1.5*a1unit[1] - 1.5*a2unit[1],
-                y0 + a1[1] + 1.5*a1unit[1] + a2[1] + 1.5*a2unit[1],
-                y0 + a2[1] + 1.5*a2unit[1] - 1.5*a1unit[1]
-            ]
-
-            yind, xind = polygon(yverts, xverts, im.shape)
-
-            imint = im[yind, xind]
-
-            unmasked_data = np.nonzero(imint)
-            imint = np.take(imint, unmasked_data).flatten()
-            xind = np.take(xind, unmasked_data
-                           ).flatten() - x0
-            yind = np.take(yind, unmasked_data
-                           ).flatten() - y0
-
-            z += imint.tolist()
-            x += xind.tolist()
-            y += yind.tolist()
-
-        # Rotate coordinates so a1 is horizontal
-        xy = np.vstack([x, y]).T
-
-        theta = rotation_angle_bt_vectors([1, 0], a1)
-
-        xy = rotate_xy(xy, theta, [0, 0])
-
-        a1 = rotate_xy(a1, theta, [0, 0]).squeeze()
-
-        a2 = rotate_xy(a2, theta, [0, 0]).squeeze()
-
-        dsm = np.vstack([a1, a2])
-
-        x = xy[:, 0]
-        y = xy[:, 1]
-
-        h = np.max([dsm[:, 1]]) - np.min(dsm[:, 1]) + 1
-        w = np.max([dsm[:, 0]]) - np.min(dsm[:, 0]) + 1
-
-        data_coords = np.vstack([x, y]).T
-
-        print('Getting density estimate')
-        H = image_norm(linearKDE_2D(
-            data_coords,
-            xlim=(np.min(dsm[:, 0]), np.min(dsm[:, 0]) + w),
-            ylim=(np.min(dsm[:, 1]), np.min(dsm[:, 1]) + h),
-            d=1/upsample,
-            r=upsample,
-            weights=z))
+        self.avg_unitcell = image_norm(get_avg_cell(
+            image=self.image,
+            origin=self.origin,
+            basis_vects=dsm,
+            M=M,
+            upsample=upsample,
+        ))
 
         if plot:
-            quickplot(H, pixel_size=self.pixel_size_est/10, pixel_unit='nm')
+            quickplot(
+                self.avg_unitcell,
+                pixel_size=self.pixel_size_est/10,
+                pixel_unit='nm'
+            )
 
-        self.avg_unitcell = H
-
-        return H
+        return self.avg_unitcell
 
     def get_vpcfs(
         self,
@@ -3347,6 +3282,7 @@ class AtomicColumnLattice:
                                   'affine_transform': affine_transform,
                                   }
 
+# TODO : Use peak fitting and plotting functions in pcf module
     def get_vpcf_peak_params(
         self,
         sigma=10,
@@ -3490,9 +3426,7 @@ class AtomicColumnLattice:
                                           )*self.vpcfs[key]
                     peak_max = np.max(pcf_masked)
                     x_fit, y_fit, ecc, theta, sig_maj, sig_min = \
-                        img_ellip_param(
-                            pcf_masked
-                        )
+                        img_ellip_param(pcf_masked)
 
                     self.vpcf_peaks[key].loc[i, 'x_fit':] = [
                         x_fit,
@@ -3514,8 +3448,6 @@ class AtomicColumnLattice:
                     pcf_masked = mask * self.vpcfs[key]
 
                     match = np.argwhere([mask[y, x] for x, y in xy_peak])
-
-                    # match = np.array([[y, x] for x, y in xy_peak])
 
                     mask_peaks = peaks.loc[match.flatten(), :]
                     if sigma_group is not None:
