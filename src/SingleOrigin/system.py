@@ -1,8 +1,10 @@
 import os
+import sys
 import importlib
 
 from pathlib import Path
 
+from PyQt5.QtWidgets import QApplication, QWidget, QFileDialog
 from PyQt5.QtWidgets import QFileDialog as qfd
 
 import h5py
@@ -26,7 +28,9 @@ def select_folder():
     """
 
     print('Select folder...')
-    path = Path(qfd.getExistingDirectory())
+    app = QApplication(sys.argv)
+    widget = QWidget()
+    path = Path(qfd.getExistingDirectory(widget))
 
     return path
 
@@ -66,7 +70,13 @@ def select_file(folder_path=None, message=None, ftypes=None):
             ftypes = [ftypes]
         ftypes = ['*' + ftype for ftype in ftypes]
         ftypes = f'({", ".join(ftypes)})'
-    path = Path(qfd.getOpenFileName(filter=ftypes)[0])
+
+    app = QApplication(sys.argv)
+    widget = QWidget()
+    path = Path(qfd.getOpenFileName(
+        widget,
+        filter=ftypes,
+    )[0])
 
     os.chdir(cwd)
 

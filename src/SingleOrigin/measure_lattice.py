@@ -609,7 +609,8 @@ class ReciprocalLattice:
                                ) * np.nan
 
         for i, basis in enumerate(basis_vects_roi):
-            basis_vects[*scan_coords_roi[i]] = basis.reshape((2, 2))
+            basis_vects[scan_coords_roi[i][0], scan_coords_roi[i][1]] = \
+                basis.reshape((2, 2))
 
         # rot_mat = np.array([
         #     [np.cos(theta), np.sin(theta)],
@@ -1691,8 +1692,11 @@ class ReciprocalLattice:
                            ) * np.nan
 
         for i, basis in enumerate(results):
-            recip_basis[*scan_coords_roi[i]] = basis[:2]
-            origins[*scan_coords_roi[i]] = basis[2]
+            # recip_basis[*scan_coords_roi[i]] = basis[:2]
+            recip_basis[scan_coords_roi[i][0], scan_coords_roi[i][1]] = \
+                basis[:2]
+
+            origins[scan_coords_roi[i][0], scan_coords_roi[i][1]] = basis[2]
 
         self.basis_recip_px = recip_basis
 
@@ -2447,7 +2451,10 @@ class ReciprocalLattice:
                                      dtype=float) * np.nan
 
         for i, dipole in enumerate(local_dipole_thresh):
-            self.local_dipole[*scan_coords_thresh[i]] = dipole
+            self.local_dipole[
+                scan_coords_thresh[i][0], scan_coords_thresh[i][1]
+            ] = dipole
+            # *scan_coords_thresh[i]] = dipole
 
         return results, x0y0
 

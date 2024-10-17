@@ -85,7 +85,11 @@ def fft_square(
 
     if type(hann_window) is bool:
         if hann_window:
-            hann = hann_2d(m)[*([None]*(ndim-2)), ...]
+            hann = np.expand_dims(
+                hann_2d(m),
+                axis=tuple(i for i in range(ndim - 2))
+            )
+
             image_square *= hann
 
     elif type(hann_window) is np.ndarray:
