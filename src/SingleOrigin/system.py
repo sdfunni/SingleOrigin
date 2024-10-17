@@ -1,4 +1,5 @@
 import os
+import importlib
 
 from pathlib import Path
 
@@ -132,3 +133,14 @@ def str_to_dict(s):
     d = {k: v for [k, v] in kvs}
 
     return d
+
+
+def check_package_installation(name):
+
+    try:
+        importlib.import_module(name)
+        result = True
+    except ImportError:
+        result = False
+
+    return result

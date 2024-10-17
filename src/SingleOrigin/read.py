@@ -19,14 +19,16 @@ from ncempy.io.ser import serReader
 from ncempy.io.emdVelox import fileEMDVelox
 from ncempy.io.emd import emdReader
 
-from empad2 import (
-    load_calibration_data,
-    load_background,
-    load_dataset,
-)
-
-from SingleOrigin.system import select_file
+from SingleOrigin.system import select_file, check_package_installation
 from SingleOrigin.image import image_norm
+
+if check_package_installation('empad2'):
+    from empad2 import (
+        load_calibration_data,
+        load_background,
+        load_dataset,
+    )
+
 
 pkg_dir, _ = os.path.split(__file__)
 
@@ -414,101 +416,6 @@ def emdVelox(path, sum_haadf_frames=True):
     return dsets, metadata
 
 
-# def emdVelox_v2(
-#         path,
-#         SI_sum_haadf_frames=True,
-#         SI_sum_spectrum=False,
-# ):
-#     """Read Velox emd files containing elemental maps and import as a dict.
-#     Works for newest version of Velox (as of early 2024).
-
-#     Parameters
-#     ----------
-#     path : str
-#          Path to the file.
-
-#     SI_sum_haadf_frames : bool
-#         Whether to sum the stack of HAADF images acquired during the SI scan.
-#         Default: True
-
-#     SI_sum_spectrum : bool
-#         Whether to sum the EDS spectrum image data into a single spectrum. This
-#         has no effect on previously generated elemental maps.
-
-#     Returns
-#     -------
-#     dstes : dict of numpy arrays
-#         Dictionary with label:image key:value pairs. Labels are 'HAADF' or
-#         element corresponding to each map.
-
-#     metadata : dict
-#         The Velox metadata as a nested dictionary.
-
-#     """
-
-#     f = File(path)
-#     filekeys = f.keys()
-
-#     dsets = hs.load(path)
-#     dsets = {signal.metadata.General.title: signal.data for signal in dsets}
-#     dsets = {k.replace(' ()', ''): v for k, v in dsets.items()}
-
-#     if 'DCFI' in dsets.keys():
-#         dsets['DCFI'] = np.sum(dsets['DCFI'], axis=0)
-
-#     # For SI datassets in Velox Version 10
-#     if 'Displays' in filekeys:
-#         imdisp = f['Displays/ImageDisplay']
-
-#     # For regular images and SI Velox Version 11
-#     elif 'Presentation' in filekeys:
-#         imdisp = f['Presentation/Displays/ImageDisplay']
-
-#     for k in imdisp:
-#         d = eval(imdisp[k][0].decode().replace(r'\/', '/'))
-#         title = d['display']['label']
-#         if title == 'ColorMix':
-#             continue
-
-#         dset_label = d['dataPath'].replace('\\', '')
-#         break
-
-#     metadata = np.array(
-#         f[dset_label]['Metadata'][:, 0]
-#     ).tobytes().decode().split('\x00')[0]
-
-#     metadata = json.loads(metadata)
-
-#     if 'EDS' in dsets.keys():
-#         for k, v in metadata['Detectors'].items():
-#             if v['DetectorType'] == 'AnalyticalDetector':
-#                 datastart = float(v['BeginEnergy'])  # Cut off cata below this
-#                 binstart = float(v['OffsetEnergy'])
-#                 binsize = float(v['Dispersion'])
-#                 binedges = np.arange(
-#                     binstart,
-#                     binstart + binsize * (dsets['EDS'].shape[-1] + 1),
-#                     binsize
-#                 )
-#                 bincenters = np.arange(
-#                     binstart + binsize/2,
-#                     binstart + binsize/2 + binsize * dsets['EDS'].shape[-1],
-#                     binsize
-#                 )
-#                 break
-
-#         datastartind = np.argmin(np.abs(bincenters - datastart))
-
-#         dsets['EDS'][..., :datastartind] = 0
-
-#         dsets['EDS_eV'] = {'eV_cent': bincenters, 'eV_bins': binedges}
-
-#         if SI_sum_spectrum:
-#             dsets['EDS'] = np.sum(dsets['EDS'], axis=(0, 1))
-
-#     return dsets, metadata
-
-
 def load_empad2_data(
     dataPath,
     bkgdPath,
@@ -543,6 +450,11 @@ def load_empad2_data(
         The empad data as a numpy array
 
     """
+
+    if not check_package_installation('empad2'):
+        raise Exception(
+            'Please install emapd2 module to use this function.'
+        )
 
     if scan_dims is None:
         try:
