@@ -196,7 +196,7 @@ class HRImage:
             project_uc_2d() method applied. See examples for how to generate
             this.
 
-        origin_atom_column : int
+        origin_atom_column : int or None
             The DataFrame row index (in unitcell.at_cols) of the atom column
             that is later picked by the user to register the reference lattice.
             If None, the closest atom column to the unit cell origin is
@@ -287,6 +287,9 @@ class HRImage:
         rot_.fft = fft_square(rot_.image)
 
         for key, lattice in self.latt_dict.items():
+            if '_rot' in key:
+                continue
+
             key += '_rot'
             rot_.latt_dict[key] = copy.deepcopy(lattice)
             lattice_rot = rot_.latt_dict[key]
@@ -299,22 +302,10 @@ class HRImage:
 
             '''Translation of image center due to increased image array size
                 resulting from the rotation'''
-            # print(lattice_rot.image.shape, self.image.shape)
-
-            # origin_shift = np.flip((
-            #     (np.array(lattice_rot.image.shape, ndmin=2)-1)/2
-            #     - (np.array(self.image.shape, ndmin=2)-1)/2),
-            #     axis=1
-            # )
-
-            # origin_shift = (np.array(lattice_rot.image.shape, ndmin=2)-1)/2 \
-            #     - (np.array(self.image.shape, ndmin=2)-1)/2
 
             origin_shift = np.flip(
                 np.array(lattice_rot.image.shape) -
                 np.array(self.image.shape)) / 2
-
-            print(origin_shift)
 
             '''Find the origin-shifted rotation matrix for transforming atomic
                 column position data'''
@@ -367,7 +358,7 @@ class HRImage:
                 / 90) * 180
             lattice_rot.angle = angle
 
-        return rot_
+        return rot_, lattice_rot
 
     def plot_atom_column_positions(
             self,

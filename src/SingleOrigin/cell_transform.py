@@ -560,7 +560,7 @@ class UnitCell():
         if 'Debye_Waller' in at_cols.columns:
             at_cols.drop(['Debye_Waller'], axis=1, inplace=True)
 
-        a_2d = self.a_3d[1:, 1:]
+        a_2d = self.a_3d_[1:, 1:]
 
         at_cols = at_cols.drop(['x', 'u'], axis=1)
 
@@ -590,11 +590,6 @@ class UnitCell():
             inplace=True
         )
 
-        # at_cols.rename(
-        #     columns={'y': 'x', 'z': 'y'},
-        #     inplace=True
-        # )
-
         self.at_cols = at_cols
 
         if reduce_proj_cell:
@@ -615,7 +610,6 @@ class UnitCell():
             # Find spacing of planes along each basis vector
             a1_mult = ((g1_real @ a1_.T / g1_spacing**2))
             a2_mult = ((g2_real @ a2_.T / g2_spacing**2))
-
             a_mult = np.around(np.array([a1_mult, a2_mult]))
 
             # Convert fractional coordinates to new basis
@@ -647,7 +641,6 @@ class UnitCell():
                     "Unit cell cannot be reduced. Try again with "
                     + "'reduced_proj_cell=False'"
                 )
-
             a_2d /= a_mult.T
 
         at_cols.loc[:, 'x':'y'] = at_cols.loc[:, 'u':'v'].to_numpy() @ a_2d.T

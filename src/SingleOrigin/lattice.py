@@ -15,11 +15,47 @@ from SingleOrigin.plot import quickplot
 def make_lattice(
         basis,
         origin,
-        max_order=10,
         min_order=0,
+        max_order=10,
         xlim=None,
         ylim=None
 ):
+    """
+    Generate list of lattice points in fractional and cartesian coordinates.
+
+    Parameters
+    ----------
+    basis : array of shape (2,2)
+        The array of basis vectors as row vectors [x, y] in cartesin
+        coordinates.
+
+    origin : array of shape (2,)
+        The origin point of the lattice.
+
+    min_order : int
+        The minimum order of points allowed in the lattice. e.g. if 2, zeroith 
+        and first order points are excluded.
+        Default: 0
+
+    max_order : int
+        The maximum order of points allowed in the lattice. e.g if 5, only
+        points up to order 5 are included in the search and fitting.
+        Default: 10
+
+    xlim, ylim : 2-tuples or None
+        The minimum and maximum limits of allowed cartesian coordinates in the
+        x & y directions.
+        Default: None.
+
+    Returns
+    -------
+    xy : ndarray
+        The [x, y] cartesian coordinates of the lattice points.
+
+    M : ndarray
+        The [u, v] fractional coordinates of the lattice points.
+
+    """
 
     M = np.array(
         [[i, j]
@@ -195,7 +231,14 @@ def plot_basis(
     """
 
     fig, ax = plt.subplots(figsize=(10, 10))
-    quickplot(image, cmap='gist_gray', scaling=scaling, figax=ax)
+    quickplot(
+        image,
+        cmap='gist_gray',
+        scaling=scaling,
+        figax=ax,
+        vmax=vmax,
+        vmin=vmin,
+    )
 
     if lattice is not None:
         ax.scatter(
@@ -344,6 +387,9 @@ def measure_lattice_from_peaks(
     else:
         min_order = 0
 
+    # basis_new = basis
+    # origin_new = origin
+
     """match first order peaks & update basis"""
     xy, M = make_lattice(basis,  origin, max_order=1, min_order=min_order)
 
@@ -362,7 +408,7 @@ def measure_lattice_from_peaks(
         np.concatenate((basis.flatten(), origin)),
         peaks_1,
         M,
-        fix_origin=False,
+        fix_origin=fix_origin,
     )
 
     basis_new = params[:4].reshape((2, 2))

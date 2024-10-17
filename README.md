@@ -16,7 +16,7 @@ Secondary module(s) for diffraction and 4D STEM analysis is under development. C
 Installation:
 It is recommended to install by pip in a clean Python environment (https://docs.python.org/3/library/venv.html). SingleOrigin may be used in Spyder or Jupyter notebooks/lab. To install, activate your environment and run the following in a command line prompt if you downloaded the tarball:
 
-pip install "pathtofile/SingleOrigin-2.5.3.tar.gz"
+pip install "pathtofile/SingleOrigin-2.6.0.tar.gz"
 
 OR from PyPI:
 

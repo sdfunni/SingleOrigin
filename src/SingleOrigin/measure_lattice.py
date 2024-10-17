@@ -398,9 +398,6 @@ class ReciprocalLattice:
 
                 plt.close('all')
 
-        else:
-            self.roi = np.ones(self.data.shape[:2])
-
         peaks = detect_peaks(self.ewpc_mean, min_dist=2, thresh=0)
 
         # Find the maximum of the 2nd highest peak (ignores the central peak)
@@ -1128,16 +1125,8 @@ class ReciprocalLattice:
             labels = [r'$\epsilon _{11}$', r'$\epsilon _{22}$',
                       r'$\epsilon _{12}$', r'$\theta$']
 
-        # vminmax = {
-        #     key: tuple(limlist[i]) if limlist[i] is not None
-        #     else np.around(
-        #         [-np.nanmax(np.abs(self.strain_map[key])),
-        #          np.nanmax(np.abs(self.strain_map[key]))], decimals=1)
-        #     for i, key in enumerate(keys)
-        # }
-
+        # Prepare strain limits for each component
         vminmax = {}
-
         for i, key in enumerate(keys):
             if limlist[i] is None:
                 s = self.strain_map[key][~np.isnan(self.strain_map[key])]
@@ -1178,7 +1167,6 @@ class ReciprocalLattice:
                     arrowstyle="<|-|>",
                     mutation_scale=strain_axes_size,
                     fc='black',
-                    # linewidth=3,
                 )
 
                 axs[i].add_patch(strain_arrow)
@@ -1518,8 +1506,8 @@ class ReciprocalLattice:
             )
 
             self.sigma = get_feature_size(image_thresh)
-            if self.sigma < 1:
-                self.sigma = 1
+            if self.sigma < 2:
+                self.sigma = 2
 
         else:
             self.sigma = sigma
@@ -1574,8 +1562,8 @@ class ReciprocalLattice:
             a_star,
             self.origin,
             xy,
-            basis1_order=a1_order,
-            basis2_order=a2_order,
+            basis1_order=1,
+            basis2_order=1,
             fix_origin=fix_origin,
             max_order=max_order,
             min_order=0,
@@ -1667,7 +1655,7 @@ class ReciprocalLattice:
                 peak_bkgd_thresh_factor=self.peak_bkgd_thresh_factor,
                 detection_thresh=self.detection_thresh,
                 buffer=self.buffer,
-                fit_bkgd=True,
+                fit_bkgd=False,
             )
             for i, j in tqdm(scan_coords_roi)
         )
