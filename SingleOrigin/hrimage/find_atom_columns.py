@@ -3502,7 +3502,6 @@ class AtomicColumnLattice:
                 gs_inds = [[row, col]
                            for row in range(nrows)
                            for col in range(ncols)]
-            print(gs_inds)
 
         else:
             vpcfs_found = np.isin(vpcfs_to_plot, list(self.vpcfs.keys()))
@@ -3538,6 +3537,9 @@ class AtomicColumnLattice:
         for i, key in enumerate(vpcfs_to_plot):
             row, col = gs_inds[i]
             axs[i].imshow(self.vpcfs[key], cmap=vpcf_cmap, zorder=0)
+            if i > 0:
+                axs[i].sharex(axs[0])
+                axs[i].sharey(axs[0])
 
             if plot_equ_ellip:
                 peaks = self.vpcf_peaks[key]
