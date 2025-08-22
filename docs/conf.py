@@ -37,5 +37,5 @@ epub_show_urls = 'footnote'
 
 # -- AutoAPI information
 import os
-autoapi_dirs = [os.path.abspath('../..') + '/SingleOrigin/']
+autoapi_dirs = [os.path.abspath('../.') + '/SingleOrigin/']
 autoapi_type = "python"
