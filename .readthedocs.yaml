@@ -33,3 +33,5 @@ sphinx:
 python:
   install:
     - requirements: docs/requirements.txt
+    - method: pip
+      - path: dist/singleorigin-3.0b2.tar.gz
