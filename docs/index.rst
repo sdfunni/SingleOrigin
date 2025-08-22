@@ -17,7 +17,13 @@ Contents
 --------
 
 .. toctree::
+   :caption: Installation
    :maxdepth: 2
 
-   usage
+   installation
+
+.. toctree::
+   :caption: API Reference
+   :maxdepth: 2
+
    api
