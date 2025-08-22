@@ -9,9 +9,6 @@ SingleOrigin uses several python Classes (with associated methods) for analysis 
 
 Data and results are typically stored in numpy arrays or Pandas dataframes within the class objects, allowing ease of retrevial and manipulation by users for custom visulaizations or subsequent analysis.
 
-.. note::
-
-   This project is under active development.
 
 Contents
 --------
