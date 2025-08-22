@@ -19,4 +19,4 @@ Contents
 .. toctree::
 
    usage
-   autoapi/SingleOrigin/index
+   autoapi/SingleOrigin/index/Submodules
