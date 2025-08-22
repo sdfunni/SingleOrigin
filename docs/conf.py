@@ -39,6 +39,11 @@ templates_path = ['_templates']
 
 html_theme = 'sphinx_rtd_theme'
 
+html_theme_options = {
+    "show_nav_level": 2,  # Adjust sidebar depth
+    "header_links_before_dropdown": 4, # Show top links before the dropdown menu
+}
+
 # -- Options for EPUB output
 epub_show_urls = 'footnote'
 
