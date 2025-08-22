@@ -6,7 +6,7 @@ Main module is for atomic column position finding intended for structural analys
 Incorporates a number of different methods to visualize the atom column positions:
 1) Diretly plotting the fitted positions.
 2) Plotting displacement vectors from the reference to fitted positions.
-3) Calcualting vector pair correlation functions (vPCFs) for various sublattices to see the distributions of projected bond vectors in real space. Analagous to a pair distribution function, as obtained from X-ray or neutron "total scattering" experiments, but retaining the orientation information available in the image. See the original vPCF paper in APL Materials: https://aip.scitation.org/doi/10.1063/5.0058928
+3) Calculating vector pair correlation functions (vPCFs) for various sublattices to see the distributions of projected bond vectors in real space. Analagous to a pair distribution function, as obtained from X-ray or neutron "total scattering" experiments, but retaining the orientation information available in the image. See the original vPCF paper in APL Materials: https://aip.scitation.org/doi/10.1063/5.0058928
 4) Plot inter-atom column distances (or distance deviations from the reference lattice) corresponding to a vector (or vectors) in a vPCF.
 
 Secondary module(s) for diffraction and 4D STEM analysis is under development. Currently operational methods are:
