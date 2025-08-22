@@ -36,5 +36,6 @@ html_theme = 'sphinx_rtd_theme'
 epub_show_urls = 'footnote'
 
 # -- AutoAPI information
+import os
 autoapi_dirs = [os.path.abspath('../..') + '/SingleOrigin/']
 autoapi_type = "python"
