@@ -50,7 +50,7 @@ autoapi_options = [
     'members',
     'undoc-members',
     'show-inheritance',
-    'show-module-summary',
+#    'show-module-summary',
 ]
 autoapi_python_class_content = 'both'
 autoapi_member_order = 'bysource'
