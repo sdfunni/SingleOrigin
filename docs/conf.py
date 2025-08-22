@@ -39,3 +39,4 @@ epub_show_urls = 'footnote'
 import os
 autoapi_dirs = [os.path.abspath('../.') + '/SingleOrigin/']
 autoapi_type = "python"
+autoapi_add_toctree_entry = False
