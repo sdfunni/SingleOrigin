@@ -1,4 +1,6 @@
 # Configuration file for the Sphinx documentation builder.
+import os
+sys.path.insert(0, os.path.abspath('..'))
 
 # -- Project information
 
@@ -36,7 +38,6 @@ html_theme = 'sphinx_rtd_theme'
 epub_show_urls = 'footnote'
 
 # -- AutoAPI information
-import os
 autoapi_dirs = [os.path.abspath('../.') + '/SingleOrigin/']
 autoapi_type = "python"
 autoapi_add_toctree_entry = False
