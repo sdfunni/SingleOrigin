@@ -40,3 +40,11 @@ import os
 autoapi_dirs = [os.path.abspath('../.') + '/SingleOrigin/']
 autoapi_type = "python"
 autoapi_add_toctree_entry = False
+autoapi_options = [
+    'members',
+    'undoc-members',
+    'show-inheritance',
+    'show-module-summary',
+]
+autoapi_python_class_content = 'both'
+autoapi_member_order = 'bysource'
