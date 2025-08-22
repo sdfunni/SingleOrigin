@@ -1,4 +1,7 @@
 API
 ---
 
-autoapi/SingleOrigin/index
+.. autosummary::
+   :toctree: generated
+
+   autoapi/SingleOrigin/index
