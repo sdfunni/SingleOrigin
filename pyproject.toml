@@ -37,6 +37,8 @@ dependencies = [
     "pillow",
     "h5py",
     "cmocean",
+    "sphinx_rtd_theme",
+
 ]
 
 [tool.setuptools]
