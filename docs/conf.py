@@ -14,6 +14,10 @@ version = '3.0b2'
 
 # -- General configuration
 
+exclude_patterns = [
+    'Examples',
+]
+
 extensions = [
     'sphinx.ext.duration',
     'sphinx.ext.doctest',
