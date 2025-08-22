@@ -14,8 +14,8 @@ version = '3.0b2'
 extensions = [
     'sphinx.ext.duration',
     'sphinx.ext.doctest',
-    'sphinx.ext.autodoc',
-    'sphinx.ext.autosummary',
+#    'sphinx.ext.autodoc',
+#    'sphinx.ext.autosummary',
     'sphinx.ext.intersphinx',
     'autoapi.extension',
 ]
