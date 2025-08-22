@@ -56,8 +56,8 @@ class dset():
     dsetIndex : int
         The index of the dataset to read from the file.
 
-    Attributes...
-    -------
+    Attributes
+    ----------
     data : ndarray
         The data.
 
@@ -423,10 +423,15 @@ class dset():
 
 class EELS_SIdata():
     """
-    Class for loading, viewing & analizing dm3/4 combined EELS SI datasets.
+    Class for loading, viewing & analizing EELS SI datasets (indulcing dual+).
 
-    Enables streamlined analysis of EELS spectrum image datasets, including
-    dual EELS.
+    Parameters
+    ----------
+    path : Path or str
+        Path to the EELS dataset. May be DM combined eels dataset or Velox
+        emd file containing EELS data.
+
+
 
     """
 
