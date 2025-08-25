@@ -19,8 +19,8 @@ Contents
 
    installation
 
-.. toctree::
-   :caption: Reference
-   :maxdepth: 2
+#.. toctree::
+#   :caption: Reference
+#   :maxdepth: 2
 
-   api
+#   api
