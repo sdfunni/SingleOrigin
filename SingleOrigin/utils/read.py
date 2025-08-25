@@ -35,8 +35,6 @@ if check_package_installation('empad2'):
 # pkg_dir = os.path.split(__file__)[0]
 pkg_dir = Path(__file__).parents[1]
 
-print(pkg_dir)
-
 # %%
 
 # TODO : update load_iamge to use my emdVelox readers
