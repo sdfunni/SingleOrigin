@@ -18,9 +18,4 @@ Contents
 
    Home <self>
    installation
-
-.. toctree::
-   :maxdepth: 1
-   :caption: API
-
    autoapi/index
