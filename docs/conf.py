@@ -16,7 +16,8 @@ version = '3.0b2'
 
 exclude_patterns = [
     'Examples',
-# -- General configuration ---------------------------------------------------
+]
+
 # -- General configuration
 
 extensions = [
