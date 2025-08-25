@@ -48,7 +48,7 @@ if is_running_in_jupyter():
         widget = QWidget()
         fname = qfd.getOpenFileName(widget)[0]
 
-        print(fname)
+        # print(fname)
 
 else:
     def select_file(directory=None, message=None, ftypes=None):
