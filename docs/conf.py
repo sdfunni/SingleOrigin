@@ -53,7 +53,7 @@ html_theme = 'sphinx_rtd_theme'
 # -- AutoAPI information
 autoapi_dirs = [os.path.abspath('../.') + '/SingleOrigin/']
 autoapi_type = "python"
-autoapi_add_toctree_entry = True
+autoapi_add_toctree_entry = False
 autoapi_options = [
     'members',
     'undoc-members',
