@@ -165,6 +165,11 @@ class ReciprocalLattice:
 
     A bunch of other stuff...
 
+    Methods
+    -------
+
+    Need to add methods...
+
     """
 
     # TODO : Add new / update attributess in docstring

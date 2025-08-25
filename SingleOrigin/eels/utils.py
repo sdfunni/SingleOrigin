@@ -877,15 +877,16 @@ def eels_multifit(
         spectrum,
         eV,
         edges,
-        E0=None,
-        alpha=None,
-        beta=None,
+        E0,
+        alpha,
+        beta,
         GOS='dirac',
         energy_shifts=None,
         white_lines=None,
         bkgd_window=None,
         fit_window=None,
-        return_parameter_keys=True,
+        return_components=True,
+        return_parameter_keys=False,
         return_nanmask=True,
 ):
     """
@@ -939,15 +940,15 @@ def eels_multifit(
     edges = list(edges)
     if isinstance(edges[0], str):
         # Calculate the edge models
-        edges_ = []
+        models = []
         if energy_shifts is None:
             energy_shifts = [0] * len(edges)
-        else:
-            energy_shifts = list(energy_shifts)
+        elif isinstance(energy_shifts, (int, float)):
+            energy_shifts = [energy_shifts]
 
         for i, edge in enumerate(edges):
             elem, shell = edge.split('-')
-            edges_ += [get_edge_model(
+            models += [get_edge_model(
                 elem,
                 shell,
                 eV=eV,
@@ -958,13 +959,16 @@ def eels_multifit(
                 beta=beta,
             )]
 
-        edges = edges_
+            print(models[-1].shape)
 
-    components = {'edges': np.array(edges)}
+    else:
+        models = edges
 
-    bounds = [*[(0, np.inf)]*(len(edges))]
-    p0 = [1]*len(edges)
-    pkeys = [f'edge{i}' for i in range(len(edges))]
+    components = {'edges': np.array(models)}
+
+    bounds = [*[(0, np.inf)]*(len(models))]
+    p0 = [1]*len(models)
+    pkeys = [f'edge{i}' for i in range(len(models))]
 
     if bkgd_window is not None:
         spectrum_, b0 = remove_eels_background(
@@ -988,7 +992,6 @@ def eels_multifit(
     nanmask = np.invert(np.isnan(spectrum_))
     spectrum_ = spectrum_[nanmask]
     eV = eV[nanmask]
-    components['edges'] = components['edges'][:, nanmask]
 
     if white_lines is not None:
 
@@ -1004,11 +1007,13 @@ def eels_multifit(
 
     bounds = ([bound[0] for bound in bounds],
               [bound[1] for bound in bounds])
+    components_ = copy.deepcopy(components)
+    components_['edges'] = components_['edges'][:, nanmask]
 
     params = least_squares(
         eels_residuals,
         p0,
-        args=(spectrum_, eV, components),
+        args=(spectrum_, eV, components_),
         bounds=bounds,
     ).x
 
@@ -1017,6 +1022,8 @@ def eels_multifit(
 
     ret = [params]
 
+    if return_components:
+        ret += [components]
     if return_parameter_keys:
         ret += [pkeys]
     if return_nanmask:
@@ -1099,6 +1106,10 @@ def get_edge_model(
                 element_subshell=element + '_' + subshell,
                 GOS=GOS,
             )
+
+            # model_sub.GOS.energy_shift = (
+            #     model_sub.onset_energy.value - model_sub.GOS.onset_energy)
+
             model_sub.set_microscope_parameters(**microscope_parameters)
             model += model_sub.function(eV - shift)
         except ValueError:
