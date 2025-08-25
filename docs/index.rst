@@ -14,13 +14,7 @@ Contents
 --------
 
 .. toctree::
-   :caption: Installation
-   :maxdepth: 2
 
-   installation
-
-.. toctree::
-   :caption: Reference
-   :maxdepth: 2
-
+   Home <self>
+   usage
    api
