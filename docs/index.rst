@@ -22,6 +22,5 @@ Contents
 .. toctree::
    :maxdepth: 1
    :caption: API
-   :glob:
 
-   autoapi/*
+   autoapi/index
