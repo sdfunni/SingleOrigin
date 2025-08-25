@@ -1,7 +1,7 @@
 # Configuration file for the Sphinx documentation builder.
 import os
-# import sys
-# sys.path.insert(0, os.path.abspath('..'))
+import sys
+sys.path.insert(0, os.path.abspath('..'))
 
 # -- Project information
 
@@ -20,7 +20,7 @@ exclude_patterns = [
 
 extensions = [
     'sphinx.ext.duration',
-    'sphinx.ext.doctest',
+#    'sphinx.ext.doctest',
 #    'sphinx.ext.autodoc',
 #    'sphinx.ext.autosummary',
 #    'sphinx.ext.intersphinx',
@@ -53,7 +53,7 @@ html_theme = 'sphinx_rtd_theme'
 # -- AutoAPI information
 autoapi_dirs = [os.path.abspath('../.') + '/SingleOrigin/']
 autoapi_type = "python"
-autoapi_add_toctree_entry = False
+autoapi_add_toctree_entry = True
 autoapi_options = [
     'members',
     'undoc-members',
