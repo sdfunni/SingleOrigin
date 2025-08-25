@@ -17,4 +17,4 @@ Contents
 
    Home <self>
    installation
-   api
+   autoapi/index
