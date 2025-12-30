@@ -1,4 +1,4 @@
-"""Module containing for making and measuring lattices."""
+"""Module containing functions for making and measuring lattices."""
 
 import numpy as np
 from numpy.linalg import norm, lstsq
@@ -195,8 +195,11 @@ def register_lattice_to_peaks(
     )
 
     # Match lattice points to peaks; make DataFrame
-    vects = np.array([xy_peaks - xy_ for xy_ in xy_ref])
-    inds = np.argmin(norm(vects, axis=2), axis=1)
+    # vects = np.array([xy_peaks - xy_ for xy_ in xy_ref])
+    # inds = np.argmin(norm(vects, axis=2), axis=1)
+
+    inds = np.array([np.argmin(norm(xy_peaks - xy_, axis=1))
+                     for xy_ in xy_ref])
 
     lattice = pd.DataFrame({
         'h': lattice_indices[:, 0],

@@ -2,8 +2,11 @@
 
 import inspect
 import copy
+from pathlib import Path
 
 import numpy as np
+
+from scipy.ndimage import gaussian_filter
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -24,16 +27,17 @@ from SingleOrigin.eels.utils import (
     get_zlp_fwhm,
     get_energy_inds,
     fit_zlp,
-    si_remove_eels_background,
+    subtract_background_SI,
     fourier_ratio_deconvolution,
     get_zlp_cutoff,
     get_thickness,
     get_edge_model,
-    eels_multifit,
+    modelfit,
     plot_spectrum,
     plot_eels_fit,
 )
 from SingleOrigin.utils.read import emdVelox
+from SingleOrigin.utils.image import bin_data
 from SingleOrigin.utils.plot import quickplot, quickcbar
 # from SingleOrigin.mathfn import gaussian_1d
 
@@ -44,22 +48,33 @@ else:
 
 
 # %%
-class dset():
+class EELSdset():
     """
-    Class for organizing image and EELS data from DM datasets.
+    Base EELS data class for a single energy range.
+
+    Loads and contains EELS SI or simultaneous ADF image and associated
+    metadata.
 
     Parameters
     ----------
-    file : DM file object
-        The DM file object created using fileDM() from ncempy.
+    path : str
+        The path to the data file.
 
-    dsetIndex : int
-        The index of the dataset to read from the file.
+    dsetIndex : int or str
+        The index of the dataset to read from the file for DM or, for Velox
+        EELS datasets, the detector (e.g. 'HAADF', 'DF-S') or spectrum label
+        (e.g. 'SI_0', 'SI_1', ... ).
 
     Attributes
     ----------
-    data : ndarray
-        The data.
+    array : ndarray
+        The data array.
+
+    array_aligned : ndarray
+        The data array after aligning each spectrum by the ZLP.
+
+    aligned : bool
+        True if ZLP alignment has been performed, False otherwise.
 
     pixelUnit : ndarray of str
         The units of each axis of the data.
@@ -73,24 +88,37 @@ class dset():
         first energy bin is typically not 0 energy.
 
     axes : dictionary of {str: array}
-        Dictionary of the axes labels ('x', 'y', 'eV', etc.) and corresponding
-         oordinates of each pixel along that dimension.
+        Dictionary with the dataset axis names as keys ('x', 'y', 'eV', etc.)
+        and arrays of corresponding pixel coordinates along that dimension as
+        values.
 
     """
 
     def __init__(self, path, dsetIndex=0):
+
+        if isinstance(path, str):
+            path = Path(path)
+
+        # For Velox .emd files:
         if path.parts[-1][-3:] == 'emd':
             data, meta = emdVelox(path)
-            keys = list(data.keys())
+            # keys = list(data.keys())
 
-            if dsetIndex == 'image':
-                detectors = ['HAADF', 'DF-S']
-                keyind = np.argmax(np.isin(detectors, keys))
+            detectors = ['HAADF', 'DF-S']
+            if np.isin(dsetIndex, detectors):
+                # keyind = np.argmax(np.isin(detectors, keys))
 
-                self.array = data[detectors[keyind]]
+                self.array = data[dsetIndex]
                 if len(self.array.shape) == 3:
                     self.array = np.sum(self.array, axis=0)
                 self.dwellTime = float(meta['Scan']['FrameTime'])
+
+            elif dsetIndex == 'a':
+                self.array = data['a']
+
+                if len(self.array.shape) == 3:
+                    self.array = np.sum(self.array, axis=0)
+                # self.dwellTime = float(meta['Scan']['FrameTime'])
 
             self.pixelUnit = ['nm'] * 2
             self.pixelSize = [float(meta['BinaryResult']['PixelSize']['width']
@@ -114,10 +142,9 @@ class dset():
             self.axes = {}
 
             xydim_index = 0
-
             for dim in range(len(self.array.shape)):
                 if self.pixelUnit[dim] != 'eV':
-                    label = ['x', 'y'][xydim_index]
+                    label = ['y', 'x'][xydim_index]
                     xydim_index += 1
                 elif self.pixelUnit[dim] == 'eV':
                     label = 'eV'
@@ -127,6 +154,7 @@ class dset():
                 self.axes[label] = self.pixelSize[dim] * np.arange(
                     self.array.shape[dim]) + self.pixelOrigin[dim]
 
+        # For Gatan Digitalmicrograph .dm3/.dm4 files
         else:
             file = fileDM(path)
             dsetdict = file.getDataset(dsetIndex)
@@ -176,7 +204,7 @@ class dset():
 
             for dim in range(len(self.array.shape)):
                 if self.pixelUnit[dim] != 'eV' and dtype != 'stack':
-                    label = ['x', 'y'][xydim_index]
+                    label = ['y', 'x'][xydim_index]
                     xydim_index += 1
                 elif self.pixelUnit[dim] == 'eV':
                     label = 'eV'
@@ -190,7 +218,7 @@ class dset():
                     self.pixelSize[dim],
                 )
 
-    def rot_scan90(self, k=1, axes=(0, 1)):
+    def rotate90(self, k=1, axes=(0, 1)):
         """
         Rotate the scan dimensions of the dataset by multiples of 90 degrees
         in a self-consistent way.
@@ -221,7 +249,90 @@ class dset():
             swap = {'x': 'y', 'y': 'x', 'eV': 'eV'}
             self.axes = {swap[k]: self.axes[k] for k in self.axes.keys()}
 
-    def show_spectrum(
+    def flatten_dset(self, axis):
+        """
+        Flatten the dataset to make a line scan.
+
+        Parameters
+        ----------
+        axis : int
+            The scan axis to flatten.
+
+        Returns
+        -------
+        None.
+
+        """
+
+        self.array = np.nansum(self.array, axis=axis, keepdims=True)
+        if hasattr(self, 'array_aligned'):
+            self.array_aligned = np.nansum(
+                self.array_aligned, axis=axis, keepdims=True
+            )
+
+        axesdict = {0: 'y', 1: 'x'}
+        for ax in axis:
+            self.axes[axesdict[ax]] = np.array(self.axes[axesdict[ax]][0])
+
+    def crop_dset(self, xlim, ylim):
+        """
+        Crop a dataset.
+
+        Parameters
+        ----------
+        xlim, ylim : 2-lists or None
+            The [start, stop] scan pixels along each axis for the cropping.
+            If None, the dimension will not be cropped.
+
+        Returns
+        -------
+        None.
+
+        """
+
+        if xlim is None:
+            xlim = [0, None]
+        if ylim is None:
+            ylim = [0, None]
+
+        self.array = self.array[ylim[0]: ylim[1], xlim[0]: xlim[1]]
+        if hasattr(self, 'array_aligned'):
+            self.array_aligned = \
+                self.array_aligned[ylim[0]: ylim[1], xlim[0]: xlim[1]]
+
+        axesdict = {'y': ylim, 'x': xlim}
+        for ax, lim in axesdict.items():
+            self.axes[ax] = self.axes[ax][lim[0]: lim[1]]
+
+    def bin_dset(self, binfactor):
+        """
+        Bin a dataset along the scan dimensions.
+
+        Parameters
+        ----------
+        binfactor : int
+            Number of pixels in each direction to combine.
+
+        Returns
+        -------
+        None.
+
+        """
+        ndims = len(self.array.shape)
+        factor = [binfactor] * 2 + [1] * (ndims - 2)
+        self.array = bin_data(self.array, factor=factor)
+        if hasattr(self, 'array_aligned'):
+            self.array_aligned = bin_data(self.array_aligned,
+                                          factor=[binfactor, binfactor, 1])
+        newshape = self.array.shape
+
+        for i, ax in enumerate(['y', 'x']):
+            end = newshape[i]
+            self.axes[ax] = self.axes[ax][::binfactor][:end]
+
+        self.pixelSize *= binfactor
+
+    def show_spectra(
             self,
             roi=None,
             energy_range=None,
@@ -237,7 +348,7 @@ class dset():
         Parameters
         ----------
         spectrum : str or None
-            Which spectrum to plot from the dataset. i.e. for dual EELS:
+            Which SI to plot from the dataset. i.e. for dual EELS:
             'SI_hl' or 'SI_ll'.
 
         roi : ndarray or None
@@ -278,8 +389,7 @@ class dset():
 
         Returns
         -------
-        I_b : scalar or array
-            Intensity value(s) corresponding to eV. Same shape as 'eV'.
+
 
         """
 
@@ -288,24 +398,15 @@ class dset():
 
         # Check for aligned dataset
         if self.aligned:
-            data_array = self.array_aligned
+            data_array = copy.deepcopy(self.array_aligned)
 
         else:
-            data_array = self.array
+            data_array = copy.deepcopy(self.array)
 
         eV = self.axes['eV']
 
-        # Check if data is an SI
         if roi is None:
-            roi = np.ones(data_array.shape[:2])
-
-        labels = np.unique(roi)
-        labels = labels[labels > 0]
-
-        data_array = np.array([
-            np.mean(data_array[roi == lab], axis=0)
-            for lab in labels
-        ])
+            roi = np.ones(data_array.shape[:-1])
 
         if energy_range is not None:
             start_ind = np.argmin(np.abs(self.axes['eV'] - energy_range[0]))
@@ -313,60 +414,77 @@ class dset():
             data_array = data_array[..., start_ind:stop_ind]
             eV = eV[start_ind:stop_ind]
 
-        maxCounts = np.max(data_array, axis=-1)
-        decades = (np.log10(maxCounts).astype(int) // 3 * 3)
+        if len(data_array.shape) > 1:
+            labels = np.unique(roi)
+            labels = labels[labels > 0]
 
-        if data_array.shape[0] > 1:
-            if waterfall_shifts is None:
-                waterfall_shifts = np.array([
-                    i * 0.1 for i in range(data_array.shape[0])
-                ])
-            elif isinstance(waterfall_shifts, (int, float)):
-                waterfall_shifts = np.array([
-                    i * waterfall_shifts
-                    for i in range(data_array.shape[0])
-                ])
-            else:
-                waterfall_shifts = np.array(waterfall_shifts)
+            data_array = np.array([
+                np.mean(data_array[roi == lab], axis=0)
+                for lab in labels
+            ])
 
-            if waterfall_shifts[0] < 10:
-                waterfall_shifts = waterfall_shifts * maxCounts
+            maxCounts = np.max(data_array, axis=-1)
+            decades = (np.log10(maxCounts).astype(int) // 3 * 3)
 
-            data_array += waterfall_shifts[:, None]
+            if data_array.shape[0] > 1:
+                if waterfall_shifts is None:
+                    waterfall_shifts = np.array([
+                        i * 0.1 for i in range(data_array.shape[0])
+                    ])
+                elif isinstance(waterfall_shifts, (int, float)):
+                    waterfall_shifts = np.array([
+                        i * waterfall_shifts
+                        for i in range(data_array.shape[0])
+                    ])
+                else:
+                    waterfall_shifts = np.array(waterfall_shifts)
 
-        fig, axs = plt.subplots(
-            1,
-            # width_ratios=width_ratios,
-            figsize=figsize,
-            layout="compressed"
-        )
+                if waterfall_shifts[0] < 10:
+                    waterfall_shifts = waterfall_shifts * maxCounts
+
+                data_array += waterfall_shifts[:, None]
+
+        else:
+            data_array = data_array[None, ...]
+            maxCounts = np.max(data_array)
+            decades = (np.log10(maxCounts).astype(int) // 3 * 3)
+
+        if isinstance(figax, bool):
+            fig, axs = plt.subplots(
+                1,
+                # width_ratios=width_ratios,
+                figsize=figsize,
+                layout="compressed"
+            )
+
+        elif isinstance(figax, mpl.axes.Axes):
+            axs = figax
 
         axs.set_xlabel('Energy Loss (eV)', weight='bold', size=16)
         axs.tick_params(axis='x', labelsize=16)
 
         if arb_units:
-            max_y = np.max(data_array)
             axs.set_ylabel('Counts (a.u.)', weight='bold', size=16)
-            axs.set_ylim(0, max_y * 1.1)
+            axs.set_ylim(0, 1.1)
             axs.set_yticks([])
+
+            for i, spec in enumerate(data_array):
+                max_y = np.nanmax(spec)
+                axs.plot(eV, spec / max_y, color=color_list[i])
+
+        else:
+            data_array /= 10**decades
+            # max_y = np.max(data_array)
+            # print(max_y/10**decades * 1.1)
+
+            axs.set_ylabel(f'Counts x 10$^{decades}$', weight='bold')
+            # axs.set_ylim(0, max_y/10**decades * 1.1)
+            # axs.set_yticks([])
 
             for i, spec in enumerate(data_array):
                 axs.plot(eV, spec, color=color_list[i])
 
-        else:
-            data_array /= 10**decades
-            max_y = np.max(data_array)
-            axs.set_ylabel(f'Counts x 10$^{decades}$', weight='bold')
-            axs.set_ylim(0, max_y/10**decades * 1.1)
-            axs.set_yticks([])
-
-            for i, spec in enumerate(data_array):
-                axs.plot(eV, data_array, color=color_list[i])
-
-        asp = np.diff(axs.get_xlim())[0] / np.diff(axs.get_ylim())[0]
-        asp /= np.abs(np.diff(axs.get_xlim())[0] / np.diff(axs.get_ylim())[0])
-
-        if figax:
+        if figax is True:
             return fig, axs
 
     def get_summed_spectra(self, roi=None):
@@ -375,7 +493,7 @@ class dset():
 
         Parameters
         ----------
-        roi : 2d array or None
+        roi : 2d array of ints or None
             2d array with dimensions the same as the scan dimensions of the
             dataset (0, 1). Pixels with values > 0 will be integrated to form
             a spectrum or spectra. For multiple spectrum ROIs, each unique
@@ -421,17 +539,48 @@ class dset():
         return dset_
 
 
-class EELS_SIdata():
+class EELSgroup():
     """
-    Class for loading, viewing & analizing EELS SI datasets (indulcing dual+).
+    Super-class for loading, organizing, analizing and visualizing multi-EELS
+    data.
+
+    Loads dual (or higher) EELS SI datasets as a single object for integrated
+    & streamlined processing. Each energy range is stored as a separate
+    SingleOrigin.eels.eels.EELSdset object. Currently works with Gatan DM
+    collated SI files and Velox .emd files containing EELS data.
 
     Parameters
     ----------
     path : Path or str
-        Path to the EELS dataset. May be DM combined eels dataset or Velox
+        Path to the file. May be DM combined EELS dataset or Velox
         emd file containing EELS data.
 
+    Attributes
+    ----------
+    SI_... : dset objects
+        SI or SI_ll & SI_hl for DM files (depending on whether single or
+        dual EELS was collected). SI_0 - SI_4 (for Velox with 5 strip Zebra
+        detector).
 
+    adf : dset object
+        The simultaneous ADF scan.
+
+    survey : dset object
+        The survey scan (only for DM).
+
+    aligned : bool
+        True if the datasets have been aligned by the ZLP using the alignZLP()
+        method.
+
+    quant_results : dict
+        The results of elemental quantification using the modelfit_SI method.
+
+    shifts : array
+        The energy shifts applied to each spectrum to align the ZLPs.
+
+    zlp_spec : str or None.
+        Label of the dset that contains the ZLP. Determined automatically on
+        loading. None if no ZLP is found.
 
     """
 
@@ -441,13 +590,17 @@ class EELS_SIdata():
     ):
 
         if path.parts[-1][-3:] == 'emd':
+            dsetlabels = list(emdVelox(path)[0].keys())
+            if 'a' in dsetlabels:
+                self.survey = EELSdset(path, dsetIndex='a')
+            else:
+                self.survey = None
 
-            self.survey = None
-            self.adf = dset(path, dsetIndex='image')
+            self.adf = EELSdset(path, dsetIndex='DF-S')
             self.zlp_spec = None
             spec_list = ['SI_0', 'SI_1', 'SI_2', 'SI_3', 'SI_4']
             for spec in spec_list:
-                setattr(self, spec, dset(path, dsetIndex=spec))
+                setattr(self, spec, EELSdset(path, dsetIndex=spec))
                 if getattr(self, spec).pixelOrigin[-1] < 0:
                     self.zlp_spec = spec
 
@@ -455,28 +608,30 @@ class EELS_SIdata():
             file = fileDM(path)
             numdsets = file.numObjects - 1
 
-            self.survey = dset(path, 0)
-            self.adf = dset(path, 1)
-            self.scanSize = self.adf.array.shape
-            self.pixelSize = self.adf.pixelSize[0]
-            self.pixelUnit = self.adf.pixelUnit[0]
+            self.survey = EELSdset(path, 0)
+            self.adf = EELSdset(path, 1)
+            self.zlp_spec = None
             if numdsets == 3:
-                self.SI = dset(path, 2)
+                self.SI = EELSdset(path, 2)
 
             if numdsets == 4:
-                self.SI_ll = dset(path, 2)
-                self.SI_hl = dset(path, 3)
+                self.SI_ll = EELSdset(path, 2)
+                self.SI_hl = EELSdset(path, 3)
                 if self.SI_hl.pixelOrigin[-1] < 0:
                     self.zlp_spec = 'SI_ll'
 
+        self.scanSize = self.adf.array.shape
+        self.pixelSize = self.adf.pixelSize[0]
+        self.pixelUnit = self.adf.pixelUnit[0]
         self.aligned = False
         self.microscope_params = None
-        self.quant_results = {}
+        self.quant_results = {attr: {}
+                              for attr in dir(self)
+                              if attr[:2] == 'SI'}
 
-    # TODO: use dset.show_spectrum here with some modifications to reduce code.
-    def show_spectrum(
+    def show_spectra(
             self,
-            spectrum=None,
+            spectrum,
             roi=None,
             energy_range=None,
             aligned=True,
@@ -486,7 +641,7 @@ class EELS_SIdata():
             width_ratios=[1, 2],
             waterfall_shifts=None,
     ):
-        """
+        """x
         Show a spectrum alongside the ADF signal from the scan.
 
         Parameters
@@ -525,6 +680,10 @@ class EELS_SIdata():
         figsize : tuple or None
             Size of the resulting figure.
 
+        width_ratios : 2-list
+            Ratio of the image to spectrum plot widths.
+            Default: [1, 2]
+
         waterfall_shifts : scalar or list of scalars or None
             How much to shift the spectra if multiple masks are passed in the
             roi. If values > 1, will be intrepreted as a shift in absolute
@@ -541,60 +700,7 @@ class EELS_SIdata():
         color_list = ['red', 'blue', 'green', 'orange', 'purple', 'lightblue',
                       'magenta']
 
-        if spectrum is None:
-            if hasattr(self, 'SI_hl'):
-                si = self.SI_hl
-            else:
-                si = self.SI
-
-        else:
-            si = getattr(self, spectrum)
-
-        if self.aligned:
-            data_array = si.array_aligned
-
-        else:
-            data_array = si.array
-
-        eV = si.axes['eV']
-        if roi is None:
-            counts = np.array([np.sum(data_array, axis=(0, 1))])
-        else:
-            counts = []
-            labels = np.unique(roi)
-            labels = labels[labels > 0]
-            for lab in labels:
-                counts += [np.sum(data_array[roi == lab], axis=0)]
-
-            counts = np.array(counts)
-
-        if energy_range is not None:
-            start_ind = np.argmin(np.abs(si.axes['eV'] - energy_range[0]))
-            stop_ind = np.argmin(np.abs(si.axes['eV'] - energy_range[1]))
-            counts = counts[..., start_ind:stop_ind]
-            eV = eV[start_ind:stop_ind]
-
-        maxCounts = np.max(counts)
-        decades = int(np.log10(maxCounts) // 3 * 3)
-
-        if counts.shape[0] > 1:
-            if waterfall_shifts is None:
-                waterfall_shifts = np.array([
-                    i * 0.1 for i in range(counts.shape[0])
-                ])
-            elif isinstance(waterfall_shifts, (int, float)):
-                waterfall_shifts = np.array([
-                    i * waterfall_shifts
-                    for i in range(counts.shape[0])
-                ])
-            else:
-                # waterfall_shifts = np.zeros(counts.shape[0])
-                waterfall_shifts = np.array(waterfall_shifts)
-
-            if waterfall_shifts[0] < 10:
-                waterfall_shifts *= maxCounts
-
-            counts += waterfall_shifts[:, None]
+        si = getattr(self, spectrum)
 
         fig, axs = plt.subplots(
             1, 2,
@@ -603,9 +709,8 @@ class EELS_SIdata():
             layout="compressed"
         )
 
-        axs[0].imshow(self.adf.array, cmap='gray', zorder=0)
-        axs[0].set_xticks([])
-        axs[0].set_yticks([])
+        quickplot(self.adf.array, cmap='gray', figax=axs[0])
+
         if roi is not None:
             labels = np.unique(roi)
             labels = labels[labels > 0]
@@ -619,40 +724,22 @@ class EELS_SIdata():
             axs[0].imshow(
                 rgb,
                 zorder=1
-                # alpha=0.2,
-                # cmap='Reds'
             )
 
-        axs[1].set_xlabel('Energy Loss (eV)', weight='bold', size=16)
-        axs[1].tick_params(axis='x', labelsize=16)
-
-        if arb_units:
-            max_y = np.max(counts)
-            axs[1].set_ylabel('Counts (a.u.)', weight='bold', size=16)
-            axs[1].set_ylim(0, max_y * 1.1)
-            axs[1].set_yticks([])
-
-            for i, spec in enumerate(counts):
-                axs[1].plot(eV, spec, color=color_list[i])
-
-        else:
-            counts /= 10**decades
-            max_y = np.max(counts)
-            axs[1].set_ylabel(f'Counts x 10$^{decades}$', weight='bold')
-            axs[1].set_ylim(0, max_y/10**decades * 1.1)
-            axs[1].set_yticks([])
-
-            for i, spec in enumerate(counts):
-                axs[1].plot(eV, counts, color=color_list[i])
-
-        asp = np.diff(axs[1].get_xlim())[0] / np.diff(axs[1].get_ylim())[0]
-        asp /= np.abs(np.diff(axs[0].get_xlim())
-                      [0] / np.diff(axs[0].get_ylim())[0])
+        si.show_spectra(
+            roi=roi,
+            energy_range=energy_range,
+            aligned=aligned,
+            arb_units=arb_units,
+            figax=axs[1],
+            figsize=None,
+            waterfall_shifts=waterfall_shifts,
+        )
 
         if figax:
             return fig, axs
 
-    def rotate_scan90(self, k=1, axes=(0, 1)):
+    def rotate90(self, k=1, axes=(0, 1)):
         """
         Rotate the SI scan in multiples of 90 degrees. Will be applied to all
         datasets in the SI object.
@@ -680,17 +767,167 @@ class EELS_SIdata():
 
         for d in dsetlist:
             if inspect.ismethod(d):
-                print('skipping')
                 continue
-            d.rot_scan90(k=k, axes=axes)
+            d.rotate90(k=k, axes=axes)
 
-    def alignZLP(self):
+        self.scanSize = self.adf.array.shape
+
+        if hasattr(self, 'shifts;'):
+            self.shifts = np.rot90(self.shifts, k=k)
+
+    def flatten_SI(self, axis):
         """
-        Align the spectra by the ZLP for each pixel.
+        Rotate the SI scan in multiples of 90 degrees. Will be applied to all
+        datasets in the SI object.
 
         Parameters
         ----------
+        axis : int
+            The scan axis along which to sum the SI.
+
+        Returns
+        -------
         None.
+
+        """
+
+        dsetlist = [
+            getattr(self, attr)
+            for attr in dir(self)
+            if 'SI' in attr or 'adf' == attr
+        ]
+
+        for d in dsetlist:
+            if inspect.ismethod(d):
+                continue
+            d.flatten_dset(axis)
+
+        self.scanSize = self.adf.array.shape
+
+        if hasattr(self, 'shifts;'):
+            self.shifts = np.nanmean(self.shifts, axes=axis)
+
+    def crop_SI(self, xlim, ylim):
+        """
+        Crop an SI dataset. The crop will be applied to all datasets in the SI 
+        object excluding the survey image (if present).
+
+        Parameters
+        ----------
+        xlim, ylim : 2-lists or None
+            The [start, stop] scan pixels along each axis for the cropping.
+            If None, the dimension will not be cropped.
+
+        Returns
+        -------
+        None.
+
+        """
+
+        if xlim is None:
+            xlim = [0, None]
+        if ylim is None:
+            ylim = [0, None]
+
+        dsetlist = [
+            getattr(self, attr)
+            for attr in dir(self)
+            if 'SI' in attr or 'adf' == attr
+        ]
+
+        for d in dsetlist:
+            if inspect.ismethod(d):
+                continue
+            d.crop_dset(xlim, ylim)
+
+        self.scanSize = self.adf.array.shape
+
+        if hasattr(self, 'shifts'):
+            self.shifts = self.shifts[ylim[0]: ylim[1], xlim[0]: xlim[1]]
+
+    def bin_SI(self, binfactor):
+        """
+        Bin an SI dataset. The bining will be applied to all datasets in the SI
+        object excluding the survey image (if present).
+
+        Parameters
+        ----------
+        binfactor : int
+            Number of pixels in each bin (n x n pixels).
+
+        Returns
+        -------
+        None.
+
+        """
+
+        dsetlist = [
+            getattr(self, attr)
+            for attr in dir(self)
+            if 'SI' in attr or 'adf' == attr
+        ]
+
+        for d in dsetlist:
+            if inspect.ismethod(d):
+                continue
+            d.bin_dset(binfactor)
+
+        self.scanSize = self.adf.array.shape
+        self.pixelSize = self.adf.pixelSize
+
+        if hasattr(self, 'shifts'):
+            self.shifts = None
+
+# TODO: Make line profile function
+    # def lineprofile(
+    #     self,
+    #     data,
+    #     int_width,
+    #     image=None,
+    #     scandims=None,
+    #     signaldims=None,
+    #     start=None,
+    #     end=None,
+    #     plot=True,
+    # ):
+
+    #     """
+    #     Take a line profile on an SI dataset. The profile will be applied to
+    #     all datasets in the SI object excluding the survey image (if present)
+
+    #     Parameters
+    #     ----------
+    #     binfactor : int
+    #         Number of pixels in each bin (n x n pixels).
+
+    #     Returns
+    #     -------
+    #     None.
+
+    #     """
+
+    #     dsetlist = [
+    #         getattr(self, attr)
+    #         for attr in dir(self)
+    #         if 'SI' in attr or 'adf' == attr
+    #     ]
+
+    #     for d in dsetlist:
+    #         if inspect.ismethod(d):
+    #             continue
+    #         d.bin_dset(binfactor)
+
+    def alignZLP(self, sigma=None):
+        """
+        Align the spectra by the ZLP.
+
+        Parameters
+        ----------
+        sigma : scalar or None
+            Width of the gaussian filter (in eV) to apply prior to measuring
+            ZLP position. Helps prevent errors due to noisy ZLP spectra. If
+            None, no smoothing is applied./
+            Default: None.
 
         Returns
         -------
@@ -705,15 +942,21 @@ class EELS_SIdata():
         else:
             zl = getattr(self, self.zlp_spec)
 
-        zldata = zl.array
+        zldata = copy.deepcopy(zl.array)
         eVzl = zl.axes['eV']
+
+        if sigma is not None:
+            zldata = gaussian_filter(
+                zldata,
+                sigma=sigma/zl.pixelSize[-1],
+                axes=(-1,))
 
         # Get mean and check that a ZLP is present
         if not (np.nanmin(eVzl) < 0 and np.nanmax(eVzl) > 0):
             raise Exception('ZLP not detected')
 
         # Check ZLP width and mask data (threshold may need to be modified...)
-        fwhm_initial = np.around(get_zlp_fwhm(zldata, eVzl), decimals=4)
+        fwhm_initial = np.around(get_zlp_fwhm(zl.array, eVzl), decimals=4)
 
         print('\n', 'FWHM before:', fwhm_initial, 'eV')
 
@@ -731,7 +974,7 @@ class EELS_SIdata():
                   (1e-3, 5),
                   ((1, None))]
 
-        print('Measuring shifts...')
+        print('Aligning spectra...')
 
         zl_masked = zl_masked.reshape((-1, zl_masked.shape[-1]))
 
@@ -746,14 +989,12 @@ class EELS_SIdata():
         shifts = -fits[:, 0]
         shifts = np.array(shifts).reshape(zldata.shape[:-1])
 
-        print('Aligning spectra...')
         self.shifts = shifts
         self.aligned = True
 
         spec_list = [attr for attr in dir(self) if attr[:2] == 'SI']
 
         for dset in spec_list:
-            print
             spec = getattr(self, dset)
             eV = spec.axes['eV']
             spec_aligned = np.array([
@@ -762,7 +1003,7 @@ class EELS_SIdata():
                     eV + shifts[ind[0], ind[1]],
                     spec.array[ind[0], ind[1]]
                 )
-                for ind in tqdm(scanInds)]).reshape(spec.array.shape)
+                for ind in scanInds]).reshape(spec.array.shape)
             if self.zlp_spec == dset:
                 # Check ZLP width and mask data
                 fwhm_final = np.around(get_zlp_fwhm(spec_aligned, eV),
@@ -774,27 +1015,27 @@ class EELS_SIdata():
 
     def get_eels_intensity_map(
             self,
+            si,
             int_window,
             bkgd_window=None,
-            SI=None,
             lba=None
     ):
         """
-        Make an EELS elemental map.
+        Integrate over an energy range with optional background subtraction.
 
         Parameters
         ----------
+        si : str or None
+            Which spectrum image to use: 'SI' (single EELS), 'SI_ll' (dual EELS
+            low loss) or 'SI_hl' (dual EELS high loss). If None, will default
+            to 'SI_hl' for dual EELS or 'SI' in the case of single EELS.
+
         int_window : 2-list
             The start and stop energy of the signal integration window.
 
         bkgd_window : 2-list or None
             The start and stop energy of the background fitting window. If
             None, no background is subtracted.
-
-        SI : str or None
-            Which spectrum image to use: 'SI' (single EELS), 'SI_ll' (dual EELS
-            low loss) or 'SI_hl' (dual EELS high loss). If None, will default
-            to 'SI_hl' for dual EELS or 'SI' in the case of single EELS.
 
         lba : int or None.
             Local background averaging (LBA) sigma. Used for locally averaging
@@ -811,12 +1052,7 @@ class EELS_SIdata():
 
         """
 
-        if SI is None and self.dualEELS:
-            si = self.SI_hl
-        elif not self.dualEELS:
-            si = self.SI
-        else:
-            si = getattr(self, SI)
+        si = getattr(self, si)
 
         eV = si.axes['eV']
 
@@ -826,7 +1062,7 @@ class EELS_SIdata():
             data_array = si.array
 
         if bkgd_window is not None:
-            si_sub_bkgd = si_remove_eels_background(
+            si_sub_bkgd = subtract_background_SI(
                 data_array,
                 eV,
                 bkgd_window,
@@ -862,10 +1098,10 @@ class EELS_SIdata():
 
         """
 
-        if self.dualEELS:
-            si = self.SI_ll
+        if self.zlp_spec is not None:
+            si = getattr(self, self.zlp_spec)
         else:
-            si = self.SI
+            raise Exception('No ZLP found. Cannot calculate thickness.')
 
         if hasattr(si, 'array_aligned'):
             data = si.array_aligned
@@ -900,18 +1136,28 @@ class EELS_SIdata():
         None.
 
         """
-        if self.dualEELS:
-            pass
-        else:
-            raise Exception('Must have dual EELS dataset to use Fourier' +
+        if self.zlp_spec is None:
+            raise Exception('Must have an SI with ZLP to use Fourier' +
                             'ratio deconvolution.')
 
-        self.SI_hl.array_aligned = fourier_ratio_deconvolution(
-            self.SI_hl.array_aligned,
-            self.SI_ll.array_aligned,
-            # self.SI_hl.axes['eV'],
-            self.SI_ll.axes['eV'],
-            hann_taper=hann_taper)
+        if self.aligned is False:
+            raise Exception('Must run alignZLP() method first.')
+
+        spec_list = [attr for attr in dir(self) if attr[:2] == 'SI']
+
+        zlp = getattr(self, self.zlp_spec)
+
+        for dset in spec_list:
+            if dset == self.zlp_spec:
+                continue
+            else:
+                si = getattr(self, dset)
+
+            si.array_aligned = fourier_ratio_deconvolution(
+                si.array_aligned,
+                zlp.array_aligned,
+                zlp.axes['eV'],
+                hann_taper=hann_taper)
 
     def remove_background(self, si, window):
         """
@@ -936,13 +1182,13 @@ class EELS_SIdata():
         eV = si.axes['eV']
 
         if self.aligned:
-            si.array_aligned = si_remove_eels_background(
+            si.array_aligned = subtract_background_SI(
                 si.array_aligned,
                 eV,
                 window
             )
         else:
-            si.array = si_remove_eels_background(
+            si.array = subtract_background_SI(
                 si.array,
                 eV,
                 window
@@ -971,48 +1217,51 @@ class EELS_SIdata():
 
         self.microscope_params = {'E0': E0, 'alpha': alpha, 'beta': beta}
 
-    def multifit_SI(
+    def modelfit_SI(
             self,
             si,
             edges,
             energy_shifts=None,
-            white_lines=None,
+            whitelines=None,
             bkgd_window=None,
             fit_window=None,
             GOS='dirac',
     ):
         """
         Fit one or more EELS edges with a single background fit. Stores results
-        in "quant_results" as a dictionary. These results can be plotted using
+        in "quant_results" as a dictionary. These results can be #ted using
         self.plot_elemental_map() or self.plot_whiteline_map(). They can also
-        be explored using self.eels_quant_explorer().
+        be explored using self.explore().
 
         Parameters
         ----------
         si : str
             Which spectrum image to fit ('SI', 'SI_hl', or 'SI_ll').
 
-        edges : list of 1D arrays
-            Model edge(s) to be fit to 'spectrum'. Multiple edges can be
-            simultaneously fit to a single spectrum assuming close or
-            overlapping edges and/or the post edge backgrounds of lower energy
-            edges model the spectrum well up to subsequent edges.
+        edges : list of strings
+            List of edges to be fit. Must follow the format: 'Elem-Shell'.
+            For example: 'C-K' or 'La-M'.
 
         energy_shifts : list of scalars or None
-            The amount to shift each model edge to better match the
-            experimental edge onset. If None, no offset(s) applied.
+            The energy shift to apply to each model edge to better match the
+            experimental edge onset. If None, no offset(s) applied. If more
+            than one edge is being fit, pass 0 in this list for any edges that
+            should not be shifted. Order must match the order of 'edges'.
+            Default: None
 
-        white_lines : list of scalars
+        whitelines : list of scalars
             The approximate energy loss of white line peaks to be fit with
             gaussians. Prevents model edge intensity from being fit to near
             edge structure not accounted for in the isolated atom model. The
             gaussian fits are also useful for measuring energy shifts of the
-            white lines with oxidation state / local environment.
+            white lines with oxidation state / local bonding environment.
+            Default: None
 
         bkgd_window : 2-list or None
             Start and stop energy loss for power law background fitting. If
             None, no attempt is made to account for the background; it is
             assumed that a background has been pre-subtracted.
+            Default: None
 
         fit_window : 2-list or None
             Start and stop energy loss for fitting the model to the
@@ -1020,21 +1269,24 @@ class EELS_SIdata():
             energy loss in the spectrum. If subsequent edges are not to be
             simultaneously fit, the window should end before any additional
             edges.
+            Default: None
 
         GOS : str
-            The edge model type to use: 'dft' or 'dirac'. This function uses
-            the edge model calculation in exspy. Not all edges for all
-            elements are included in the exspy element dictionary, but the
-            underlying models are present in both GOS's. As a result, the
-            library  may need to be modified by the user for less common edges.
-            It is called 'elements.py' and can be found in the exspy library
-            in your environment.
+            The edge (or generalizec oscillator strength) model type to use:
+            'dft' or 'dirac'. This function uses the edge model calculation in
+            exspy. Not all edges for all elements are included in the exspy
+            element dictionary, but the underlying models are present in both
+            databases. As a result, the library  may need to be modified by the
+            user for less common edges. It is called 'elements.py' and can be
+            found in the exspy library in your environment.
+            Default: 'dft'
 
         Returns
         -------
         None.
 
         """
+
         # Setup
         if isinstance(edges, str):
             edges = [edges]
@@ -1050,10 +1302,12 @@ class EELS_SIdata():
             data_array = si_.array_aligned
         else:
             data_array = si_.array
-        data_array = data_array.reshape((-1, data_array.shape[-1]))
 
+        size = data_array.shape
+        data_array = data_array.reshape((-1, data_array.shape[-1]))
         # Ensure white lines are in energy order
-        white_lines = np.sort(white_lines)
+        if whitelines is not None:
+            whitelines = np.sort(whitelines)
 
         # Get edge models
         if self.microscope_params is None:
@@ -1064,11 +1318,11 @@ class EELS_SIdata():
         else:
             energy_shifts = list(energy_shifts)
 
-        edges_ = []
+        models = []
         onsets = []
         for i, edge in enumerate(edges):
             elem, shell = edge.split('-')
-            edges_ += [get_edge_model(
+            models += [get_edge_model(
                 elem,
                 shell,
                 eV=eV,
@@ -1077,90 +1331,121 @@ class EELS_SIdata():
                 **self.microscope_params,
             )]
 
-            onsets += [eV[np.argmax(edges_[-1] > 0)]]
+            onsets += [eV[np.argmax(models[-1] > 0)]]
+
         # Order edges by onset:
         indsort = np.argsort(onsets)
         onsets = np.array(onsets)[indsort].tolist()
-        edges_ = [edges_[ind] for ind in indsort]
+        models = [models[ind] for ind in indsort]
         edges = [edges[ind] for ind in indsort]
-        print(indsort, edges)
 
-        onsets += [np.inf]
+        onsets = np.concatenate((onsets, [np.inf]))
+
+        if whitelines is not None:
+            whitelines = np.sort(whitelines)
+            # Match whitelines to appropriate edge
+            wledges = [edges[-np.argmax(np.flip(line > onsets - 5))]
+                       for line in whitelines]
 
         n_jobs = psutil.cpu_count(logical=True)
 
         results = Parallel(n_jobs=n_jobs)(
-            delayed(eels_multifit)(
+            delayed(modelfit)(
                 spec,
                 eV,
-                edges_,
-                white_lines=white_lines,
+                models,
+                whitelines=whitelines,
                 bkgd_window=bkgd_window,
                 fit_window=fit_window,
                 return_parameter_keys=True,
                 return_nanmask=True,
-
+                **self.microscope_params,
+                plot=False,
             ) for spec in tqdm(data_array)
         )
 
         # Rehsape results into parameter maps
-        pkeys = results[0][1]
-        nanmask = np.where(results[0][2], 1, np.nan)
-
+        pkeys = results[0][0]
+        nanmask = np.where(results[0][3], 1, np.nan)
         pmaps = np.array([result[0] for result in results]
-                         ).reshape((si_.array.shape[:2]) + (len(pkeys),))
+                         ).reshape(size[:2] + (len(pkeys),))
+
+        # vecres = np.array([result[-1] for result in results]
+        #                   ).reshape(size[:2] + (-1,))
+        # n = np.nansum(nanmask)
+        # fitstd = (sumsqrs / n)**0.5
+
         if bkgd_window is not None:
             bkdg_ind_offset = 2
         else:
             bkdg_ind_offset = 0
 
-        edges_ind_offset = bkdg_ind_offset + len(edges)
+        wl_ind_offset = bkdg_ind_offset + len(edges)
 
-        # Build results dictionary
-        quant = {}
-        quant['SI'] = si
-        quant['bkgd_window'] = bkgd_window
-        quant['fit_window'] = fit_window
-        quant['edge_order'] = edges
-        if bkgd_window is None:
-            quant['bkgd_fit'] = np.zeros(self.scanSize + (2,))
+        # Check for previous results and clean up
+
+        if 'backgrounds' in self.quant_results[si]:
+
+            keylist = list(self.quant_results[si]['backgrounds'].keys())
+
+            for bkgd in keylist:
+
+                if len(set(edges) & set(bkgd.split('_'))) > 0:
+                    # Remove previous background fit
+                    del self.quant_results[si]['backgrounds'][bkgd]
+                    # Remove all edges associated with the background
+                    for edge in bkgd.split('_'):
+                        del self.quant_results[si][edge]
+
         else:
-            quant['bkgd_fit'] = pmaps[..., :2]
+            self.quant_results[si] = {'backgrounds': {}}
+
+        # Build new results
+        # Store the background fit information
+        if bkgd_window is None:
+            bkgd_fit = np.zeros(self.scanSize + (2,))
+        else:
+            bkgd_fit = pmaps[..., :2]
+
+        self.quant_results[si]['backgrounds'][('_').join(edges)] = {
+            'bkgd_window': bkgd_window,
+            'params': bkgd_fit,
+        }
 
         for i, edge in enumerate(edges):
-            quant[edge] = {}
-            quant[edge]['map'] = pmaps[..., i + bkdg_ind_offset]
-            quant[edge]['model'] = edges_[i] * nanmask
-            if white_lines is not None:
-                lines = []
-                for j, line in enumerate(white_lines):
-                    if (line > onsets[i]) and (line < onsets[i+1]):
-                        lines += [
-                            pmaps[...,
-                                  edges_ind_offset + 3*j:
-                                      edges_ind_offset + 3*(j + 1)]
-                        ]
+            self.quant_results[si][edge] = {
+                'fit_window': fit_window,
+                'model': models[i] * nanmask,
+                'weights': pmaps[..., i + bkdg_ind_offset],
 
-                quant[edge]['white_line_eV'] = white_lines
+            }
 
-                quant[edge]['white_lines'] = np.array(lines
-                                                      ).transpose((1, 2, 0, 3))
-            else:
-                quant[edge]['white_lines'] = None
+            self.quant_results[si][edge]['whitelines'] = None
 
-        self.quant_results[('_').join(edges)] = quant
-        return nanmask
+        if whitelines is not None:
+            # n_wl = len(whitelines)
+            for edge in edges:
+                if edge not in wledges:
+                    continue
+                wlinds = np.argwhere(
+                    edge == np.array(wledges)).squeeze().reshape((-1,))
+                self.quant_results[si][edge]['whitelines'] = \
+                    pmaps[...,
+                          wl_ind_offset + 3*wlinds[0]:
+                          wl_ind_offset + 3*(wlinds[-1] + 1)
+                          ].reshape(size[:2] + (len(wlinds), 3))
 
-    def plot_elemental_map(
+                self.quant_results[si][edge]['whiteline_eV'] = whitelines
+
+        # return vecres
+
+    def get_elemental_map(
             self,
             edge,
-            fit=None,
-            cmap='inferno',
-            figax=True,
-            return_elemmap=False,
+            si=None,
     ):
         """
-        Plot an elemental intensity map acquired using the self.multifit_SI
+        Plot an elemental intensity map acquired using the self.modelfit_SI
         method.
 
         Parameters
@@ -1168,12 +1453,50 @@ class EELS_SIdata():
         edge : str
             Edge for which to map the intensity.
 
-        fit : str or None
-            The string identifying the spectral fit of one or more elemenets
-            with a single background. If None, the first instance of a fit
-            with the specified edge will be used. Only needed if more than
-            one fit of the same edge has been performed.
+        si : str or None
+            The string identifying the SI with the desired elemental map. Only
+            needed if a given edge has been fit in more than one SI (uncommon).
             Default: None.
+
+        Returns
+        -------
+
+        elemmap : ndarray
+            The quantitative elemental intensity map.
+
+        """
+        if si is None:
+            # Find first fit with the specified edge
+            matchingSI = [
+                si for si in self.quant_results
+                if edge in self.quant_results[si]
+            ]
+
+            if len(matchingSI) > 1:
+                print('Edge fit found in multiple SI datasets. Showing the' +
+                      'first instance. Specify desired SI if necessary.')
+            si = matchingSI[0]
+
+        elemmap = self.quant_results[si][edge]['weights']
+
+        return elemmap
+
+    def plot_elemental_map(
+            self,
+            edge,
+            cmap='inferno',
+            figax=True,
+            return_map=False,
+            si=None,
+    ):
+        """
+        Plot an elemental intensity map acquired using the self.modelfit_SI
+        method.
+
+        Parameters
+        ----------
+        edge : str
+            Edge for which to map the intensity.
 
         cmap : str or 3- or 4-list
             If a string, will be used as a colormap. If a list is passed, the
@@ -1188,6 +1511,11 @@ class EELS_SIdata():
             Whether to return the data array containing the elemental map.
             Default: False.
 
+        si : str or None
+            The string identifying the SI with the desired elemental map. Only
+            needed if a given edge has been fit in more than one SI (uncommon).
+            Default: None.
+
         Returns
         -------
         fig, axs : Matplotlib Figure and Axes object (optional)
@@ -1196,19 +1524,19 @@ class EELS_SIdata():
             The elemental intensity map.
 
         """
-        if fit is None:
+        if si is None:
             # Find first fit with the specified edge
-            matchingfits = [
-                key for key in self.quant_results.keys()
-                if np.isin(edge, list(self.quant_results[key].keys())).item()
+            matchingSI = [
+                si for si in self.quant_results
+                if edge in self.quant_results[si]
             ]
 
-            if len(matchingfits) > 1:
-                print('Multiple fits found. Check for intended results or '
-                      + 'specify desired fit.')
-            fit = matchingfits[0]
+            if len(matchingSI) > 1:
+                print('Edge fit found in multiple SI datasets. Showing the' +
+                      'first instance. Specify desired SI if necessary.')
+            si = matchingSI[0]
 
-        elemmap = self.quant_results[fit][edge]['map']
+        elemmap = self.quant_results[si][edge]['weights']
 
         if isinstance(figax, bool):
             fig, ax = plt.subplots(1)
@@ -1221,7 +1549,7 @@ class EELS_SIdata():
         return_objs = []
         if figax is True:
             return_objs += [fig, ax]
-        if return_elemmap is True:
+        if return_map is True:
             return_objs += [elemmap]
 
         if len(return_objs) > 0:
@@ -1230,56 +1558,65 @@ class EELS_SIdata():
     def plot_whiteline_map(
         self,
         edge,
-        fit=None,
         param='energy',
         whichlines='all',
         refenergy=0,
+        weightthresh=0.01,
         cmap='inferno',
         plot_cbar=True,
         figax=True,
         return_array=False,
+        si=None,
     ):
         """
         Plot a map of a white line parameter acquired using the
-        self.multifit_SI method.
+        self.modelfit_SI method.
 
         Parameters
         ----------
         edge : str
             Edge for which to map the intensity.
 
-        fit : str or None
-            The string identifying the spectral fit of one or more elemenets
-            with a single background. If None, the first instance of a fit
-            with the specified edge will be used. Only needed if more than
-            one fit of the same edge has been performed.
-            Default: None.
-
         param : str
             The white line fitting parameter to plot: 'energy', 'width' or
             'intensity'.
-
-        cmap : str or 3- or 4-list
-            If a string, will be used as a colormap. If a list is passed, the
-            color represented will be used as a uniform color gradient for the
-            map.
+            Default: 'energy'
 
         whichlines : str, int or list of ints
             Which white line map(s) to plot, indexed in energy order for the
             specified edge.
+            Default: 'all'
 
         refenergy : scalar or ndarray of scalars
             Reference energy/energies for plotting a white line energy shift
             rather than an absolute energy value.
+            Default: 0
+
+        weightthresh : scalar or None
+            Relative edge weight below which to cut off mapping of the white
+            line parameter. Allows removing of parts of the map where the
+            element is not actually present.
+            Default: 0.01
+
+        cmap : str or 3- or 4-list
+            If a string, will be used as a colormap. If a list is passed, the
+            color represented will be used as a uniform color gradient for the
+            map (as RBG[A] value).
+            Default: 'inferno'
 
         figax : matplotlib Axes object or bool
-            If a Axes, plots in this Axes. If bool, whether to return the
+            If an Axes, plots in this Axes. If bool, whether to return the
             Figure and Axes objects.
 
         return_array : bool
             Whether to return the data array containing the map(s) of the white
             line parameter.
             Default: False.
+
+        si : str or None
+            The string identifying the SI with the desired elemental map. Only
+            needed if a given edge has been fit in more than one SI (uncommon).
+            Default: None.
 
         Returns
         -------
@@ -1289,23 +1626,29 @@ class EELS_SIdata():
             The the white line parameter map(s).
 
         """
-        if fit is None:
+        if si is None:
             # Find first fit with the specified edge
-            matchingfits = [
-                key for key in self.quant_results.keys()
-                if np.isin(edge, list(self.quant_results[key].keys())).item()
+            matchingSI = [
+                si for si in self.quant_results
+                if edge in self.quant_results[si]
             ]
 
-            if len(matchingfits) > 1:
-                print('Multiple fits found. Check for intended results or '
-                      + 'specify desired fit.')
-            fit = matchingfits[0]
+            if len(matchingSI) > 1:
+                print('Edge fit found in multiple SI datasets. Showing the' +
+                      'first instance. Specify desired SI if necessary.')
+            si = matchingSI[0]
 
         param_ind = {'energy': 0, 'width': 1, 'intensity': 2}[param]
 
-        maps = self.quant_results[fit][edge]['white_lines'][..., param_ind]
+        elemWeights = self.quant_results[si][edge]['weights']
+        weightsmask = np.where(
+            elemWeights > np.max(elemWeights) * weightthresh, 1, 0)
+
+        maps = self.quant_results[si][edge]['whitelines'][..., param_ind]
         maps = maps.transpose((2, 0, 1))
-        print(maps.shape)
+
+        # Mask off parts with minimal edge weight
+        maps = np.where(weightsmask > 0, maps, np.nan)
 
         if whichlines != 'all':
             if isinstance(whichlines, (int, list)):
@@ -1318,7 +1661,7 @@ class EELS_SIdata():
         if len(maps.shape) <= 2:
             maps = maps[..., None]
 
-        if isinstance(figax, bool):
+        if isinstance(figax, bool) or (figax is None):
             nplots = maps.shape[0]
             fig, axs = plt.subplots(1, nplots, layout='constrained')
             fig.suptitle(f'{edge} White Lines')
@@ -1329,9 +1672,9 @@ class EELS_SIdata():
         axs = np.array(axs, ndmin=1)
 
         for i, ax in enumerate(axs):
-            mean = np.mean(maps[i])
-            std = np.mean([np.std(map_) for map_ in maps])
-            vmin, vmax = np.around([mean - std*3, mean + std*3], decimals=1)
+            mean = np.nanmean(maps[i])
+            std = np.nanmean([np.nanstd(map_) for map_ in maps])
+            vmin, vmax = np.around([mean - std, mean + std], decimals=2)
 
             cbar = quickplot(
                 maps[i],
@@ -1341,7 +1684,8 @@ class EELS_SIdata():
                 figax=ax,
                 returnplot=True,
             )
-            nominal_eV = self.quant_results[fit][edge]['white_line_eV'][i]
+
+            nominal_eV = self.quant_results[si][edge]['whiteline_eV'][i]
             ax.set_title(f'{nominal_eV} eV')
             if plot_cbar:
                 quickcbar(
@@ -1351,57 +1695,78 @@ class EELS_SIdata():
                     vmin=None,
                     vmax=None,
                     orientation='horizontal',
-                    ticks=np.around([vmin, mean, vmax], decimals=1),
+                    ticks=np.around([vmin, mean, vmax], decimals=2),
                     tick_params={},
                     label_params={},
                     tick_loc=None,
                 )
 
+        return_obj = []
         if figax is True:
-            return fig, ax
+            return_obj += [fig, ax]
 
-    def plot_EELS_SI_explorer(
+        if return_array:
+            return_obj += [maps]
+
+        if len(return_obj) > 0:
+            return return_obj
+
+    def explore(
             self,
-            edge,
             si=None,
             vImage=None,
             orientation='horizontal',
             figax=False,
+            xlims=None,
+            ylims=None,
+            model_colors=None,
     ):
         """
-        Explore a set of measurements made on a 4D STEM dataset through an
+        Explore an EELS dataset and any associated edge fits through an
         interactive plot.
 
         Parameters
         ----------
-        vImage : 2d array
-            The image to display for representing the scan region. Any image
-            will work, but best to pass one that is meaningful for the
-            measurement you are exploring. (e.g. if looking at a Bragg lattice
-            measurement, pass one of the lattice parameter or strain maps.)
+        si : str or None
+            The spectrum image dataset to explore. Must give either 'edge' or
+            'si'.
+            Default: None.
 
-        measurementType : str ('ewpc', 'ewic', or 'bragg')
-            The type of measurement to display.
+        vImage : 2D array or None
+            The virtual image to display for navigating the dataset. Must have
+            the same dimensions as the EELS scan. If None, displays the
+            simultaneous ADF image.
+            Default: None.
 
-        scaling : float or str
-            The contrast scaling argument to pass to quickplot(). Floats are
-            power scaling; 'log' activates logrithmic scaling.
+        orientation : str
+            'horizontal' or 'vertical'. Whether the virtual image and spectrum
+            plots are arranged horizontally or vertically.
+            Default: 'horizontal'
 
-        cmapImage : str
-            The color map to use for the vImage subplot.
-            Default: 'inferno'
+        figax : matplotlib Axes object or bool
+            If a Axes, plots in this Axes. If bool, whether to return the
+            Figure and Axes objects.
+            Default: False.
 
-        cmapPattern : str or None
-            The color map to use for the pattern (DP, EWPC, EWIC) subplot.
-            If None, uses 'grey' for EWPC, 'bwr' for EWIC measurements and
-            'inferno' for Bragg.
-            Default: 'inferno'
+        xlims : 2-list or None
+            Energy range to show. If None, eneire available range is shown.
+            Default: None.
 
+        ylims : 2-list or None
+            Counts range to show. If None, eneire available range is shown.
+            Default: None.
 
+        model_colors : list or None
+            Colors to use for plotting the fitted edge models. These will be
+            applied in energy loss order, from least to greatest. If None, a
+            default list of colors will be used.
+            Default: None.
 
         Returns
         -------
-        None.
+        fig : matplotlib figure object
+
+        axs : list of matplotlib Axes objects
 
         """
 
@@ -1417,20 +1782,76 @@ class EELS_SIdata():
         # }
         # pattern_kwargs_default.update(pattern_kwargs)
 
-        if edge is not None:
-            matchingfits = [
-                key for key in self.quant_results.keys()
-                if np.isin(edge, list(self.quant_results[key].keys())).item()
+        if si is None:
+            if len(self.quant_results) == 1:
+                si = list(self.quant_results.keys())[0]
+            else:
+                raise Exception('Must specify which EELSdset to explore.')
+
+        params = [[{} for x in range(self.scanSize[1])]
+                  for y in range(self.scanSize[0])]
+
+        if len(self.quant_results[si]) > 0:
+            plotfit = True
+
+            bkgd_prms = np.array([
+                v['params']
+                for v in self.quant_results[si]['backgrounds'].values()
+            ])
+
+            bkgd_windows = np.array([
+                v['bkgd_window']
+                for v in self.quant_results[si]['backgrounds'].values()
+            ])
+
+            fit_windows = np.array([
+                self.quant_results[si][k.split('_')[0]]['fit_window']
+                for k in self.quant_results[si]['backgrounds'].keys()
+            ])
+
+            total_window = np.hstack(
+                (bkgd_windows[:, 0][:, None], fit_windows[:, 1][:, None]),
+            )
+
+            models = [
+                [self.quant_results[si][edge]['model']
+                 for edge in bkgd.split('_')]
+                for bkgd in self.quant_results[si]['backgrounds'].keys()
             ]
 
-            if len(matchingfits) > 1:
-                print('Multiple fits found. Check for intended results or '
-                      + 'specify desired fit key:')
-                print(list(self.quant_results.keys()))
-            fit = matchingfits[0]
+            edges = [
+                [edge for edge in bkgd.split('_')]
+                for bkgd in self.quant_results[si]['backgrounds'].keys()
+            ]
 
-            if si is None:
-                si = self.quant_results[fit]['SI']
+            weights = [
+                [self.quant_results[si][edge]['weights']
+                 for edge in bkgd.split('_')]
+                for bkgd in self.quant_results[si]['backgrounds'].keys()
+            ]
+
+            whitelines = [
+                [self.quant_results[si][edge]['whitelines']
+                 for edge in bkgd.split('_')]
+                for bkgd in self.quant_results[si]['backgrounds'].keys()
+            ]
+
+            for i in range(self.scanSize[0]):
+                for j in range(self.scanSize[1]):
+
+                    params[i][j] = {
+                        'bkgd_prms': bkgd_prms[:, i, j],
+                    }
+
+                    params[i][j]['weights'] = [[e[i, j] for e in group]
+                                               for group in weights]
+
+                    params[i][j]['whitelines'] = [[
+                        e[i, j] if e is not None else e for e in group]
+                        for group in whitelines]
+
+        else:
+            plotfit = False
 
         si = getattr(self, si)
 
@@ -1441,33 +1862,23 @@ class EELS_SIdata():
 
         eV = si.axes['eV']
 
-        if hasattr(self, 'quant_results'):
-            plotfit = True
-            edge_list = self.quant_results[fit]['edge_order']
-            bkgd_prms = self.quant_results[fit]['bkgd_fit']
-            elemmaps = []
-            models = []
-            whitelines = []
-            for edge in edge_list:
-                elemmaps += [self.quant_results[fit][edge]['map']]
-                models += [self.quant_results[fit][edge]['model']]
-                whitelines += [self.quant_results[fit][edge]['white_lines']]
+        patt_h, patt_w = data.shape[-2:]
 
-            elemmaps = np.array(elemmaps).transpose((1, 2, 0))
-            models = np.array(models)
-            whitelines = np.array(whitelines).transpose((1, 2, 0, 3, 4))
-            # print(whitelines.shape)
+        self.yx = [0, 0]
+
+        if xlims is not None:
+            xinds = get_energy_inds(xlims, eV)
+            ymax = np.nanmax(data[..., xinds[0]:xinds[1]])
 
         else:
-            plotfit = False
-
-        patt_h, patt_w = data.shape[-2:]
+            ymax = np.nanmax(data)
 
         if vImage is None:
             vImage = self.adf.array
 
         def spectrum(yx, data):
             return data[*yx]
+
         if orientation == 'horizontal':
             fig, axs = plt.subplots(
                 1, 2, constrained_layout=True, width_ratios=[1, 3],
@@ -1496,14 +1907,23 @@ class EELS_SIdata():
         plot_spectrum(spectrum([0, 0], data), eV, figax=axs[1],
                       norm_scaling=None)
 
-        plot_eels_fit(
-            eV,
-            bkgd_prms[0, 0],
-            models=models,
-            weights=elemmaps[0, 0],
-            whitelines=whitelines[0, 0],
-            figax=axs[1],
-        )
+        if plotfit:
+            plot_eels_fit(
+                eV,
+                models=models,
+                labels=edges,
+                **params[0][0],
+                total_window=total_window,
+                figax=axs[1],
+                colors=model_colors,
+            )
+
+        if xlims is not None:
+            axs[1].set_xlim(*xlims)
+        if ylims is None:
+            axs[1].set_ylim(0, ymax)
+        else:
+            axs[1].set_ylim(*ylims)
 
         def on_click(event):
             if event.inaxes == axs[0]:
@@ -1514,14 +1934,22 @@ class EELS_SIdata():
                     plot_spectrum(spectrum(yx, data), eV, figax=axs[1],
                                   norm_scaling=None)
 
-                    plot_eels_fit(
-                        eV,
-                        bkgd_prms[*yx],
-                        models=models,
-                        weights=elemmaps[*yx],
-                        whitelines=whitelines[*yx],
-                        figax=axs[1],
-                    )
+                    if plotfit:
+                        plot_eels_fit(
+                            eV,
+                            models=models,
+                            labels=edges,
+                            **params[yx[0]][yx[1]],
+                            total_window=total_window,
+                            figax=axs[1],
+                            colors=model_colors,
+                        )
+                    if xlims is not None:
+                        axs[1].set_xlim(*xlims)
+                    if ylims is None:
+                        axs[1].set_ylim(0, ymax)
+                    else:
+                        axs[1].set_ylim(*ylims)
 
                     axs[0].cla()
 
@@ -1541,52 +1969,68 @@ class EELS_SIdata():
 
         def on_press(event):
             if event.key == 'up':
-                self.yx += np.array([-1, 0])
+                yx = self.yx + np.array([-1, 0])
             elif event.key == 'down':
-                self.yx += np.array([1, 0])
+                yx = self.yx + np.array([1, 0])
             elif event.key == 'right':
-                self.yx += np.array([0, 1])
+                yx = self.yx + np.array([0, 1])
             elif event.key == 'left':
-                self.yx += np.array([0, -1])
+                yx = self.yx + np.array([0, -1])
             else:
                 print('key not supported')
-            yx = self.yx
 
-            axs[1].cla()
+            if np.all(yx >= 0):
 
-            plot_spectrum(spectrum(yx, data), eV, figax=axs[1],
-                          norm_scaling=None)
+                try:
+                    counts = spectrum(yx, data)
 
-            plot_eels_fit(
-                eV,
-                bkgd_prms[*yx],
-                models=models,
-                weights=elemmaps[*yx],
-                whitelines=whitelines[*yx],
-                figax=axs[1],
-            )
+                except IndexError:
+                    pass
 
-            axs[0].cla()
+                else:
+                    axs[1].cla()
+                    plot_spectrum(counts, eV, figax=axs[1],
+                                  norm_scaling=None)
 
-            quickplot(
-                vImage,
-                scaling=None,
-                figax=axs[0],
-                **vImage_kwargs_default
-            )
-            axs[0].add_patch(plt.Rectangle(np.flip(yx) - 0.5, 1, 1,
-                                           ec='red',
-                                           fc=(0, 0, 0, 0),
-                                           lw=2,
-                                           ))
+                    if plotfit:
+                        plot_eels_fit(
+                            eV,
+                            models=models,
+                            labels=edges,
+                            **params[yx[0]][yx[1]],
+                            total_window=total_window,
+                            figax=axs[1],
+                            colors=model_colors,
+                        )
 
-            fig.canvas.draw()
+                    if xlims is not None:
+                        axs[1].set_xlim(*xlims)
+                    if ylims is None:
+                        axs[1].set_ylim(0, ymax)
+                    else:
+                        axs[1].set_ylim(*ylims)
 
-        # plt.connect("motion_notify_event", on_move)
+                    axs[0].cla()
+
+                    quickplot(
+                        vImage,
+                        scaling=None,
+                        figax=axs[0],
+                        **vImage_kwargs_default
+                    )
+                    axs[0].add_patch(plt.Rectangle(np.flip(yx) - 0.5, 1, 1,
+                                                   ec='red',
+                                                   fc=(0, 0, 0, 0),
+                                                   lw=2,
+                                                   ))
+
+                    fig.canvas.draw()
+
+                    self.yx = yx
+
         plt.connect('button_press_event', on_click)
         plt.connect('key_press_event', on_press)
 
         plt.show()
         if figax:
             return fig, axs
-    # END

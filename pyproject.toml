@@ -38,7 +38,7 @@ dependencies = [
     "h5py",
     "cmocean",
     "sphinx_rtd_theme",
-
+    "numba",
 ]
 
 [tool.setuptools]

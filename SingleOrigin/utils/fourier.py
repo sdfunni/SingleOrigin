@@ -193,7 +193,7 @@ def hann1d_taper(shape, n_taper):
     return hann_taper
 
 
-def get_fft_pixel_size(image, pixel_size):
+def get_fft_pixelSize(image, pixelSize):
     """Calculate FFT pixel size for an image.
 
     Parameters
@@ -201,20 +201,20 @@ def get_fft_pixel_size(image, pixel_size):
     image : 2D array
         The image. If not square, the smaller dimension will be used.
 
-    pixel_size : scalar
+    pixelSize : scalar
         The pixel size of the real space image.
 
     Returns
     -------
-    reciprocal_pixel_size : scalar
+    reciprocal_pixelSize : scalar
         Size of a pixel in an FFT of the image (assuming the image is first
         cropped to the largest square).
 
     """
-    h, w = image.shape
+    h, w = image.shape[:2]
     m = (min(h, w) // 2) * 2
 
-    reciprocal_pixel_size = (pixel_size * m) ** -1
+    reciprocal_pixel_size = (pixelSize * m) ** -1
 
     return reciprocal_pixel_size
 

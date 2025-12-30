@@ -30,6 +30,7 @@ from SingleOrigin.utils.plot import (
 )
 
 from SingleOrigin.utils.image import lowpass_filter
+from SingleOrigin.utils.fourier import hann_2d
 
 # %%
 
@@ -333,6 +334,127 @@ class FourierAnalysis():
         self.qxy = qxy
         self.masks = masks
 
+    def multipeak_phase_lock_in(
+            self,
+            maskSigma,
+            lockinSigma,
+            add_phase=0,
+            refxy=None,
+    ):
+        """
+        Perform phase lock-in analysis of an atomic resolution image for peaks
+        previously selected using the pick_fft_peaks() method. Essentially this
+        makes a map of relative phase shift of the selected frequency across an
+        image.
+
+        Parameters
+        ----------
+        maskSigma : scalar
+            The sigma for guassian masking of FFT peak(s).
+
+        lockinSigma : scalar
+            The real space Gaussian filter width used for smoothing the
+            resulting phase shift map. (i.e. the real space coarsening.)
+
+        add_phase : scalar
+            Phase shift in radians to add to the resulting phase map. This does
+            not change the phase map qualitiatively but will shift the colors
+            displayed. Adding a phase shift may be preferred for phase maps
+            with relatively flat contrast to select a specific part of the
+            colormap for asthetic purposes.
+
+        ref_xy : ndarray or None.
+            Reference vector for calculating the phase if the fitted FFT peak
+            is not desired for some reason. If not the fitted FFT peak will be
+            used (this should nearly always be the case).
+            USE WITH CAUTION!
+            default: None.
+
+        Returns
+        -------
+        None
+        """
+
+        # Fit peaks
+        self.xy_selected = np.array(self.xy_selected)
+        # masks_picked = [self.peak_masks[y, x] for x, y in self.xy_selected]
+        masks_picked = [self.peak_masks[y, x] for x, y in
+                        np.around(self.xy_selected).astype(int)]
+
+        xy = np.flip(np.indices(self.image.shape), axis=0)
+
+        fitargs = [[
+            xy[:, self.peak_masks == mask_num],
+            self.pwrfft[self.peak_masks == mask_num],
+            np.concatenate([
+                self.xy_selected[i],
+                [1, np.max(self.pwrfft[self.peak_masks == mask_num]), 0]
+            ]),
+        ] for i, mask_num in enumerate(masks_picked)]
+
+        fits_xy = np.array([
+            fit_gaussians(*args).squeeze()[:2] for args in fitargs
+        ])
+
+        realMaps = []
+        amplitudeMaps = []
+        phaseMaps = []
+        qxy = []
+        masks = []
+
+        if refxy is None:
+            refxy = fits_xy
+
+        # Calculate phase and amplitude maps for each peak
+
+        cosRef, sinRef = phase_ref(np.mean(fits_xy, axis=0),
+                                   (self.h, self.w))
+
+        self.refs = cosRef
+
+        # Get decentered FFT peak mask
+        mask = fftshift(gaussian_2d(
+            xy[0],
+            xy[1],
+            x0=fits_xy[:, 0][:, None, None],
+            y0=fits_xy[:, 1][:, None, None],
+            sig_maj=maskSigma,
+            sig_rat=1,
+            ang=0,
+            A=1,
+            b=0,
+        ))
+
+        im_fftfiltered = ifft2(fft2(self.image) * mask)
+
+        # Get lowpass filtered cos and sin compoenents of the frequency
+        cosComp = np.real(lowpass_filter(
+            cosRef * im_fftfiltered,
+            sigma=lockinSigma,
+            get_abs=False,
+        ))
+        sinComp = np.real(lowpass_filter(
+            sinRef * im_fftfiltered,
+            sigma=lockinSigma,
+            get_abs=False,
+        ))
+
+        # Get the phase angle
+
+        phaseMaps += [(np.arctan2(sinComp, cosComp) + add_phase
+                       ) % (2*np.pi)]
+        realMaps += [np.real(im_fftfiltered)]
+        amplitudeMaps += [np.abs(im_fftfiltered)]
+        qxy += [np.mean(fits_xy, axis=0) - np.array([self.h, self.w]) / 2]
+        masks += [mask]
+
+        # if self.xy_selected.shape[0] == 1:
+        self.phaseMaps = phaseMaps * self.roi
+        self.realMaps = realMaps
+        self.amplitudeMaps = amplitudeMaps
+        self.qxy = qxy
+        self.masks = masks
+
     def plot_phase_lock_in_maps(
             self,
             peak_ind=0,
@@ -424,8 +546,8 @@ class FourierAnalysis():
             self.image,
             cmap='grey',
             figax=axs[1],
-            pixel_size=self.pixelSize,
-            pixel_unit=self.pixelUnit,
+            pixelSize=self.pixelSize,
+            pixelUnit=self.pixelUnit,
             scalebar_len=2,
         )
 
@@ -555,8 +677,8 @@ class FourierAnalysis():
                         self.image,
                         cmap='grey',
                         figax=axs[0],
-                        pixel_size=self.pixelSize,
-                        pixel_unit=self.pixelUnit,
+                        pixelSize=self.pixelSize,
+                        pixelUnit=self.pixelUnit,
                         scalebar_len=5,
                     )
                 else:

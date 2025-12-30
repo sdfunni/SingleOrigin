@@ -127,7 +127,7 @@ def select_folder():
     return path
 
 
-def show_h5_tree(path):
+def print_h5_tree(path):
     """Print full tree structure of an h5 file to the console.
 
     Parameters

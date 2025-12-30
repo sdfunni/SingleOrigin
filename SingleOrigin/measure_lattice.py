@@ -73,6 +73,7 @@ from SingleOrigin.utils.fourier import (
     find_ewpc_peak,
     find_ewic_peak,
     hann_2d,
+    get_fft_pixelSize
 )
 from SingleOrigin.utils.crystalmath import (
     metric_tensor,
@@ -102,29 +103,35 @@ class ReciprocalLattice:
 
     - Individual image or diffraction pattern (DP) space must be the final two
     dimensions (i.e. -2, -1).
-    - Real space scanning must be the second-to-last pair of dimensions
-    (i.e. -4, -3) or, in the case of a line scan, the third-to-last dimension.
-    - Additional dimensions may define other experimental parameters such as:
-    time, temperature, voltage, etc. These must be the first dimension(s).
-
+    - Real space scanning for 4D STEM must be the second-to-last pair (-4, -3).
+    - Any stack or additional dimension (time, temperature, voltage) should be
+    the first dimension. Higher dimensional data has not yet been tested.
 
     Parameters
     ----------
     data : ndarray
         The STEM data to analize.
 
-    scan_pixel_size : scalar, 2-tuple of scalars or None
-        The calibrated scan pixel size for the instrument, experimental
-        parameters, etc. This (these) values are applied to axes -4, -3
-        (typically the first two axes).
-        Default: None.
+    datatype : str
+        'dp' (for diffraction data) or 'image'. For images, the analysis will
+        operate on the FFT.
+        Default: 'dp'
 
-    dp_pixel_size : scalar, 2-tuple of scalars or None
+    pixelSize_scan : scalar or None
+        The calibrated scan pixel size for the instrument, experimental
+        parameters, etc.
+        Default: None
+
+    pixelUnit_scan : str
+        The unit of the pixel size. Typically 'nm' or 'um' or 'm'.
+        Default: None
+
+    pixelSize_dp : scalar or None
         The calibrated diffraction pattern pixel size for the instrument,
         experimental parameters, etc. This is usually the diffraction image,
         so should be  in 1/Angstroms. This (these) values are applied to
         axes -2, -1.
-        Default: None.
+        Default: None
 
     dp_rotation : scalar
         The relative rotation angle from the horizontal detector direction to
@@ -134,26 +141,27 @@ class ReciprocalLattice:
         Pass the angle in degrees. For FEI/Thermo STEMs the scan rotation
         is the correct value to pass here (plus any built-in rotation between
         the unrotated scan orientation and the detector).
-        Default: 0.
+        Default: 0
 
-    origin : 2-tuple or None
-        The initial guess for the origin (for direct experimental data) or the
-        defined origin position (for FFT processed data) in the final two
-        dimensions.
-        Default: None.
-
-
-    show_mean_image : bool
+    plot_mean_image : bool
         Whether to display the mean image after initiation of the data
         object. Verify that this is representative of the underlying data
         as it will be used to hone some analysis parameters prior to applying
         the analysis to the full data.
-        Default: True.
-
-    get_ewpc : bool
-        Whether to calculate the exit wave power cepstrum from the diffraction
-        space data supplied in data.
         Default: True
+
+    calc_ewpc : bool
+        Whether to calculate the exit wave power cepstrum.
+        Default: False
+
+    calc_ewic : bool
+        Whether to calculate the exit wave imaginary cepstrum.
+        Default: False
+
+    roi : 2d array or None
+        Array of 0's or 1's, with 1 values indicating pixels to be included in
+        further proessing.
+        Default: Noen
 
     Attributes
     ----------
@@ -165,11 +173,6 @@ class ReciprocalLattice:
 
     A bunch of other stuff...
 
-    Methods
-    -------
-
-    Need to add methods...
-
     """
 
     # TODO : Add new / update attributess in docstring
@@ -178,14 +181,12 @@ class ReciprocalLattice:
         self,
         data,
         datatype='dp',
-        t_dim=None,
-        scan_pixel_size=None,
-        scan_pixel_unit=None,
-        dp_pixel_size=None,
+        pixelSize_scan=None,
+        pixelUnit_scan=None,
+        pixelSize_dp=None,
         dp_rotation=0,
-        origin=None,
-        show_mean_image=True,
-        calc_ewpc=True,
+        plot_mean_image=True,
+        calc_ewpc=False,
         calc_ewic=False,
         roi=None,
     ):
@@ -223,14 +224,36 @@ class ReciprocalLattice:
         else:
             self.data_mean = np.nanmean(data[self.roi == 1], axis=0)
 
-        self.scan_pixel_size = scan_pixel_size
-        self.scan_pixel_unit = scan_pixel_unit
-        self.dp_pixel_size = dp_pixel_size
-        if dp_pixel_size is not None:
-            self.ewpc_pixel_size = 1 / (
-                self.dp_pixel_size * data.shape[-1])
+        self.pixelSize_scan = None
+        self.pixelUnit_scan = None
+        self.pixelSize_dp = pixelSize_dp
+        if pixelSize_dp is not None and datatype == 'dp':
+            self.pixelSize_ewpc = 1 / (
+                self.pixelSize_dp * data.shape[-1])
+
+        if pixelSize_scan is not None:
+            if pixelUnit_scan is not None:
+                if pixelUnit_scan == 'm':
+                    if pixelSize_scan * np.max(data.shape[:2]) > 5e-6:
+                        self.pixelSize_scan = pixelSize_scan * 1e6
+                        self.pixelUnit_scan = 'um'
+                    else:
+                        self.pixelSize_scan = pixelSize_scan * 1e9
+                        self.pixelUnit_scan = 'nm'
+                else:
+                    self.pixelSize_scan = pixelSize_scan
+                    self.pixelUnit_scan = pixelUnit_scan
+
+                if datatype == 'image':
+                    self.pixelSize_dp = get_fft_pixelSize(
+                        data[-2:], pixelSize_scan)
+
+            else:
+                print('"pixelSize_scan" was ignored. ',
+                      'Please also pass pixel units to apply a pixel size.')
+
         self.dp_rotation = dp_rotation
-        self.origin = origin
+        self.origin = None
         self.ref_region = None
         self.origin_shift = 0
         self.bragg_measured = False
@@ -283,7 +306,7 @@ class ReciprocalLattice:
         else:
             im_display = self.data_mean
 
-        if show_mean_image:
+        if plot_mean_image:
             fig, ax = plt.subplots(1)
             quickplot(im_display, cmap='gray', scaling=0.2, figax=ax)
             if self.origin is not None:
@@ -323,7 +346,7 @@ class ReciprocalLattice:
         kmeans = KMeans(n_clusters=n_clusters)
         kmeans.fit(X_train)
         self.kmeans_labels = kmeans.labels_.reshape((self.scan_h, self.scan_w))
-        plt.imshow(self.kmeans_labels)
+        quickplot(self.kmeans_labels, cmap='viridis')
 
     def pick_ewpc_peaks(
         self,
@@ -419,7 +442,6 @@ class ReciprocalLattice:
         measure_basis_order=(1, 1),
         r_min=None,
         r_max=None,
-        # pick_labels=None,
         min_order=0,
         max_order=10,
         thresh=0.05,
@@ -652,7 +674,7 @@ class ReciprocalLattice:
             self.basis_recip_px[self.roi == 1], axis=0
         )
 
-        if self.dp_pixel_size is not None:
+        if self.pixelSize_dp is not None:
             self.apply_true_units()
 
         t += [time.time()]
@@ -822,7 +844,7 @@ class ReciprocalLattice:
         buffer=5,
         max_order=5,
         min_order=1,
-        show_fit=True,
+        plot_fit=True,
         logscale=True,
         scaling=0.2,
     ):
@@ -851,8 +873,8 @@ class ReciprocalLattice:
             The origin point is always used.
             Default: 1.
 
-        show_fit : bool
-            Whether to show the fitted Bragg lattice.
+        plot_fit : bool
+            Whether to plot the fitted Bragg lattice.
             Default: True
 
         scaling : float or str
@@ -896,7 +918,7 @@ class ReciprocalLattice:
             xy,
             basis1_order=1,
             basis2_order=1,
-            fix_origin=fix_origin,
+            fix_origin=False,
             max_order=max_order,
             min_order=min_order,
         )
@@ -930,7 +952,7 @@ class ReciprocalLattice:
         print(f'Reciproal vector ratio (a1*/a2*): {ratio:.{5}f}')
 
         # Plot refined basis
-        if show_fit:
+        if plot_fit:
             fig, ax = plot_basis(
                 im_meas,
                 self.a_star,
@@ -1113,7 +1135,7 @@ class ReciprocalLattice:
             self.basis_real_px[self.roi == 1], axis=0
         )
 
-        if self.dp_pixel_size is not None:
+        if self.pixelSize_dp is not None:
             self.apply_true_units()
 
         self.bragg_measured = True
@@ -1128,7 +1150,7 @@ class ReciprocalLattice:
         min_order=1,
         max_order=1,
         known_qvects=None,
-        show_fit=True,
+        plot_fit=True,
         verbose=True,
         logscale=True,
         pwrscale=None,
@@ -1155,7 +1177,7 @@ class ReciprocalLattice:
             measured around each Bragg peak.
             Default: 2 / 1
 
-        show_fit : bool
+        plot_fit : bool
             Whether to plot the final fitted superlattice and basis vectors.
             Default: True
 
@@ -1212,8 +1234,13 @@ class ReciprocalLattice:
             # vmin = np.max([np.nanmean(im_meas) - 1*np.std(im_meas), 0])
 
             if n_picks > 0:
-                fig, ax = plt.subplots(figsize=(10, 10))
-                ax.imshow(im_meas, cmap='plasma', norm=imnorm)
+                fig, ax = quickplot(
+                    im_meas,
+                    cmap='plasma',
+                    norm=imnorm,
+                    figax=True,
+                )
+
                 ax.scatter(xy[:, 0], xy[:, 1], c='black', marker='+')
                 ax.scatter(
                     self.recip_latt.loc[:, 'x_ref'],
@@ -1239,9 +1266,6 @@ class ReciprocalLattice:
                         fontsize=12,
                         c='black',
                     )
-
-                ax.set_xticks([])
-                ax.set_yticks([])
 
                 if self.datatype == 'image':
                     ax.set_xlim(np.min(xy[:, 0]) - 100, np.max(xy[:, 0]) + 100)
@@ -1402,9 +1426,13 @@ class ReciprocalLattice:
             )]
 
         # Plot refined basis
-        if show_fit:
-            fig2, ax = plt.subplots(figsize=(10, 10))
-            ax.imshow(im_meas, cmap='plasma', norm=imnorm)
+        if plot_fit:
+            fig, ax = quickplot(
+                im_meas,
+                cmap='plasma',
+                norm=imnorm,
+                figax=True,
+            )
             ax.scatter(
                 self.recip_suplatt.loc[:, 'x_ref'].to_numpy(dtype=float),
                 self.recip_suplatt.loc[:, 'y_ref'].to_numpy(dtype=float),
@@ -1466,8 +1494,6 @@ class ReciprocalLattice:
                 ax.set_ylim(np.max(self.recip_suplatt.loc[:, 'y_ref']) + 100,
                             np.min(self.recip_suplatt.loc[:, 'y_ref']) - 100)
 
-            ax.set_xticks([])
-            ax.set_yticks([])
             ax.legend()
             plt.title('Superlattice Fit')
 
@@ -1611,6 +1637,9 @@ class ReciprocalLattice:
         figsize=(10, 10),
         figax=False,
         decimals=2,
+        which='all',
+        orientation='square',
+        sb_kwargs=None,
     ):
         """
         Plot calculated strain maps.
@@ -1659,6 +1688,14 @@ class ReciprocalLattice:
         decimals : int
             The number of decimals to display on the colorbar tick labels.
 
+        which : str or list of str
+            Which strain maps to plot.
+
+        orientation : str
+            Horizontal, vertical or square. If which is not all, will defaut to
+            horizontal.
+            Default: square.
+
         Returns
         -------
         fig, axs : figure and axes objects (optional)
@@ -1687,16 +1724,41 @@ class ReciprocalLattice:
         bad_color = 'grey'
 
         if plot_scalebar:
-            sb_args = {
-                'pixel_size': self.scan_pixel_size,
-                'pixel_unit': self.scan_pixel_unit,
+            sb_kwargs_default = {
+                'pixelSize': self.pixelSize_scan,
+                'pixelUnit': self.pixelUnit_scan,
                 'scalebar_len': None,
                 'scalebar_loc': 'lower right',
                 'scalebarfont': 12,
             }
 
         else:
-            sb_args = {}
+            sb_kwargs_default = {}
+
+        if sb_kwargs is not None:
+            sb_kwargs_default.update(sb_kwargs)
+
+        if which != 'all':
+            keys_ = []
+            labels_ = []
+
+            for i, key in enumerate(keys):
+                if key in which:
+                    keys_ += [key]
+                    labels_ += [labels[i]]
+
+            keys = keys_
+            labels = labels_
+
+            if orientation == 'square':
+                orientation = 'horizontal'
+
+        if orientation == 'horizontal':
+            layout = [1, len(keys)]
+        elif orientation == 'vertical':
+            layout = [len(keys), 1]
+        else:
+            layout = [2, 2]
 
         # Prepare strain limits for each component
         vminmax = {}
@@ -1719,7 +1781,7 @@ class ReciprocalLattice:
                 vminmax[key] = tuple(limlist[i])
 
         fig, axs = plt.subplots(
-            2, 2,
+            *layout,
             sharex=True,
             sharey=True,
             figsize=figsize,
@@ -1741,7 +1803,7 @@ class ReciprocalLattice:
                     figax=axs[i],
                     returnplot=True,
                     bad_color=bad_color,
-                    **sb_args
+                    **sb_kwargs_default
                 )]
             else:
                 plots += [quickplot(
@@ -1802,7 +1864,7 @@ class ReciprocalLattice:
                 plots[i],
                 # cax=cbax,
                 orientation='horizontal',
-                shrink=0.3,
+                shrink=0.1,
                 aspect=10,
                 ticks=ticks,
                 pad=0.02,
@@ -1821,14 +1883,14 @@ class ReciprocalLattice:
         if figax:
             return fig, axs, cbarlist
 
-    def apply_true_units(self, dp_pixel_size=None):
+    def apply_true_units(self, pixelSize_dp=None):
         """
         Applies calibrated detector units to the dataset by calculating lattice
         parameter maps.
 
         Parameters
         ----------
-        dp_pixel_size : scalar
+        pixelSize_dp : scalar
             Pixel size calibration of the detector.
 
         Returns
@@ -1837,15 +1899,15 @@ class ReciprocalLattice:
 
         """
 
-        if dp_pixel_size is not None:
-            self.dp_pixel_size = dp_pixel_size
-            self.ewpc_pixel_size = 1 / (
-                self.dp_pixel_size * self.data.shape[-1]
+        if pixelSize_dp is not None:
+            self.pixelSize_dp = pixelSize_dp
+            self.pixelSize_ewpc = 1 / (
+                self.pixelSize_dp * self.data.shape[-1]
             )
 
         else:
-            if self.dp_pixel_size is None:
-                raise Exception('dp_pixel_size must be passed or previously ' +
+            if self.pixelSize_dp is None:
+                raise Exception('pixelSize_dp must be passed or previously ' +
                                 'determined using calibrate_dp()')
 
         # Make lattice parameter maps
@@ -1854,12 +1916,12 @@ class ReciprocalLattice:
         self.lattice_maps['a1'] = norm(
             np.squeeze(self.basis_real_px[:, :, 0, :]),
             axis=-1
-        ) * self.ewpc_pixel_size
+        ) * self.pixelSize_ewpc
 
         self.lattice_maps['a2'] = norm(
             np.squeeze(self.basis_real_px[:, :, 1, :]),
             axis=-1
-        ) * self.ewpc_pixel_size
+        ) * self.pixelSize_ewpc
 
         # Find lattice parameter angle
         self.lattice_maps['gamma'] = np.array([
@@ -1967,8 +2029,8 @@ class ReciprocalLattice:
 
         if plot_scalebar:
             sb_args = {
-                'pixel_size': self.scan_pixel_size,
-                'pixel_unit': self.scan_pixel_unit,
+                'pixelSize': self.pixelSize_scan,
+                'pixelUnit': self.pixelUnit_scan,
                 'scalebar_len': None,
                 'scalebar_loc': 'lower right',
                 'scalebarfont': 12,
@@ -2257,26 +2319,27 @@ class ReciprocalLattice:
         beta = solve(alpha_meas, a_star_t)
 
         if apply_to_instance:
-            self.dp_pixel_size = np.nanmean(np.diag(beta))
-            self.ewpc_pixel_size = 1 / (
-                self.dp_pixel_size * self.data.shape[-1])
+            self.pixelSize_dp = np.nanmean(np.diag(beta))
+            self.pixelSize_ewpc = 1 / (
+                self.pixelSize_dp * self.data.shape[-1])
 
             self.apply_true_units()
 
         return beta
 
-    def plot_4d_measurement_explorer(
+    def explore(
             self,
             vImage,
-            measurementType='ewpc',
+            measurementType='bragg',
             vImage_kwargs={},
             pattern_kwargs={},
             orientation='horizontal',
             figax=True,
+            figsize=None,
     ):
         """
-        Explore a set of measurements made on a 4D STEM dataset through an
-        interactive plot.
+        Explore a 4D STEM dataset pixel-by-pixel, through an interactive plot.
+        Measurements (if any are made) will be shown for each pixel.
 
         Parameters
         ----------
@@ -2288,22 +2351,39 @@ class ReciprocalLattice:
 
         measurementType : str ('ewpc', 'ewic', or 'bragg')
             The type of measurement to display.
+            Default: 'bragg'
 
         scaling : float or str
             The contrast scaling argument to pass to quickplot(). Floats are
             power scaling; 'log' activates logrithmic scaling.
 
-        cmapImage : str
-            The color map to use for the vImage subplot.
-            Default: 'inferno'
+        vImage_kwargs : dict
+            Dictionary of keyword arguments to pass to SingleOrigin.quickplot()
+            This will modify the behavior of the plotting function. By default
+            'cmap' is set to 'inferno'. Do not include 'image' or 'figax' in 
+            this dictionary. All other quickplot() arguments are acceptable.
 
-        cmapPattern : str or None
-            The color map to use for the pattern (DP, EWPC, EWIC) subplot.
-            If None, uses 'grey' for EWPC, 'bwr' for EWIC measurements and
-            'inferno' for Bragg.
-            Default: 'inferno'
+        pattern_kwargs : dict
+            Dictionary of keyword arguments to pass to SingleOrigin.quickplot()
+            This will modify the behavior of the pattern plot Axes. By default
+            'cmap' and 'scaling' are set depending on the pattern type (i.e.
+            'bragg', 'ewpc', etc.). Do not include 'image' or 'figax' in this
+            dictionary. All other quickplot() arguments are acceptable.
 
+        orientation : str
+            Orientation of the axes in the figure: horizontal will plot the
+            vimage and pattern side-by-side while vertical will arange them
+            above/below.
+            Default: 'horizontal'
 
+        figax : bool or matplotlib axes object
+            If a bool, whether to return the figure and axes objects for
+            modification by the user. If an Axes object, the Axes to plot into.
+            Default: True.
+
+        figsize : 2-tuple or None
+            Figure size or None.
+            Default: None.
 
         Returns
         -------
@@ -2322,8 +2402,6 @@ class ReciprocalLattice:
                         }[measurementType]
         }
         pattern_kwargs_default.update(pattern_kwargs)
-
-        # show_basis = False
 
         if measurementType == 'bragg':
             data = self.data
@@ -2378,17 +2456,22 @@ class ReciprocalLattice:
         def frame(yx, data):
             return data[*yx]
         if orientation == 'horizontal':
-            fig, axs = plt.subplots(1, 2, constrained_layout=False)
+            fig, axs = plt.subplots(
+                1, 2, constrained_layout=False, figsize=figsize,
+            )
         elif orientation == 'vertical':
-            fig, axs = plt.subplots(2, 1, constrained_layout=False)
+            fig, axs = plt.subplots(
+                2, 1, constrained_layout=False, figsize=figsize,
+            )
             axs = axs.flatten()
         else:
-            fig, axs = plt.subplots(1, 2, constrained_layout=False)
+            fig, axs = plt.subplots(
+                1, 2, constrained_layout=False, figsize=figsize,
+            )
 
         # Plot the real space scan image
         quickplot(
             vImage,
-            scaling=None,
             figax=axs[0],
             **vImage_kwargs_default
         )
@@ -2708,7 +2791,7 @@ class ReciprocalLattice:
         self.ewic_cell_mean = np.nanmean(ewic_cells[self.roi == 1], axis=0)
         self.ewpc_cell_mean = np.nanmean(ewpc_cells[self.roi == 1], axis=0)
 
-        self.origin = np.array(cell_averaging_shift) * self.ewpc_pixel_size
+        self.origin = np.array(cell_averaging_shift) * self.pixelSize_ewpc
 
     def pick_dipole_peaks_ewpc(
         self,

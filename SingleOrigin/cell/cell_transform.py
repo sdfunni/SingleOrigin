@@ -110,7 +110,7 @@ class UnitCell():
             path = select_file(message='Pick an appropriate .cif...',
                                ftypes='.cif')
 
-        struct = read_cif(path, store_tags=True)
+        struct = read_cif(str(path), store_tags=True)
 
         [self.a, self.b, self.c, self.alpha, self.beta, self.gamma
          ] = np.around(struct.cell.cellpar(), decimals=6)
@@ -123,26 +123,27 @@ class UnitCell():
         labels = struct.info['_atom_site_label']
         elemsym = struct.info['_atom_site_type_symbol']
 
-        print(elemsym)
+        # print(elemsym)
         if 'occupancy' in struct.info.keys():
             occ = struct.info['occupancy']
-            print(occ)
+            # print(occ)
         else:
             occ = {str(i): {sym: 1.0} for i, sym in
                    enumerate(elemsym)}
 
         elem = ['|'.join(list(occ[str(site_)].keys()))
                 for i, site_ in enumerate(sitenum)]
-        elem_dict = {e: l for e, l in zip(np.unique(elem).tolist(), labels)}
+        # print('labels', labels, 'elem', elem, 'occ', occ)
+        # elem_dict = {e: l for e, l in zip(np.unique(elem).tolist(), labels)}
 
         occupancy = ['|'.join(
             map(str, list(occ[str(site_)].values())))
             for i, site_ in enumerate(sitenum)]
-
-        site_labels = ['|'.join(
-            [elem_dict[sym] for sym in list(occ[str(site_)].keys())]
-        )
-            for i, site_ in enumerate(sitenum)]
+        # print(elem_dict)
+        # site_labels = ['|'.join(
+        #     [elem_dict[sym] for sym in list(occ[str(site_)].keys())]
+        # )
+        #     for i, site_ in enumerate(sitenum)]
 
         # Calculate metric tensors
         g = metric_tensor(
@@ -170,7 +171,7 @@ class UnitCell():
         self.atoms = pd.DataFrame(
             {'u': uvw[:, 0], 'v': uvw[:, 1], 'w': uvw[:, 2],
              'elem': elem,
-             'symbol': site_labels,
+             # 'symbol': site_labels,
              'site_occupancy': occupancy,
              'x': xyz[:, 0], 'y': xyz[:, 1], 'z': xyz[:, 2],
              }

@@ -48,6 +48,7 @@ from SingleOrigin.utils.image import (
     rotation_matrix,
     rotate_xy,
     erode,
+    burn_in_scalebar,
 )
 from SingleOrigin.utils.peakfit import (
     img_ellip_param,
@@ -60,7 +61,7 @@ from SingleOrigin.utils.peakfit import (
     group_fitting_data,
 )
 from SingleOrigin.utils.fourier import fft_square
-from SingleOrigin.hrimage.pcf import get_vpcf
+from SingleOrigin.hrimage.pcf import get_vpcf, get_vpcf_peak_params
 from SingleOrigin.utils.lattice import (
     fit_lattice,
     register_lattice_to_peaks,
@@ -91,7 +92,7 @@ class HRImage:
     image : 2D array
         The STEM image to analize.
 
-    pixel_size_cal : scalar or None
+    pixelSize_cal : scalar or None
         The calibrated pixel size from the instrument. Usually stored in
         the metadata for .dm4, .emd files, etc.
         Default: None.
@@ -158,11 +159,11 @@ class HRImage:
     def __init__(
             self,
             image,
-            pixel_size_cal=None,
+            pixelSize_cal=None,
     ):
         self.image = copy.deepcopy(image.astype(np.float32))
         self.h, self.w = self.image.shape
-        self.pixel_size_cal = pixel_size_cal
+        self.pixelSize_cal = pixelSize_cal
         self.latt_dict = {}
 
     def add_lattice(
@@ -202,7 +203,7 @@ class HRImage:
             self.image,
             unitcell,
             origin_atom_column=origin_atom_column,
-            pixel_size_cal=self.pixel_size_cal,
+            pixelSize_cal=self.pixelSize_cal,
             roi=roi
         )
         self.latt_dict[name] = new_lattice
@@ -246,7 +247,7 @@ class HRImage:
 
         """
 
-        rot_ = HRImage(self.image, pixel_size_cal=self.pixel_size_cal)
+        rot_ = HRImage(self.image, pixelSize_cal=self.pixelSize_cal)
 
         if align_basis == 'a1':
             align_vect = self.latt_dict[lattice_to_align].a1
@@ -361,7 +362,7 @@ class HRImage:
             ylim=None,
             scalebar_len_nm=2,
             color_dict=None,
-            show_legend=True,
+            plot_legend=True,
             legend_dict=None,
             legend_loc=None,
             scatter_kwargs_dict={},
@@ -419,14 +420,20 @@ class HRImage:
             will be used for plotting positions and the legend. If None, a
             standard color scheme is created from the 'RdYlGn' colormap.
 
+        plot_legent : bool
+            Whether to plot the atom column marker legend.
+
         legend_dict : None or dict
             Dict of string names to use for legend labels. Keys must correspond
             to the atom column site labels to be plotted.
 
+        legend_loc : None or str
+            Location for the legend; same syntax as matplotlib???
+
         scatter_kwargs_dict : dict
             Dict of additional key word args to be passed to  pyplot.scatter.
             Do not include "c" or "color" as these are specified by the
-            color_dict argument. Default kwards specified in the function are:
+            color_dict argument. Default kwargs specified in the function are:
                 s=25, edgecolor='black', linewidths=0.5. These or other
             pyplot.scattter parameters can be modified through this dictionary.
             Default: {}
@@ -458,28 +465,18 @@ class HRImage:
         elif fit_or_ref == 'ref':
             xcol, ycol = 'x_ref', 'y_ref'
 
-        if self.pixel_size_cal:
-            pixel_size = self.pixel_size_cal
-            flag_estimated_pixel_size = False
+        if self.pixelSize_cal:
+            pixelSize = self.pixelSize_cal
+            flag_estimated_pixelSize = False
         else:
-            pixel_size = np.mean([latt.pixel_size_est
-                                  for latt in self.latt_dict.values()])
-            flag_estimated_pixel_size = True
+            pixelSize = np.mean([latt.pixelSize_est
+                                 for latt in self.latt_dict.values()])
+            flag_estimated_pixelSize = True
 
         if (isinstance(outlier_disp_cutoff, float)
                 or isinstance(outlier_disp_cutoff, int)):
 
-            outlier_disp_cutoff /= pixel_size
-
-        if isinstance(figax, bool):
-            fig, axs = plt.subplots(
-                layout='compressed',
-                figsize=figsize,
-                sharex=True,
-                sharey=True,
-            )
-        else:
-            axs = figax
+            outlier_disp_cutoff /= pixelSize
 
         if plot_masked_image is True:
             peak_masks = np.sum(np.array([
@@ -488,18 +485,26 @@ class HRImage:
                 axis=0)
             peak_masks[peak_masks > 0] = 1
 
-            axs.imshow(self.image * peak_masks, cmap='gray')
+            fig, ax = quickplot(
+                self.image*peak_masks,
+                cmap='gray',
+                figax=True,
+                figsize=figsize,
+            )
         else:
-            axs.imshow(self.image, cmap='gray')
-        axs.set_xticks([])
-        axs.set_yticks([])
+            fig, ax = quickplot(
+                self.image,
+                cmap='gray',
+                figax=True,
+                figsize=figsize,
+            )
 
         if xlim:
             xlim = np.sort(xlim)
-            axs.set_xlim(xlim)
+            ax.set_xlim(xlim)
         if ylim:
             ylim = np.flip(np.sort(ylim))
-            axs.set_ylim(ylim)
+            ax.set_ylim(ylim)
 
         if color_dict is None:
             elems = np.sort(np.unique(np.concatenate(
@@ -547,7 +552,7 @@ class HRImage:
                 sites_used += [site]
 
                 sublattice = filtered[filtered[filter_by] == site].copy()
-                axs.scatter(
+                ax.scatter(
                     sublattice.loc[:, xcol],
                     sublattice.loc[:, ycol],
                     color=color_dict[site],
@@ -557,7 +562,7 @@ class HRImage:
 
             arrow_scale = np.min([norm(lattice.a1), norm(lattice.a2)]) / 20
 
-            axs.arrow(
+            ax.arrow(
                 lattice.x0y0[0],
                 lattice.x0y0[1],
                 lattice.a1[0],
@@ -569,7 +574,7 @@ class HRImage:
                 head_width=arrow_scale * 3,
                 head_length=arrow_scale * 5
             )
-            axs.arrow(
+            ax.arrow(
                 lattice.x0y0[0],
                 lattice.x0y0[1],
                 lattice.a2[0],
@@ -582,14 +587,14 @@ class HRImage:
                 head_length=arrow_scale * 5
             )
 
-        if show_legend:
+        if plot_legend:
             if legend_loc is None:
                 bbox_to_anchor = [1.02, 0]
                 legend_loc = 'lower left'
             else:
                 bbox_to_anchor = None
 
-            axs.legend(
+            ax.legend(
                 loc=legend_loc,
                 bbox_to_anchor=bbox_to_anchor,
                 facecolor='grey',
@@ -599,7 +604,7 @@ class HRImage:
 
         if scalebar_len_nm:
             scalebar = ScaleBar(
-                pixel_size/10,
+                pixelSize/10,
                 'nm', location='lower right',
                 pad=0.4,
                 fixed_value=scalebar_len_nm,
@@ -609,10 +614,10 @@ class HRImage:
                 border_pad=2
             )
 
-            axs.add_artist(scalebar)
+            ax.add_artist(scalebar)
 
-        if flag_estimated_pixel_size:
-            axs.set_title(
+        if flag_estimated_pixelSize:
+            ax.set_title(
                 'Warning: scalebar length is based on the pixel size ' +
                 'estimated from the reference lattice. The user should ' +
                 'specify the calibrated pixel size if known.',
@@ -620,7 +625,7 @@ class HRImage:
             )
 
         if figax is True:
-            return fig, axs
+            return fig, ax
 
     def plot_disp_vects(
             self,
@@ -703,19 +708,19 @@ class HRImage:
 
         """
 
-        if self.pixel_size_cal:
-            pixel_size = self.pixel_size_cal
+        if self.pixelSize_cal:
+            pixelSize = self.pixelSize_cal
             flag_estimated_pixel_size = False
         else:
-            pixel_size = np.mean(
-                [latt.pixel_size_est for latt in self.latt_dict.values()]
+            pixelSize = np.mean(
+                [latt.pixelSize_est for latt in self.latt_dict.values()]
             )
             flag_estimated_pixel_size = True
 
         if outlier_disp_cutoff is None:
             outlier_disp_cutoff = np.inf
         else:
-            outlier_disp_cutoff /= pixel_size
+            outlier_disp_cutoff /= pixelSize
 
         # Get combined data an list of unique sublattices
         combined = pd.concat(
@@ -739,7 +744,7 @@ class HRImage:
         if max_colorwheel_range_pm is None:
             dxy = (combined.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
                    - combined.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float))
-            mags = norm(dxy, axis=1) * pixel_size * 100
+            mags = norm(dxy, axis=1) * pixelSize * 100
             avg = np.mean(mags)
             std = np.std(mags)
             max_colorwheel_range_pm = int(np.ceil((avg + 3*std)/5) * 5)
@@ -814,7 +819,7 @@ class HRImage:
             else:
                 axs += [fig.add_subplot(gs[row, col])]
 
-            axs[ax].imshow(self.image, cmap='gray')
+            quickplot(self.image, cmap='gray', figax=axs[ax])
 
             if xlim:
                 xlim = np.sort(xlim)
@@ -835,7 +840,7 @@ class HRImage:
 
             if ax == 0 and scalebar_len_nm is not None:
                 scalebar = ScaleBar(
-                    pixel_size/10,
+                    pixelSize/10,
                     'nm', location='lower right',
                     pad=0.4,
                     fixed_value=scalebar_len_nm,
@@ -863,7 +868,7 @@ class HRImage:
             dxy = (sub_latt.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
                    - sub_latt.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float))
 
-            disp_pm = (norm(dxy, axis=1) * pixel_size * 100)
+            disp_pm = (norm(dxy, axis=1) * pixelSize * 100)
             normed = disp_pm / max_colorwheel_range_pm
             print(rf'Displacement statistics for {site}:',
                   f'average: {np.mean(disp_pm):.{2}f} (pm)',
@@ -1045,7 +1050,7 @@ class AtomicColumnLattice:
     dir_struct_matrix : The direct structure matrix (i.e. transformation
         matrix from fractional to image pixel coordinates.)
 
-    pixel_size_est : The estimated pixel size using the reference lattice basis
+    pixelSize_est : The estimated pixel size using the reference lattice basis
         vectors and lattice parameter values from the .cif file.
 
     Methods
@@ -1065,7 +1070,7 @@ class AtomicColumnLattice:
         thresh=0.5,
         fill_holes=True,
         buffer=10,
-        show_mask=True
+        plot_mask=True
         ):
         Get mask for specific region of image based on local standard
         deviation.
@@ -1111,13 +1116,18 @@ class AtomicColumnLattice:
             image,
             unitcell,
             origin_atom_column=None,
-            pixel_size_cal=None,
+            pixelSize_cal=None,
             roi=None,
     ):
 
         self.image = image
         (self.h, self.w) = image.shape
         self.unitcell_2D = unitcell.at_cols
+        if self.unitcell_2D is None:
+            raise Exception(
+                'Projected unit cell not found. Must run project_zone_axis() '
+                + 'method on "unitcell" prior to the add_lattice() method.'
+            )
         self.a_2d = unitcell.a_2d
         self.at_cols = pd.DataFrame()
         self.at_cols_uncropped = pd.DataFrame()
@@ -1131,8 +1141,8 @@ class AtomicColumnLattice:
         self.a1_star, self.a2_star = None, None
         self.dir_struct_matrix = None
         self.sigma = None
-        self.pixel_size_est = None
-        self.pixel_size_cal = pixel_size_cal
+        self.pixelSize_est = None
+        self.pixelSize_cal = pixelSize_cal
         self.residuals = None
 
         if origin_atom_column is None:
@@ -1155,11 +1165,11 @@ class AtomicColumnLattice:
             raise Exception(
                 "self.a1 and self.a2 must be defined to estimate pixel size."
                 + "Get basis vectors first.")
-        pixel_size_est = np.average(
+        pixelSize_est = np.average(
             [norm(self.a_2d[:, 0]) / norm(self.a1),
              norm(self.a_2d[:, 1]) / norm(self.a2)]
         )
-        return pixel_size_est
+        return pixelSize_est
 
     def fft_get_basis_vect(
             self,
@@ -1198,7 +1208,7 @@ class AtomicColumnLattice:
         m = (min(self.h, self.w) // 2) * 2
 
         origin = np.array([U, U])
-        xy = self.recip_latt.loc[:, 'x':'y'].to_numpy()
+        xy = self.fft_spots.loc[:, 'x_fit':'y_fit'].to_numpy()
 
         '''Generate reference lattice and find corresponding peak regions'''
         a1_star = (self.basis_picks_xy[0] - origin) / a1_order
@@ -1254,10 +1264,9 @@ class AtomicColumnLattice:
 
         recip_vects = norm(xy - origin, axis=1)
         min_recip_vect = np.min(recip_vects[recip_vects > 0])
-        window = min(min_recip_vect*10, U)
+        window = min(min_recip_vect*10, m)
 
-        fig2, ax = plt.subplots(figsize=(10, 10))
-        ax.imshow((self.fft)**(0.1), cmap='gray')
+        fig, ax = quickplot(self.fft ** 0.1, cmap='gray', figax=True)
         ax.scatter(
             recip_latt.loc[:, 'x_fit'].to_numpy(dtype=float),
             recip_latt.loc[:, 'y_fit'].to_numpy(dtype=float)
@@ -1300,7 +1309,7 @@ class AtomicColumnLattice:
         self.a2 = dir_struct_matrix[1, :]
         self.dir_struct_matrix = dir_struct_matrix
         self.basis_offset_pix = self.basis_offset_frac @ self.dir_struct_matrix
-        self.pixel_size_est = self.get_est_pixel_size()
+        self.pixelSize_est = self.get_est_pixel_size()
         self.recip_latt = recip_latt
 
     def fft_get_peaks(
@@ -1308,6 +1317,7 @@ class AtomicColumnLattice:
             sigma=5,
             thresh_factor=1,
             fft_only_roi=True,
+            window_factor=1,
     ):
         """Find peaks in the image FFT.
 
@@ -1325,32 +1335,46 @@ class AtomicColumnLattice:
             Greater values will detect fewer peaks; smaller values, more.
             Default: 1.
 
+        window_factor : scalar
+            Factor to scale up (>1) or down (<1) the viewing region of the FFT
+            used for selecting reciprocal lattice vectors.
+            Default: 1.
+
         Returns
         -------
         None.
 
         """
+
+        self.fft = image_norm(fft_square(copy.deepcopy(self.image),
+                                         hann_window=True))
+
         if fft_only_roi:
 
             yproj = np.sum(np.where(np.sum(self.roi, axis=1) > 0, 1, 0))
             xproj = np.sum(np.where(np.sum(self.roi, axis=0) > 0, 1, 0))
 
-            blur_width = np.min([xproj, yproj]) // 10
-            fft_mask = copy.deepcopy(self.roi)
-            fft_mask = erode(self.roi, iterations=blur_width)
-            fft_mask = gaussian_filter(fft_mask.astype(float), blur_width)
-            self.fft = image_norm(fft_square(self.image * fft_mask,
-                                             hann_window=True))
+            if xproj > self.w or yproj > self.h:
+                print('projected')
 
-        else:
-            self.fft = image_norm(fft_square(copy.deepcopy(self.image),
-                                             hann_window=True))
+                blur_width = np.min([xproj, yproj]) // 100
+                print(blur_width)
+                fft_mask = copy.deepcopy(self.roi)
+                fft_mask = erode(self.roi, iterations=blur_width)
+                print('erosion')
+                fft_mask = gaussian_filter(fft_mask.astype(float), blur_width)
+                print('blur')
+                self.fft = image_norm(fft_square(self.image * fft_mask,
+                                                 hann_window=True))
+                print('fft')
 
         m = (min(self.h, self.w) // 2) * 2
         U = int(m/2)
         if m > 1024:
-            self.fft = self.fft[U-512:U+512, U-512:U+512]
-            U = 512
+            m = int(m/2)
+            self.fft = self.fft[U-int(m/2):U+int(m/2), U-int(m/2):U+int(m/2)]
+            U = int(m/2)
+
         origin = np.array([U, U])
         masks, num_masks, _, spots = watershed_segment(
             self.fft,
@@ -1367,22 +1391,24 @@ class AtomicColumnLattice:
             in np.around(spots.loc[:, 'x':'y']).to_numpy(dtype=int)
         ]
 
+        spots.rename(columns={'x': 'x_fit', 'y': 'y_fit'}, inplace=True)
+
         thresh = 0.003 * thresh_factor
         spots_ = spots[(spots.loc[:, 'stdev'] > thresh)].reset_index(drop=True)
-        xy = spots_.loc[:, 'x':'y'].to_numpy(dtype=float)
+        xy = spots_.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
 
         recip_vects = norm(xy - origin, axis=1)
         min_recip_vect = np.min(recip_vects[recip_vects > 0])
-        window = min(min_recip_vect*5, U)
+        window = min(min_recip_vect*10, m) * window_factor
 
-        self.recip_latt = spots_
+        self.fft_spots = spots_
 
         self.basis_picks_xy = pick_points(
             n_picks=2,
             image=self.fft,
             xy_peaks=xy,
             origin=origin,
-            window_size=window*2,
+            window_size=window,
             cmap='gray',
             quickplot_kwargs={
                 'scaling': 0.2,
@@ -1414,7 +1440,7 @@ class AtomicColumnLattice:
         self.a1 = np.array(a1)
         self.a2 = np.array(a2)
         self.basis_offset_pix = self.basis_offset_frac @ self.dir_struct_matrix
-        self.pixel_size_est = self.get_est_pixel_size()
+        self.pixelSize_est = self.get_est_pixel_size()
 
     def get_roi_mask_std(
         self,
@@ -1422,7 +1448,7 @@ class AtomicColumnLattice:
         thresh=0.5,
         fill_holes=True,
         buffer=10,
-        show_mask=True
+        plot=True
     ):
         """Get mask for specific region of image based on local standard
         deviation.
@@ -1454,7 +1480,7 @@ class AtomicColumnLattice:
             lattice region.
             Default: 10.
 
-        show_mask : bool
+        plot : bool
             Whether to plot the mask for verification.
             Default: True
 
@@ -1485,11 +1511,11 @@ class AtomicColumnLattice:
 
         self.roi = new_mask
 
-        if show_mask:
-            self.show_roi_mask()
+        if plot:
+            self.plot_roi_mask()
 
-    def show_roi_mask(self):
-        """Show the current region mask
+    def plot_roi_mask(self):
+        """Plot the current region mask
 
         Parameters
         ----------
@@ -1500,8 +1526,7 @@ class AtomicColumnLattice:
         None.
         """
 
-        fig, ax = plt.subplots()
-        ax.imshow(self.image, cmap='gist_gray')
+        fig, ax = quickplot(self.image, cmap='gist_gray', figax=True)
 
         ax.imshow(
             self.roi,
@@ -1546,10 +1571,11 @@ class AtomicColumnLattice:
         else:
             lab = 'elem'
 
-        self.pixel_size_est = self.get_est_pixel_size()
+        self.pixelSize_est = self.get_est_pixel_size()
 
         if self.sigma is None:
-            self.sigma = get_feature_size(self.image * self.roi)
+            self.sigma = get_feature_size(
+                gaussian_filter(self.image, 2))
 
         img_LoG = image_norm(-gaussian_laplace(self.image, self.sigma))
         min_dist = self.get_min_atom_col_dist()
@@ -1915,7 +1941,7 @@ class AtomicColumnLattice:
 
         origin = self.x0y0 + self.basis_offset_pix
 
-        for i, mult in enumerate([1, 3, 10]):
+        for i, mult in enumerate([1, 3, 20]):
             max_order = int(mult * init_inc)
 
             basis_new, origin, lattice = register_lattice_to_peaks(
@@ -1963,10 +1989,7 @@ class AtomicColumnLattice:
         plt.close('all')
 
         if plot_ref_lattice:
-            fig, ax = plt.subplots()
-            ax.imshow(self.image, cmap='gray')
-            ax.set_xticks([])
-            ax.set_yticks([])
+            fig, ax = quickplot(self.image, cmap='gray', figax=True)
 
             elems = np.sort(np.unique(
                 [self.unitcell_2D.loc[:, 'elem'].unique()]
@@ -2241,7 +2264,7 @@ class AtomicColumnLattice:
             pos_bound_dist = np.inf
         elif (np.isin(type(pos_bound_dist), [float, int]).item() &
               (pos_bound_dist > 0)):
-            pos_bound_dist = pos_bound_dist / self.pixel_size_est
+            pos_bound_dist = pos_bound_dist / self.pixelSize_est
         else:
             raise Exception(
                 "'pos_bound_dist' must be 'auto', a positive scalar or None."
@@ -2258,11 +2281,12 @@ class AtomicColumnLattice:
             roi=self.roi,
             bkgd_thresh_factor=bkgd_thresh_factor,
             watershed_line=watershed_line,
-            min_dist=self.min_dist / 3,
+            min_dist=self.min_dist / 2,
             sigma=None
         )
 
-        self.peak_masks_orig = peak_masks
+        self.peak_masks_orig = copy.deepcopy(peak_masks)
+        self.xy_peak_orig = copy.deepcopy(xy_peak)
 
         t += [time.time()]
         print(f'Step 2 (fitting masks): {(t[-1]-t[-2]):.{2}f} sec')
@@ -2292,11 +2316,11 @@ class AtomicColumnLattice:
         """
         xy_peak = xy_peak.loc[:, 'x':'y'].to_numpy(dtype=float)
         xy_ref = at_cols.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float)
-
-        dists = np.array([norm(xy_peak - xy, axis=1) for xy in xy_ref])
-
+        peak_inds = np.array([np.argmin(norm(xy_peak - xy, axis=1))
+                              for xy in xy_ref])
+        # dists = np.array([norm(xy_peak - xy, axis=1) for xy in xy_ref])
         # Index of closest detected peak to each reference lattice point
-        peak_inds = np.array([np.argmin(row) for row in dists])
+        # peak_inds = np.array([np.argmin(row) for row in dists])
 
         # The closest (matched) detected peak for each reference lattice point
         # in reference point order:
@@ -2310,7 +2334,7 @@ class AtomicColumnLattice:
         if pos_toler is None:
             pos_toler = peak_sharpening_filter
         else:
-            pos_toler /= self.pixel_size_est
+            pos_toler /= self.pixelSize_est
 
         pos_errors = (norm(xy_matched - xy_ref, axis=1)
                       > pos_toler
@@ -2343,34 +2367,31 @@ class AtomicColumnLattice:
 
             points_to_remove = []
             for i, pair in enumerate(dup_inds):
+                # Calculate the distances for the pair
+                dists = np.array([norm(xy_peak - xy, axis=1)
+                                  for xy in xy_ref[pair]])
+
                 if pair.shape[0] > 2:
                     # Add all the points to the naughty list
                     points_to_remove += list(pair)
 
-                # Find index (into xy_matched) of the reference point that is
+                # Find index (into dists) of the reference point that is
                 # farther from the duplicate matched peak
-                farther = pair[np.argmax(dists[pair, duplicates[i]])]
+                farther = np.argmax(dists[:, duplicates[i]])
 
                 # Find the next nearest detected peak to the farther reference
                 # point and assign it as the match to the reference point
                 # nextnear indexes "xy_peak"
                 nextnear = np.argpartition(dists[farther], 2)[1]
 
-                # # Get the mask at the reference position
-                # ref_mask = map_coordinates(
-                #     peak_masks,
-                #     np.around(np.flip(xy_ref[farthest])[:, None]),
-                #     order=0
-                # ).astype(int)
-
                 if ((dists[farther, nextnear] < self.min_dist * 1) &
                         (nextnear not in unique)):
                     # Second closest is relatively close, and not already used
-                    xy_matched[farther] = xy_peak[nextnear]
+                    xy_matched[pair[farther]] = xy_peak[nextnear]
 
                 else:
                     # Else use the ref point
-                    xy_matched[farther] = xy_ref[farther]
+                    xy_matched[pair[farther]] = xy_ref[pair[farther]]
 
             """
             Check for masks mapped to 0 (not a mask) and add to the naughty
@@ -2465,7 +2486,7 @@ class AtomicColumnLattice:
         self.unpacking_inds = unpacking_inds
 
         t += [time.time()]
-        print(f'Step 4 (Final prep): {(t[-1]-t[-2]) % 60:.{2}f} sec')
+        print(f'Step 4 (Final prep): {(t[-1]-t[-2]):.{2}f} sec')
 
         """Run fitting routine"""
         print('Fitting atom columns...')
@@ -2573,10 +2594,10 @@ class AtomicColumnLattice:
         print(f'Step 6 (Post-processing): {(t[-1]-t[-2]) % 60:.{2}f} sec',
               '\n Done.')
 
-    def show_masks(
+    def plot_masks(
             self,
-            mask_to_show='fitting',
-            display_masked_image=True,
+            masks_to_plot='fitting',
+            plot_masked_image=True,
             figax=False,
     ):
         """View the fitting or grouping masks. Useful for troubleshooting
@@ -2584,12 +2605,12 @@ class AtomicColumnLattice:
 
         Parameters
         ----------
-        mask_to_show : str ('fitting' or 'grouping')
-            Which mask to show.
+        masks_to_plot : str ('fitting' or 'grouping')
+            Which mask to plot.
             Default: 'fitting'
 
-        display_masked_image : bool
-            Whether to show the image masked by the specified mask (if True)
+        plot_masked_image : bool
+            Whether to plot the image masked by the specified mask (if True)
             or the mask alone (if False).
             Default: True
 
@@ -2605,13 +2626,13 @@ class AtomicColumnLattice:
 
         """
 
-        if mask_to_show == 'fitting':
+        if masks_to_plot == 'fitting':
             mask = self.peak_masks
-        elif mask_to_show == 'grouping':
+        elif masks_to_plot == 'grouping':
             mask = self.group_masks
         else:
             raise Exception(
-                "The argument 'mask_to_show' must be either: "
+                "The argument 'masks_to_plot' must be either: "
                 "'fitting' or 'grouping'."
             )
         if mask is None:
@@ -2620,13 +2641,10 @@ class AtomicColumnLattice:
                 + 'the mask was removed. '
             )
 
-        fig, ax = plt.subplots()
-        if display_masked_image:
-            ax.imshow(self.image * mask)
+        if plot_masked_image:
+            fig, ax = quickplot(self.image * mask, figax=True)
         else:
-            ax.imshow(mask)
-        ax.set_xticks([])
-        ax.set_yticks([])
+            fig, ax = quickplot(mask, figax=True)
 
         if figax:
             return fig, ax
@@ -2695,10 +2713,10 @@ class AtomicColumnLattice:
             )
 
         if outlier_disp_cutoff is None:
-            outlier_disp_cutoff = np.inf  # 1 / self.pixel_size_est
+            outlier_disp_cutoff = np.inf
 
         else:
-            outlier_disp_cutoff /= self.pixel_size_est
+            outlier_disp_cutoff /= self.pixelSize_est
 
         filtered = filtered[norm(
             filtered.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
@@ -2732,7 +2750,7 @@ class AtomicColumnLattice:
             @ self.dir_struct_matrix + self.x0y0
         )
 
-        self.pixel_size_est = self.get_est_pixel_size()
+        self.pixelSize_est = self.get_est_pixel_size()
 
         theta_ref = np.degrees(np.arccos(
             self.dir_struct_matrix[0, :]
@@ -2756,7 +2774,7 @@ class AtomicColumnLattice:
         )
         print(f'Scalar component: {scale_distortion_res * 100:.{4}f} %')
         print(f'Shear component: {shear_distortion_res:.{6}f} (radians)')
-        print(f'Estimated Pixel Size: {self.pixel_size_est * 100:.{3}f} (pm)')
+        print(f'Estimated Pixel Size: {self.pixelSize_est * 100:.{3}f} (pm)')
 
     def get_fitting_residuals(self):
         """Calculates fitting residuals for each atom column. Plots all
@@ -2860,22 +2878,22 @@ class AtomicColumnLattice:
 
         cmap_lim = np.max(np.abs(self.residuals))
 
-        fig, axs = plt.subplots(ncols=1, figsize=(10, 10), tight_layout=True)
-        axs.set_xticks([])
-        axs.set_yticks([])
-        res_plot = axs.imshow(
+        fig, ax, res_plot = quickplot(
             self.residuals,
             cmap='bwr',
-            norm=Normalize(vmin=-cmap_lim, vmax=cmap_lim)
+            vmin=-cmap_lim,
+            vmax=cmap_lim,
+            figax=True,
+            returnplot=True,
         )
 
-        divider = make_axes_locatable(axs)
+        divider = make_axes_locatable(ax)
         cax = divider.append_axes("right", size="5%", pad=0.05)
         fig.colorbar(res_plot, cax=cax)
 
-        axs.scatter(self.at_cols.loc[:, 'x_fit'],
-                    self.at_cols.loc[:, 'y_fit'],
-                    color='black', s=4)
+        ax.scatter(self.at_cols.loc[:, 'x_fit'],
+                   self.at_cols.loc[:, 'y_fit'],
+                   color='black', s=4)
 
         r = self.residuals.flatten()
         data = self.image * self.peak_masks
@@ -2931,6 +2949,9 @@ class AtomicColumnLattice:
         avg_unitcell : array
             The resulting average unitcell. Also stored in self.avg_unitcell.
 
+        fig, ax : matplotlib figure and axes objects (optional)
+            Returned if 'figax' and 'plot' are True.
+
         """
 
         # Get U,V combinations for all unit cells
@@ -2953,12 +2974,12 @@ class AtomicColumnLattice:
         if plot:
             fig, ax = quickplot(
                 self.avg_unitcell,
-                pixel_size=self.pixel_size_est/10,
-                pixel_unit='nm',
+                pixelSize=self.pixelSize_est/10,
+                pixelUnit='nm',
                 figax=True
             )
         if figax and plot:
-            return fig, ax
+            return self.avg_unitcell, fig, ax
         else:
             return self.avg_unitcell
 
@@ -3050,10 +3071,10 @@ class AtomicColumnLattice:
 
         """
 
-        if self.pixel_size_cal is not None:
-            pixel_size = self.pixel_size_cal
+        if self.pixelSize_cal is not None:
+            pixelSize = self.pixelSize_cal
         else:
-            pixel_size = self.pixel_size_est
+            pixelSize = self.pixelSize_est
 
         self.vpcfs = {}
         sites = [site for site in
@@ -3076,7 +3097,7 @@ class AtomicColumnLattice:
 
         if ((outlier_disp_cutoff is not None) &
                 (outlier_disp_cutoff is not np.inf)):
-            outlier_disp_cutoff /= pixel_size
+            outlier_disp_cutoff /= pixelSize
 
             at_cols = at_cols[norm(
                 at_cols.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
@@ -3085,37 +3106,48 @@ class AtomicColumnLattice:
                 < outlier_disp_cutoff].copy()
 
         # Get area from the ROI mask (in A**2):
-        area = np.count_nonzero(self.roi) * self.pixel_size_est**2
+        area = np.count_nonzero(self.roi) * self.pixelSize_est**2
 
         a1_mag = norm(self.a_2d[0, :])
         a2_mag = norm(self.a_2d[1, :])
 
+        xlim = np.array(xlim)*a1_mag
+        ylim = np.array(ylim)*a2_mag
+
         for pair in pair_pairs:
-            pair_pair_str = f'{pair[0]}-{pair[1]}'
-            print(f'Calculating {pair_pair_str} vPCF')
             sub1 = at_cols[
                 (at_cols[filter_by] == pair[0])
             ].loc[:, 'x_fit': 'y_fit'].to_numpy()
 
-            sub2 = at_cols[
-                (at_cols[filter_by] == pair[1])
-            ].loc[:, 'x_fit': 'y_fit'].to_numpy()
+            if pair[0] == pair[1]:
+                pair_pair_str = pair[0]
+                sub2 = None
+
+            else:
+                pair_pair_str = f'{pair[0]}-{pair[1]}'
+                sub2 = at_cols[
+                    (at_cols[filter_by] == pair[1])
+                ].loc[:, 'x_fit': 'y_fit'].to_numpy()
+
+            print(f'Calculating {pair_pair_str} vPCF')
 
             if affine_transform:
                 print('Appling affine transformation to data...')
                 sub1 = (sub1 @ self.dir_struct_matrix
                         / norm(self.dir_struct_matrix, axis=1)**2
                         ) @ self.a_2d
-                sub2 = (sub2 @ self.dir_struct_matrix
-                        / norm(self.dir_struct_matrix, axis=1)**2
-                        ) @ self.a_2d
+                if sub2 is not None:
+                    sub2 = (sub2 @ self.dir_struct_matrix
+                            / norm(self.dir_struct_matrix, axis=1)**2
+                            ) @ self.a_2d
             elif not affine_transform:
-                sub1 *= pixel_size
-                sub2 *= pixel_size
+                sub1 *= pixelSize
+                if sub2 is not None:
+                    sub2 *= pixelSize
 
             self.vpcfs[pair_pair_str], origin = get_vpcf(
-                xlim=np.array(xlim)*a1_mag,
-                ylim=np.array(ylim)*a2_mag,
+                xlim,
+                ylim,
                 coords1=sub1,
                 coords2=sub2,
                 d=d,
@@ -3125,8 +3157,8 @@ class AtomicColumnLattice:
 
             if centrosymmetric and pair[0] != pair[1]:
                 reverse_vPCF, _ = get_vpcf(
-                    xlim=np.array(xlim)*a1_mag,
-                    ylim=np.array(ylim)*a2_mag,
+                    xlim,
+                    ylim,
                     coords1=sub2,
                     coords2=sub1,
                     d=d,
@@ -3139,7 +3171,7 @@ class AtomicColumnLattice:
         self.vpcfs['metadata'] = {
             'sites': sites,
             'origin': origin,
-            'pixel_size': d,
+            'pixelSize': d,
             'filter_by': filter_by,
             'pair_pair': not get_only_partial_vpcfs,
             'affine_transform': affine_transform,
@@ -3148,11 +3180,13 @@ class AtomicColumnLattice:
 # TODO : Use peak fitting and plotting functions in pcf module
     def get_vpcf_peak_params(
         self,
-        sigma=10,
+        sigma=None,
+        min_dist=None,
         buffer=10,
         method='moments',
         sigma_group=None,
-        thresh_factor=1,
+        detection_thresh_factor=1,
+        bkgd_thresh_factor=0.1,
     ):
         """Calculates shape of peaks in each pair-pair vPCF.
 
@@ -3163,10 +3197,19 @@ class AtomicColumnLattice:
 
         Parameters
         ----------
-        sigma : scalar
+        sigma : scalar or None
             The Gaussian sigma for bluring peaks prior to identifying
             mask areas for each peak by he watershed algorithm. In units of
-            vPCF pixels.
+            vPCF pixels. If None, taken as half the minimum projected distance
+            between atoms in the structure.
+            Default: None
+
+        min_dist : scalar or None
+            The minimum peak separation for the peak detection algorithm.
+            If None, uses half the minimum projected atom column separation.
+            This may not be appropriate for all crystal structures. If peaks
+            are not detected, provide an appropriate value.
+            Default: None.
 
         method : 'momenets' or 'gaussian'
             Method to calculate shape and location of peaks. 'moments' uses
@@ -3189,7 +3232,7 @@ class AtomicColumnLattice:
             overlap when determining peak shapes. If None, not used.
             Default: None.
 
-        thresh_factor : scalar
+        detection_thresh_factor : scalar
             Adjusts the minimum amplitude for considering an identified local
             maximum to be a peak for the purposes of finding its shape. By
             default peaks with less than 10% of the amplitude of the largest
@@ -3197,175 +3240,45 @@ class AtomicColumnLattice:
             raise this cutoff to 20% while 0.5 would lower it to 5%.
             Default: 1.
 
+        bkgd_thresh_factor : scalar
+            Thresholding factor passed to SingleOrigin.watershed_segment() to
+            remove background from vPCF peak measurement regions. Must be
+            between 0 and 1. Thesholds at this proportion of the intensity
+            between the maximum edge pixel value and the peak maximum.
+            Default: 0.1
+
         Returns
         -------
         None
 
         """
 
-        xy_bnd = 10    # Position bound limit for gaussian fitting
+        if min_dist is None:
+            min_dist = self.min_dist * self.pixelSize_est \
+                / self.vpcfs['metadata']['pixelSize']
+
+        if sigma is None:
+            sigma = min_dist / 10
+            print(sigma)
 
         self.vpcf_peaks = {}
         for key, vpcf in self.vpcfs.items():
+
+            print(key)
             if key == 'metadata':
                 continue
 
             print(f'Calculating peaks for {key} vPCF')
-            self.vpcf_peaks[key] = pd.DataFrame(columns=['x_fit', 'y_fit',
-                                                         'sig_maj', 'sig_min',
-                                                         'theta', 'ecc',
-                                                         'peak_max'])
-            if sigma is not None:
-                pcf_sm = gaussian_filter(
-                    vpcf,
-                    sigma=sigma,
-                    truncate=3,
-                    mode='constant',
-                )
 
-            else:
-                pcf_sm = copy.deepcopy(vpcf)
-                sigma = 2
-
-            masks_indiv, n_peaks, _, peaks = watershed_segment(
-                pcf_sm,
-                min_dist=sigma,
-                bkgd_thresh_factor=0,
-                sigma=None,
+            self.vpcf_peaks[key] = get_vpcf_peak_params(
+                vpcf,
+                sigma=sigma,
                 buffer=buffer,
-                watershed_line=False,
+                method=method,
+                sigma_group=sigma_group,
+                detection_thresh_factor=detection_thresh_factor,
+                bkgd_thresh_factor=bkgd_thresh_factor,
             )
-
-            peaks['peak_max'] = vpcf[
-                peaks.loc[:, 'y'].to_numpy(dtype=int),
-                peaks.loc[:, 'x'].to_numpy(dtype=int)
-            ]
-
-            thresh = np.max(peaks.loc[:, 'peak_max']) * 0.1 * thresh_factor
-
-            peaks = peaks[(peaks.loc[:, 'peak_max'] > thresh)
-                          ].reset_index(drop=True)
-            xy_peak = peaks.loc[:, 'x':'y'].to_numpy(dtype=int)
-            labels = peaks.loc[:, 'label'].to_numpy(dtype=int)
-
-            if sigma_group is not None:
-                if method != 'gaussian':
-                    print('Using Gaussian method to account for peak overlap.')
-                    method = 'gaussian'
-
-                pcf_sm = gaussian_filter(
-                    vpcf,
-                    sigma=sigma_group,
-                    truncate=3
-                )
-
-                group_masks, _, _, _ = watershed_segment(
-                    pcf_sm,
-                    min_dist=sigma_group,
-                    bkgd_thresh_factor=0,
-                    sigma=None,
-                    buffer=0,
-                    watershed_line=True
-                )
-
-                group_masks_dforder = map_coordinates(
-                    group_masks,
-                    np.flipud(xy_peak.T),
-                    order=0
-                ).astype(int)
-
-                labels = np.unique(group_masks_dforder).astype(int)
-
-                group_masks = np.where(
-                    np.isin(group_masks, labels),
-                    group_masks,
-                    0
-                )
-
-            if method == 'moments':
-                for i, label in tqdm(enumerate(labels)):
-                    pcf_masked = np.where(masks_indiv == label, 1, 0
-                                          )*self.vpcfs[key]
-                    peak_max = np.max(pcf_masked)
-                    x_fit, y_fit, ecc, theta, sig_maj, sig_min = \
-                        img_ellip_param(pcf_masked)
-
-                    self.vpcf_peaks[key].loc[i, 'x_fit':] = [
-                        x_fit,
-                        y_fit,
-                        sig_maj,
-                        sig_min,
-                        theta,
-                        ecc,
-                        peak_max,
-                    ]
-
-            elif method == 'gaussian':
-                for i in labels:
-                    if sigma_group is None:
-                        mask = np.where(masks_indiv == i, 1, 0)
-                    else:
-                        mask = np.where(group_masks == i, 1, 0)
-
-                    pcf_masked = mask * self.vpcfs[key]
-
-                    match = np.argwhere([mask[y, x] for x, y in xy_peak])
-
-                    mask_peaks = peaks.loc[match.flatten(), :]
-                    if sigma_group is not None:
-
-                        pcf_masked *= np.where(
-                            np.isin(masks_indiv, peaks.loc[:, 'label']),
-                            1, 0)
-
-                    p0 = []
-                    bounds = []
-                    for j, (ind, row) in enumerate(mask_peaks.iterrows()):
-                        mask_num = masks_indiv[int(row.y), int(row.x)]
-                        mask = np.where(masks_indiv == mask_num, 1, 0)
-                        peak_masked = mask * self.vpcfs[key]
-
-                        x0, y0, ecc, theta, sig_maj, sig_min = img_ellip_param(
-                            peak_masked
-                        )
-
-                        p0 += [
-                            x0,
-                            y0,
-                            sig_maj,
-                            sig_maj/sig_min,
-                            np.max(pcf_masked),
-                            0
-                        ]
-
-                        bounds += [(x0 - xy_bnd, x0 + xy_bnd),
-                                   (y0 - xy_bnd, y0 + xy_bnd),
-                                   (1, None),
-                                   (1, None),
-                                   (None, None),
-                                   (0, None),
-                                   ]
-
-                    p0 = np.array(p0 + [0])
-                    bounds += [(0, 0)]
-
-                    params = fit_gaussians(
-                        pcf_masked,
-                        p0,
-                        method='L-BFGS-B',
-                        bounds=bounds,
-                        shape='ellip'
-                    )
-
-                    params = params[:, :-1]
-                    params[:, 3] = params[:, 2] / params[:, 3]
-                    params[:, 4] = np.degrees(params[:, 4])
-                    params[:, -1] = np.sqrt(1 - params[:, 3]**2
-                                            / params[:, 2]**2)
-
-                    next_ind = self.vpcf_peaks[key].shape[0]
-                    for k, p in enumerate(params):
-                        self.vpcf_peaks[key].loc[next_ind + k, :] = p
 
             self.vpcf_peaks[key].infer_objects()
 
@@ -3380,7 +3293,7 @@ class AtomicColumnLattice:
         unit_cell_box=True,
         unit_cell_box_color='black',
         scalebar_len=1,
-
+        alpha=0.65
     ):
         """
         Plot vPCFs.
@@ -3435,11 +3348,14 @@ class AtomicColumnLattice:
             The length of the scalebar to plot in Angstroms.
             Default: 1
 
+        alpha : scalar
+            Transparency factor for the ellipses.
+
         Returns
         -------
         fig : the matplotlib figure object.
 
-        axs : the list of matplotlib axes objects: each vpcf plot and
+        ax : the list of matplotlib axes objects: each vpcf plot and
             the scalebar.
 
         """
@@ -3447,41 +3363,8 @@ class AtomicColumnLattice:
         prop = ellip_colormap_param
         cmap = plt.cm.plasma
         origin = self.vpcfs['metadata']['origin']
-        d = self.vpcfs['metadata']['pixel_size']
+        d = self.vpcfs['metadata']['pixelSize']
         sites = self.vpcfs['metadata']['sites']
-
-        shape_params_all = np.concatenate(
-            [self.vpcf_peaks[key].loc[:, prop].to_numpy()
-             for key in self.vpcf_peaks.keys()]
-        )
-        if prop == 'sig_maj':
-            unit_conv = 100 * d
-        elif prop == 'ecc':
-            unit_conv = 1
-        else:
-            raise Exception('argument "ellip_color_scale_param" must be'
-                            + 'either "sig_maj" or "ecc".')
-
-        if colormap_range is None:
-            [min_, max_] = np.array([
-                np.floor(np.min(shape_params_all) * unit_conv),
-                np.ceil(np.max(shape_params_all) * unit_conv)
-            ])
-
-        else:
-            colormap_range = np.array(colormap_range, dtype=float
-                                      ).flatten()
-
-            if (colormap_range.shape[0] == 2 and
-                    np.isin(colormap_range.dtype, [float, int]).item()):
-                [min_, max_] = colormap_range
-
-            else:
-                raise Exception(
-                    '"colormap_range" must be: a 2-list or None'
-                )
-
-        corners = np.array([[0, 0], [1, 0], [1, 1], [0, 1]])
 
         # Set up Figure and gridspec
         if vpcfs_to_plot == 'all':
@@ -3518,6 +3401,39 @@ class AtomicColumnLattice:
                        for row in range(nrows)
                        for col in range(ncols)]
 
+        shape_params_all = np.concatenate(
+            [self.vpcf_peaks[key].loc[:, prop].to_numpy()
+             for key in vpcfs_to_plot]
+        )
+        if prop == 'sig_maj':
+            unit_conv = 100 * d
+        elif prop == 'ecc':
+            unit_conv = 1
+        else:
+            raise Exception('argument "ellip_color_scale_param" must be'
+                            + 'either "sig_maj" or "ecc".')
+
+        if colormap_range is None:
+            [min_, max_] = np.array([
+                np.floor(np.min(shape_params_all) * unit_conv),
+                np.ceil(np.max(shape_params_all) * unit_conv)
+            ])
+
+        else:
+            colormap_range = np.array(colormap_range, dtype=float
+                                      ).flatten()
+
+            if (colormap_range.shape[0] == 2 and
+                    np.isin(colormap_range.dtype, [float, int]).item()):
+                [min_, max_] = colormap_range
+
+            else:
+                raise Exception(
+                    '"colormap_range" must be: a 2-list or None'
+                )
+
+        corners = np.array([[0, 0], [1, 0], [1, 1], [0, 1]])
+
         h, w = self.vpcfs[list(self.vpcfs.keys())[0]].shape
         width_ratio = (w * ncols) / (h * nrows)
         fig = plt.figure(figsize=(10 * width_ratio + 0.5, 10))
@@ -3536,7 +3452,7 @@ class AtomicColumnLattice:
 
         for i, key in enumerate(vpcfs_to_plot):
             row, col = gs_inds[i]
-            axs[i].imshow(self.vpcfs[key], cmap=vpcf_cmap, zorder=0)
+            quickplot(self.vpcfs[key], cmap=vpcf_cmap, zorder=0, figax=axs[i])
             if i > 0:
                 axs[i].sharex(axs[0])
                 axs[i].sharey(axs[0])
@@ -3553,15 +3469,12 @@ class AtomicColumnLattice:
                                    (max_ - min_)),
                     lw=2,
                     zorder=2,
-                    alpha=0.65)
+                    alpha=alpha)
                     for i, peak in peaks.iterrows()
                 ]
 
                 for elip in elips:
                     axs[i].add_artist(elip)
-
-            axs[i].set_xticks([])
-            axs[i].set_yticks([])
 
             axs[i].scatter(
                 origin[0],
@@ -3698,14 +3611,15 @@ class AtomicColumnLattice:
         vector_cmap_values='deviation',
         xlim=None,
         ylim=None,
-        scalebar_len=1,
         cmap='bwr',
         outlier_disp_cutoff=None,
         return_nn=False,
         arrow_scale=1,
         shift_projected=False,
         arrows=False,
-        plot_scalebar=True
+        plot_scalebar=True,
+        sb_kwargs={},
+        fontsize=16,
     ):
         """Plot inter-atom column information on image from chosen vPCF
         peak(s). Must first choose peaks with vpcf_pick_peaks() in a separate
@@ -3761,9 +3675,6 @@ class AtomicColumnLattice:
             whole image is displayed.
             Default: None
 
-        scalebar_len : scalar
-            Length of the scalebar.
-
         cmap : str
             The colormap to use for inter-atom column distance lines.
 
@@ -3781,6 +3692,16 @@ class AtomicColumnLattice:
             information. All plotted vectors are concatenated into one
             DataFrame.
             Default: False
+
+        fontsize : scalar
+            Fontsize for colorbar label and ticklabels.
+            Default: 16
+
+        sb_kwargs : dict
+            Keyword arguments dictionary to modify
+            SingleOrigin.burn_in_scalebar. By default the hrimage.pixelSize_cal
+            will be used, if available. Otherwise hrimage.pixelSize_est will
+            be used.
 
         Returns
         -------
@@ -3809,8 +3730,19 @@ class AtomicColumnLattice:
                 'headlength': 0,
             }
 
+        sb_kwargs_default = {
+            'length': None,
+            'loc': 'br',
+            # 'scalebarfont': 12,
+            'contrast': None,
+        }
+        sb_kwargs_default.update(sb_kwargs)
+
         vpcf = self.selected_vpcf
-        str1, str2 = self.selected_vpcf.split('-')
+        if '-' in vpcf:
+            str1, str2 = self.selected_vpcf.split('-')
+        else:
+            str1 = str2 = vpcf
 
         self.selected_vpcf_peaks = np.array(self.selected_vpcf_peaks
                                             ).reshape((-1, 2))
@@ -3841,17 +3773,17 @@ class AtomicColumnLattice:
 
             use_projected = False
 
-        pixel_size = self.pixel_size_cal
-        if pixel_size is None:
-            pixel_size = self.pixel_size_est
+        pixelSize = self.pixelSize_cal
+        if pixelSize is None:
+            pixelSize = self.pixelSize_est
 
-        print('Using pixel size: ', pixel_size, 'Angstroms')
+        print('Using pixel size: ', pixelSize, 'Angstroms')
 
         filter_by = self.vpcfs['metadata']['filter_by']
 
         if ((outlier_disp_cutoff is not None) &
                 (outlier_disp_cutoff is not np.inf)):
-            outlier_disp_cutoff /= pixel_size
+            outlier_disp_cutoff /= pixelSize
 
             at_cols = self.at_cols[norm(
                 self.at_cols.loc[:, 'x_fit':'y_fit'
@@ -3866,8 +3798,11 @@ class AtomicColumnLattice:
 
         sub1 = at_cols[at_cols.loc[:, filter_by] == str1
                        ].loc[:, 'x_ref':'y_fit'].reset_index(drop=True)
-        sub2 = at_cols[at_cols.loc[:, filter_by] == str2
-                       ].loc[:, 'x_ref':'y_fit'].reset_index(drop=True)
+        if str1 == str2:
+            sub2 = sub1
+        else:
+            sub2 = at_cols[at_cols.loc[:, filter_by] == str2
+                           ].loc[:, 'x_ref':'y_fit'].reset_index(drop=True)
 
         if locate_by_fit_or_ref == 'ref':
             xy1 = sub1.loc[:, 'x_ref':'y_ref'].to_numpy(dtype=float)
@@ -3875,11 +3810,10 @@ class AtomicColumnLattice:
         elif locate_by_fit_or_ref == 'fit':
             xy1 = sub1.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
             xy2 = sub2.loc[:, 'x_fit':'y_fit'].to_numpy(dtype=float)
-
         # Convert selected vPCF vector(s) to units of Angstroms
         vects = (
             self.selected_vpcf_peaks - self.vpcfs['metadata']['origin']
-        ) * self.vpcfs['metadata']['pixel_size']
+        ) * self.vpcfs['metadata']['pixelSize']
 
         if self.vpcfs['metadata']['affine_transform']:
             # Reverse the affine_transformation correction
@@ -3889,7 +3823,7 @@ class AtomicColumnLattice:
             vects = vects @ np.linalg.inv(t_mat) * np.array([1, -1])
         else:
             # Convert to image pixel units
-            vects /= pixel_size
+            vects /= pixelSize
 
         if not np.isin(vpcf, list(self.vpcfs.keys())).item():
             vpcfs_list = [v for v in list(self.vpcfs.keys())
@@ -3910,11 +3844,12 @@ class AtomicColumnLattice:
                          # 'len', 'ref_len',
                          'angle', 'ref_angle'])]
 
-            for ind1, xy in enumerate(xy1):
+            print('Finding near neighbors...')
+            for ind1, xy in enumerate(tqdm(xy1)):
                 vect_err = norm(xy2 - xy - vect, axis=1)
                 min_ = np.min(vect_err)
 
-                if min_ <= r / pixel_size:
+                if min_ <= r / pixelSize:
                     ind2 = np.argmin(vect_err)
 
                     # if plot_fit_or_ref == 'fit':
@@ -3982,8 +3917,27 @@ class AtomicColumnLattice:
         NN = pd.concat(NN, ignore_index=True, axis=0)
 
         plt.close('all')
-        fig, ax = plt.subplots(layout='compressed')
-        ax.imshow(self.image, cmap='gray')
+
+        if self.pixelSize_cal is not None:
+            pixelSize = self.pixelSize_cal
+        else:
+            pixelSize = self.pixelSize_est
+
+        if plot_scalebar:
+            im_plot = burn_in_scalebar(
+                self.image,
+                pixelSize/10,
+                pixelUnit='nm',
+                **sb_kwargs_default
+            )
+        else:
+            im_plot = self.image
+
+        fig, ax = quickplot(
+            im_plot,
+            cmap='gray',
+            figax=True,
+        )
 
         x0y0 = NN.loc[:, 'x1':'y1'].to_numpy(dtype=float)
 
@@ -3996,12 +3950,12 @@ class AtomicColumnLattice:
                     x0y0 += (NN.loc[:, 'dx':'dy'].to_numpy(dtype=float) / 2
                              - dxdy / 2 * arrow_scale)
 
-                cscale = dxdy @ ref_vect * pixel_size
+                cscale = dxdy @ ref_vect * pixelSize
 
             else:
                 dxdy = NN.loc[:, 'dx':'dy'].to_numpy(dtype=float)
 
-                cscale = norm(dxdy, axis=1) * pixel_size
+                cscale = norm(dxdy, axis=1) * pixelSize
 
             label = r'Distance ($\AA$)'
             avg = np.around(np.mean(cscale), decimals=2)
@@ -4019,7 +3973,7 @@ class AtomicColumnLattice:
                 norm(dxdy, axis=1)
                 - norm(NN.loc[:, 'dx_ref':'dy_ref'].to_numpy(dtype=float),
                        axis=1)
-            ) * pixel_size * 100
+            ) * pixelSize * 100
 
             label = r'$\Delta$ Distance (pm)'
             avg = np.mean(cscale)
@@ -4095,28 +4049,8 @@ class AtomicColumnLattice:
 
         )
 
-        cbar.set_label(label=label, fontsize=16)
-        cbar.ax.tick_params(labelsize=16)
-
-        if self.pixel_size_cal is not None:
-            pixel_size = self.pixel_size_cal
-        else:
-            pixel_size = self.pixel_size_est
-        if plot_scalebar:
-            scalebar = ScaleBar(
-                pixel_size/10,
-                'nm',
-                font_properties={'size': 12},
-                pad=0.3,
-                border_pad=0.6,
-                box_color='dimgrey',
-                height_fraction=0.02,
-                color='white',
-                location='lower right',
-                fixed_value=scalebar_len,
-            )
-
-            ax.add_artist(scalebar)
+        cbar.set_label(label=label, fontsize=fontsize)
+        cbar.ax.tick_params(labelsize=fontsize)
 
         if return_nn:
             return fig, ax, cbar, NN

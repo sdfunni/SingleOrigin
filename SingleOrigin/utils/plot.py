@@ -13,6 +13,8 @@ from matplotlib.colors import LogNorm, PowerNorm, Normalize
 from matplotlib_scalebar.scalebar import ScaleBar
 from matplotlib.cm import ScalarMappable
 
+import cmocean
+
 
 # %%
 
@@ -74,7 +76,7 @@ def pick_points(
         The x,y coordinates of the 'n' chosen data points or click positions.
 
     fig, ax : matplotlib Figure and Axes objects
-        Optional: if figax is True.
+        Optional: only returned if figax is True.
 
     """
 
@@ -165,6 +167,7 @@ def pick_points(
     if figax is True:
         return picks_xy, fig, ax
     else:
+        print('')
         return picks_xy
 
 
@@ -173,8 +176,8 @@ def quickplot(
         cmap='magma',
         figsize=(6, 6),
         hide_ticks=True,
-        pixel_size=None,
-        pixel_unit=None,
+        pixelSize=None,
+        pixelUnit=None,
         scalebar_len=None,
         scalebar_loc='lower right',
         scalebarfont=12,
@@ -186,6 +189,8 @@ def quickplot(
         vmax=None,
         zerocentered=False,
         bad_color='black',
+        aspect=None,
+        zorder=None,
 ):
     """Convienience image plotting function.
 
@@ -206,14 +211,14 @@ def quickplot(
         Whether to hide tickmarks on edges of image plot.
         Default: True
 
-    pixel_size : scalar
+    pixelSize : scalar
         The physical size of pixels in the image. Used to plot a scalabar.
         If None, no scalbar is plotted.
         Default: None
 
-    pixel_unit : str
+    pixelUnit : str
         The unit length of the pixel size calibration. If pixel size passed,
-        but pixel_unit is None, will use "a.u.".
+        but pixelUnit is None, will use "a.u.".
         Default: None
 
     scalebar_len : scalar
@@ -259,6 +264,15 @@ def quickplot(
         Color to use for "bad" values (e.g. NaNs).
         Default: 'black'
 
+    aspect : str, scalar or None
+        Same arguments as matplotlib.pyplot.imshow. If None, square pixels
+        will be used.
+        Default: None.
+
+    zorder : scalar or None
+        zorder of the image in the Axes. Passed to matplotlib.pyplot.imshow.
+        Default: None.
+
     Returns
     -------
     fig, ax : matplotlib figure and axes objects
@@ -282,8 +296,13 @@ def quickplot(
     else:
         norm = None
     if len(im.shape) == 2:
-        cmap = mpl.colormaps.get_cmap(cmap)
+        try:
+            cmap = mpl.colormaps.get_cmap(cmap)
+        except ValueError:
+            cmap = mpl.colormaps.get_cmap('cmo.'+cmap)
+
         cmap.set_bad(color=bad_color)
+
     elif len(im.shape) == 3 and np.isin(im.shape[-1], [3, 4]):
         cmap = None
     else:
@@ -296,37 +315,46 @@ def quickplot(
         ax = figax
 
     if scaling is not None:
-        implot = ax.imshow(im, cmap=cmap, norm=norm)
+        implot = ax.imshow(
+            im, cmap=cmap, norm=norm, aspect=aspect, zorder=zorder
+        )
     else:
-        implot = ax.imshow(im, cmap=cmap, vmin=vmin, vmax=vmax)
+        implot = ax.imshow(
+            im, cmap=cmap, vmin=vmin, vmax=vmax, aspect=aspect, zorder=zorder
+        )
 
     if hide_ticks:
         ax.set_xticks([])
         ax.set_yticks([])
 
-    if pixel_size is not None:
-        if pixel_unit is None:
-            pixel_unit = 'a.u.'
+    if pixelSize is not None:
+        if pixelUnit is None:
+            pixelUnit = 'a.u.'
         if scalebar_len is None:
             sb_sizes = np.array([10**dec * int_ for dec in range(-1, 5)
                                  for int_ in [1, 2, 4, 5]])
-            fov = np.max(im.shape) * pixel_size
+            fov = np.max(im.shape) * pixelSize
             scalebar_len = sb_sizes[np.argmax(sb_sizes > fov*0.1)]
             if scalebar_len >= 1:
                 scalebar_len = int(scalebar_len)
 
+        if '1/' in pixelUnit:
+            dimension = 'si-length-reciprocal'
+        else:
+            dimension = 'si-length'
         scalebar = ScaleBar(
-            pixel_size,
-            pixel_unit,
+            pixelSize,
+            pixelUnit,
             font_properties={'size': scalebarfont},
-            pad=0.3,
-            sep=3,
-            border_pad=0.3,
+            pad=0.2,
+            sep=2,
+            border_pad=0.1,
             box_color='white',
             height_fraction=0.02,
             color='black',
             location=scalebar_loc,
             fixed_value=scalebar_len,
+            dimension=dimension
         )
         ax.add_artist(scalebar)
 
@@ -411,7 +439,7 @@ def plot_vDetector(
     figax : matplotlib.Axes object
         The Axes object to plot the detector outline into.
 
-    contour_dict : dict
+    contour_kwargs_dict : dict
         Arguments to pass to matplotlib.pyplot.contour. This function is used
         to draw the virtual detector outline.
 
@@ -526,15 +554,18 @@ def plot_stack_with_slider(
     frame_slider.on_changed(update)
 
 
-def sharexy(axs):
+def sharexy(axs, sharex=True, sharey=True):
     """
     Share x and y axes among a group of Axes objects. Allows for some but not
     all Axes objects to share x and y axes when zooming.
 
     Parameters
     ----------
-    axes : list or
+    axes : list or 1D array of Axes
         The image stack. The first dimension must be the stack index.`
+
+    sharex, sharey : bool
+        Whether to share the xy and y axes
 
     Returns
     -------
@@ -543,158 +574,10 @@ def sharexy(axs):
     """
     target = axs.flat[0]
     for ax in axs.flat[1:]:
-        target._shared_axes['x'].join(target, ax)
-        target._shared_axes['y'].join(target, ax)
-
-
-def plot_4dstem_explorer_click(
-        vImage,
-        data1,
-        data2=None,
-        vImage_kwargs={},
-        pattern1_kwargs={},
-        pattern2_kwargs={},
-        mark_center=True,
-        center1=None,
-        center2=None,
-        orientation='horizontal',
-):
-    """
-    Plot an image stack with slider to view images through the stack
-    interactively.
-
-    Parameters
-    ----------
-    data4d : 4d array
-        The 4D STEM dataset.
-
-    vImage : 2d array
-        An image to display representing the scan axes.
-
-    scaling : float or str or None
-        The scaling to apply to to the displayed images. Same as quickplot().
-
-    cmapImage, cmap4D : str
-        The color maps to use for the image and patterns, respectively.
-
-    Returns
-    -------
-    None.
-
-    """
-
-    if center1 is None:
-        center1 = np.flip(data1.shape[-2:]) // 2
-    if data2 is not None and center2 is None:
-        center2 = np.flip(data2.shape[-2:]) // 2
-
-    vImage_kwargs_default = {'cmap': 'inferno'}
-    vImage_kwargs_default.update(vImage_kwargs)
-
-    pattern1_kwargs_default = {
-        'cmap': 'inferno',
-        'scaling': 0.2,
-    }
-    pattern1_kwargs_default.update(pattern1_kwargs)
-
-    pattern2_kwargs_default = {
-        'cmap': 'inferno',
-        'scaling': 0.2,
-    }
-    pattern2_kwargs_default.update(pattern2_kwargs)
-
-    def frame(yx, data):
-        # if data2 is None:
-        return data[*yx]
-        # else:
-        #     return data1[*yx], data2[*yx]
-
-    if data2 is not None:
-        n_plots = 3
-    else:
-        n_plots = 2
-
-    if orientation == 'horizontal':
-        fig, axs = plt.subplots(1, n_plots, tight_layout=True)
-    elif orientation == 'vertical':
-        if n_plots == 2:
-            fig, axs = plt.subplots(2, 1, tight_layout=True)
-        else:
-            fig = plt.figure()
-            gs = fig.add_gridspec(nrows=2, ncols=2)
-            axs = [
-                fig.add_subplot(gs[0, :]),
-                fig.add_subplot(gs[1, 0]),
-                fig.add_subplot(gs[1, 1]),
-            ]
-    yx = np.array([0, 0])
-    # Plot the real space scan image
-    quickplot(
-        vImage,
-        figax=axs[0],
-        **vImage_kwargs_default,
-    )
-
-    # Draw the initial plot
-    quickplot(
-        frame(yx, data1),
-        figax=axs[1],
-        **pattern1_kwargs_default,
-    )
-    if mark_center:
-        axs[1].scatter(center1[0], center1[1], marker='+', color='red')
-
-    if data2 is not None:
-        # Draw the initial plot
-        quickplot(
-            frame(yx, data2),
-            figax=axs[2],
-            **pattern2_kwargs_default,
-        )
-        if mark_center:
-            axs[2].scatter(center2[0], center2[1], marker='+', color='black')
-
-    def on_click(event, yx):
-        if event.inaxes == axs[0]:
-            if event.button is MouseButton.LEFT:
-                yx = np.array([int(event.ydata), int(event.xdata)])
-
-                # axs[1].cla()
-                quickplot(
-                    frame(yx, data1),
-                    figax=axs[1],
-                    **pattern1_kwargs_default,
-                )
-
-                if data2 is not None:
-                    # axs[2].cla()
-                    quickplot(
-                        frame(yx, data2),
-                        figax=axs[2],
-                        **pattern2_kwargs_default,
-                    )
-
-                axs[0].cla()
-                quickplot(
-                    vImage,
-                    figax=axs[0],
-                    **vImage_kwargs_default,
-                )
-
-                rect = patches.Rectangle(
-                    np.flip(yx) - 0.5, 1, 1,
-                    linewidth=1,
-                    edgecolor='r',
-                    facecolor='none'
-                )
-
-                # Add the patch to the Axes
-                axs[0].add_patch(rect)
-                fig.canvas.draw()
-
-    plt.connect('button_press_event', on_click)
-
-    plt.show()
+        if sharex:
+            target._shared_axes['x'].join(target, ax)
+        if sharey:
+            target._shared_axes['y'].join(target, ax)
 
 
 def dark_mode(fig, axs, extras=None, cbars=None):

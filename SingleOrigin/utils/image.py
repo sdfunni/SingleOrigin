@@ -12,6 +12,7 @@ from scipy.ndimage import (
     gaussian_filter,
     binary_fill_holes,
     binary_dilation,
+    label,
 )
 
 from scipy.signal import convolve2d
@@ -26,7 +27,7 @@ from skimage.morphology import erosion
 
 from tifffile import imwrite
 
-from PIL import Image, ImageFont, ImageDraw
+# from PIL import Image, ImageFont, ImageDraw
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -72,7 +73,16 @@ def image_norm(image):
     return image_normed
 
 
-def burn_in_scalebar(image, pixelSize, pixelUnit, loc='br'):
+def burn_in_scalebar(
+        image,
+        pixelSize,
+        pixelUnit,
+        loc='br',
+        length=None,
+        pad=None,
+        contrast=None,
+        label=True,
+):
     """
     Burn a scalebar into an image array
 
@@ -92,6 +102,24 @@ def burn_in_scalebar(image, pixelSize, pixelUnit, loc='br'):
         'tl', 'tr', 'bl', 'br'
         Default: 'br'
 
+    length : scalar or None
+        Length of the scalebar in pixelUnits. If None, a length will be
+        automatically determined.
+        Default: None.
+
+    contrast : int or None
+        1, 0 or None. Determins if scalebar patch is bright (1) or dark (0).
+        If only adding a scalebar (without label) the bar will be this
+        contrast. If adding a label, the box will be this contrast while the
+        text and bar will be the opposite. If None, contrast will
+        automatically be determined.
+        Default: None.
+
+    label : bool
+        Whether to place label the scalebar with length and units. If False,
+        the scalebar marker will still drawn, but without text.
+        Default: True.
+
     Returns
     -------
     image : array like
@@ -99,70 +127,53 @@ def burn_in_scalebar(image, pixelSize, pixelUnit, loc='br'):
 
     """
 
+    # Copy image and decide on scale bar length and contrast
     img = copy.deepcopy(image)
-    # Get image and scalebar parameters
-    sb_sizes = np.array([10**dec * int_ for dec in range(-1, 5)
-                         for int_ in [1, 2, 4, 5]])
-
-    fact = 1
     h, w = img.shape[:2]
+    if pad is None:
+        pad = int(0.01 * h)
+
     size = np.min(img.shape[:2])
     if np.max(img.shape[:2]) >= 2*size:
         size *= 2
 
     font_fact = size / 1024
-    pad = int(0.02 * size)
 
-    fov = size * pixelSize
-    sbar = sb_sizes[np.argmax(sb_sizes > fov*0.1)]
-    if sbar > 1:
-        sbar = int(sbar)
-    # print(sbar)
-    sbar_pixels = int(sbar/pixelSize)
+    if length is None:
+        sb_sizes = np.array([10**dec * int_ for dec in range(-1, 5)
+                             for int_ in [1, 2, 4, 5]])
 
-    font_size = int(50 * font_fact)
-    if font_size < 1:
-        font_size = 1
+        fov = size * pixelSize
+        length = sb_sizes[np.argmax(sb_sizes > fov*0.1)]
+        if length >= 1:
+            length = int(length)
 
-    bbox_height = int(2.2*pad + 0.02*h + font_size)
+    sbar_pixels = int(length/pixelSize)
+
+    font_size = 5 * pad
+
+    bbox_height = int(10*pad)
 
     # Set units
     if pixelUnit == 'nm':
-        if np.log10(sbar) < 3:
-            pixelUnit = 'nm'
-        elif np.log10(sbar) < 6:
+        if np.log10(length) < 3:
+            pixelUnit = r'nm'
+        elif np.log10(length) < 6:
             pixelUnit = 'um'
-            fact = 1e-3
+            length *= 1e-3
 
     elif pixelUnit == '1/nm':
-        # pixelUnit = r'nm$^{-1}$'
-        pixelUnit = '1/nm'
+        pixelUnit = r'$\mathrm{nm^{-1}}$'
+        # pixelUnit = '1/nm'
+    elif pixelUnit == '1/A':
+        pixelUnit = r'$\mathrm{\AA^{-1}}$'
+        # pixelUnit = '1/nm'
 
     elif pixelUnit == 'um':
-        pixelUnit = 'um'
+        pixelUnit = r'$\mathrm{\mu m}$'
 
-    # Get font for PIL
-    font_path = os.path.join(
-        mpl.__path__[0],
-        "mpl-data/fonts/ttf/DejaVuSans.ttf",
-    )
-
-    font = ImageFont.truetype(
-        font_path,
-        size=font_size,
-        # layout_engine=ImageFont.Layout.RAQM,
-    )
-
-    # Get box width to ensure contains string and scalebar
-    img_obj = Image.fromarray(img)
-    draw = ImageDraw.Draw(img_obj)
-    text = f'{sbar * fact} {pixelUnit}'
-    text_length = draw.textlength(
-        text,
-        font=font,
-    )
-
-    bbox_width = np.max([int(sbar_pixels + 2*pad), text_length + 2*pad])
+    # Work out label box area
+    bbox_width = int(sbar_pixels + 2*pad)
 
     bbox = np.zeros((2, 2), dtype=int)
 
@@ -184,26 +195,203 @@ def burn_in_scalebar(image, pixelSize, pixelUnit, loc='br'):
 
     cent_width = int(np.mean(bbox[1]))
 
-    # Make scalebar box
-    img[bbox[0, 0]:bbox[0, 1], bbox[1, 0]:bbox[1, 1]] = 1
+    if contrast is None:
+        intavg = np.mean(img[bbox[0, 0]:bbox[0, 1], bbox[1, 0]:bbox[1, 1]])
+        intmid = np.mean([np.max(img), np.min(img)])
+        if intavg > intmid:
+            contrast = 0
+        else:
+            contrast = 1
 
-    # Add scalebar
-    img[bbox[0, 0] + pad:bbox[0, 0] + 2*pad,
+    if not label:
+        contrast = int((not bool(contrast)))
+
+    # Add scalebar box and label
+    if label == True:
+        # Make scalebar box
+        img[bbox[0, 0]:bbox[0, 1], bbox[1, 0]:bbox[1, 1]] = contrast
+
+        # Build the label text image
+        string = f'{length} ' + pixelUnit
+
+        # Alloted size of the text:
+        tlims = np.array([5*pad, bbox_width])
+
+        plt.close()
+        plt.ioff()
+        fig, ax = plt.subplots(figsize=(tlims[1] / tlims[0], 1), dpi=tlims[0],
+                               layout='constrained',
+                               )
+        ax.axis('off')
+
+        if contrast:
+            color = 'black'
+        else:
+            color = 'white'
+            fig.set_facecolor('black')
+            ax.set_facecolor('black')
+
+        text_obj = ax.text(
+            0.5, 0.5,
+            string,
+            fontsize=font_size,
+            ha='center',
+            va='center',
+            color=color,
+        )
+
+        # Check text fit:
+        tbox = text_obj.get_window_extent(renderer=fig.canvas.get_renderer())
+
+        # Access the dimensions from the bounding box
+        tdims = np.array([tbox.height, tbox.width])
+        tx0, ty0 = tbox.x0, tbox.y0
+
+        if np.any(tdims > tlims*1):
+            font_size *= np.min(tlims*1 / tdims)
+
+            ax.cla()
+            text_obj = ax.text(
+                0.5, 0.5,
+                string,
+                fontsize=font_size,
+                ha='center',
+                va='center',
+                color=color,
+            )
+
+        ax.axis('off')
+
+        canvas = fig.canvas
+        canvas.draw()
+        width, height = canvas.get_width_height()
+        text = np.frombuffer(canvas.buffer_rgba(), dtype='uint8')
+        text = image_norm(
+            np.max(text.reshape(height, width, 4)[..., :3], axis=2))
+
+        plt.close()
+        plt.ion()
+        img[bbox[0, 0] + 4*pad: bbox[0, 1] - pad,
+            bbox[1, 0]: bbox[1, 0] + text.shape[1],
+            ] = text
+
+        shift = pad
+
+    else:
+        shift = pad * 6
+
+    # Finally, add scalebar
+    img[bbox[0, 0] + shift:bbox[0, 0] + 3*pad + shift,
         int(cent_width - sbar_pixels/2):
         int(cent_width - sbar_pixels/2) + sbar_pixels
-        ] = 0
+        ] = int((not bool(contrast)))
 
-    img_obj = Image.fromarray(img)
-    draw = ImageDraw.Draw(img_obj)
-    draw.text(
-        (cent_width, int(bbox[0, 1] - pad)),
-        text,
-        0,
-        font=font,
-        anchor='mb',
-    )
+    return img
 
-    return np.array(img_obj)
+    # img = copy.deepcopy(image)
+    # # Get image and scalebar parameters
+    # sb_sizes = np.array([10**dec * int_ for dec in range(-1, 5)
+    #                      for int_ in [1, 2, 4, 5]])
+
+    # fact = 1
+    # h, w = img.shape[:2]
+    # size = np.min(img.shape[:2])
+    # if np.max(img.shape[:2]) >= 2*size:
+    #     size *= 2
+
+    # font_fact = size / 1024
+    # pad = int(0.02 * size)
+
+    # fov = size * pixelSize
+    # sbar = sb_sizes[np.argmax(sb_sizes > fov*0.1)]
+    # if sbar > 1:
+    #     sbar = int(sbar)
+    # # print(sbar)
+    # sbar_pixels = int(sbar/pixelSize)
+
+    # font_size = int(50 * font_fact)
+    # if font_size < 1:
+    #     font_size = 1
+
+    # bbox_height = int(2.2*pad + 0.02*h + font_size)
+
+    # # Set units
+    # if pixelUnit == 'nm':
+    #     if np.log10(sbar) < 3:
+    #         pixelUnit = 'nm'
+    #     elif np.log10(sbar) < 6:
+    #         pixelUnit = 'um'
+    #         fact = 1e-3
+
+    # elif pixelUnit == '1/nm':
+    #     # pixelUnit = r'nm$^{-1}$'
+    #     pixelUnit = '1/nm'
+
+    # elif pixelUnit == 'um':
+    #     pixelUnit = 'um'
+
+    # # Get font for PIL
+    # font_path = os.path.join(
+    #     mpl.__path__[0],
+    #     "mpl-data/fonts/ttf/DejaVuSans.ttf",
+    # )
+
+    # font = ImageFont.truetype(
+    #     font_path,
+    #     size=font_size,
+    # )
+
+    # # Get box width to ensure contains string and scalebar
+    # img_obj = Image.fromarray(img)
+    # draw = ImageDraw.Draw(img_obj)
+    # text = f'{sbar * fact} {pixelUnit}'
+    # text_length = draw.textlength(
+    #     text,
+    #     font=font,
+    # )
+
+    # bbox_width = np.max([int(sbar_pixels + 2*pad), text_length + 2*pad])
+
+    # bbox = np.zeros((2, 2), dtype=int)
+
+    # if loc[0] == 't':
+    #     bbox[0, 0] = int(pad)
+    #     bbox[0, 1] = int(pad + bbox_height)
+
+    # if loc[0] == 'b':
+    #     bbox[0, 0] = int(h - pad - bbox_height)
+    #     bbox[0, 1] = int(h - pad)
+
+    # if loc[1] == 'l':
+    #     bbox[1, 0] = int(pad)
+    #     bbox[1, 1] = int(pad + bbox_width)
+
+    # if loc[1] == 'r':
+    #     bbox[1, 0] = int(w - pad - bbox_width)
+    #     bbox[1, 1] = int(w - pad)
+
+    # cent_width = int(np.mean(bbox[1]))
+
+    # # Make scalebar box
+    # img[bbox[0, 0]:bbox[0, 1], bbox[1, 0]:bbox[1, 1]] = 1
+
+    # # Add scalebar
+    # img[bbox[0, 0] + pad:bbox[0, 0] + 2*pad,
+    #     int(cent_width - sbar_pixels/2):
+    #     int(cent_width - sbar_pixels/2) + sbar_pixels
+    #     ] = 0
+
+    # img_obj = Image.fromarray(img)
+    # draw = ImageDraw.Draw(img_obj)
+    # draw.text(
+    #     (cent_width, int(bbox[0, 1] - pad)),
+    #     text,
+    #     0,
+    #     font=font,
+    #     anchor='mb',
+    # )
+
+    # return np.array(img_obj)
 
 
 def save_bw_image(image, folder, name, bits=16):
@@ -267,6 +455,9 @@ def save_rgb_image(
         pixelSize=None,
         pixelUnit=None,
         loc='br',
+        sblabel=True,
+        length=None,
+        sbcontrast=1,
 ):
     """
     Save an rgb(a) image, using a colormap if greyscale.
@@ -335,13 +526,19 @@ def save_rgb_image(
         if cmap is None:
             cmap = mpl.colormaps['inferno']
 
-        else:
+        elif isinstance(cmap, str):
             cmap = mpl.colormaps[cmap]
 
-        rgb = cmap(image)
+        else:
+            pass
+
+        rgb = cmap(image_norm(image))
 
         if alpha is False:
             rgb = rgb[..., :-1]
+
+    else:
+        rgb = image
 
     # Scale image for bit depth & convert to correct dtype
     rgb = np.around(rgb * bitscale).astype(type_)
@@ -349,10 +546,14 @@ def save_rgb_image(
     if pixelSize is not None and pixelUnit is not None:
         # Make a separate scalebar corrected for bitdepth
         sb = burn_in_scalebar(
-            np.ones(image.shape) * np.nan,
+            np.ones(image.shape[:2]) * np.nan,
             pixelSize=pixelSize,
             pixelUnit=pixelUnit,
-            loc=loc,)[..., None] * np.ones(rgb.shape) * bitscale
+            length=length,
+            loc=loc,
+            label=sblabel,
+            contrast=sbcontrast,
+        )[..., None] * np.ones(rgb.shape) * bitscale
 
         # Burn scalebar into image
         rgb = np.where(sb >= 0, sb, rgb).astype(type_)
@@ -367,9 +568,9 @@ def save_rgb_image(
     )
 
 
-def save_fig(fig, folder, name, dpi=100):
+def save_fig(fig, folder, name, dpi=100, format='tif'):
     """
-    Save a matplotlib figure as a .tif or .png.
+    Wrapper function for matplotlib.pyplot.savefig()
 
     Parameters
     ----------
@@ -383,11 +584,16 @@ def save_fig(fig, folder, name, dpi=100):
         Desired name for the saved image file. If a file name extension is
         given (e.g. .tif), that file type will be used. Otherwise .png is used.
 
-
     dpi : int
         The dots-per-inch for the figure. Size of the figure (fig.figsize) and
         dpi will determine the final file size for storage so choose wisely.
         Default: 100.
+
+    format : str
+        Image format for saving the figure. Any file types supported by
+        matplotlib.pyplot.savefig() are valid.
+        Default: 'tif'
+
 
     Returns
     -------
@@ -395,13 +601,17 @@ def save_fig(fig, folder, name, dpi=100):
 
     """
 
-    if not np.isin(name[-4:], ['.tif', '.png']).item():
-        name += '.png'
+    if '.' not in name[-5:]:
+        name += '.' + format
+    else:
+        format = name.split('.')[-1]
+
     fig.savefig(
         os.path.join(folder, name),
         bbox_inches='tight',
         pad_inches=0.25,
-        dpi=dpi
+        dpi=dpi,
+        format=format
     )
 
 
@@ -540,64 +750,93 @@ def cross_correlation(im_ref, im_meas):
     return imCC
 
 
-def radial_average(image, center=None, max_dist=None):
+def radial_average(data, center=None, max_dist=None):
     """
-    Calculate the average radial profile of an image about a point.
+    Calculate the average radial profile for an image/dataset about a point.
 
     Parameters
     ----------
-    image : 2D array
-        The image. May have NaNs: these will not be counted or weighted when
-        normalizing the bins.
-    center : 2-list
+    data : 2D+ array
+        The image or dataset. The radial average will be taken over the final
+        two dimensions. For a 4D STEM dataset, the scan dimensions should be
+        the first two dimensions. For a series or stack, the frame index should
+        be the first dimension. May have NaNs: these will not be counted or
+        weighted when normalizing the bins.
+
+    center : 2-list or None
         The [x, y] center point about which to calculate the profile. Specify
         in image coordinates of [col, row] with down/right being positive.
         If None, uses the middle of the image.
         Default: None.
 
+    max_dist : int or None
+        Maximum radial distance for which to calculate the radial average.
+
     Returns
     -------
-    dists : 1D array
-        The distance corresponding to each bin in the radial profile.
-    mean_vals : 1D array
-        The mean value of the image at the corresponding distance in dists.
+    radial_avg : array
+        The radial average(s) of the dataset as the final dimension. Will have
+        one less dimension than the input data.
 
     """
 
     if center is None:
-        center = [int(image.shape[1]/2),
-                  int(image.shape[0]/2)]
+        center = [int(data.shape[-2]/2),
+                  int(data.shape[-1]/2)]
 
     # Get bin ID for each pixel relative to the radial center
-    # This uses np.rint() so that bins are centered at integer number of pixels.
+    # This uses np.rint() so that bins are centered at integer number of pixels
     # i.e. first bin is 0 (-0.5 to 0.5), 2nd bin is 1 (0.5 to 1.5), etc.
-    ids = np.rint(getAllPixelDists(image.shape, center).ravel()).astype(int)
+    ids = np.rint(getAllPixelDists(data.shape[-2:], center).ravel()
+                  ).astype(int)
 
-    # Ravel image and remove NaNs from image and bin ID arrays
-    w = image.ravel()
-    keep = ~np.isnan(w)
-    ids = ids[keep]
-    w = w[keep]
+    if len(data.shape) < 2:
+        raise Exception(
+            'Cannot calculate radial average for data with < 2 dimensions.'
+        )
 
-    # Get number of pixels in each distance bin for normalizing
-    counts = np.bincount(ids)
-    # Remove zeros to prevent division by zero errors
-    counts[counts == 0] = 1
+    def ravg(frame, ids):
+        # Ravel image and remove NaNs from image and bin ID arrays
+        w = frame.ravel()
+        keep = ~np.isnan(w)
+        ids = ids[keep]
+        w = w[keep]
 
-    # Get array of bin centers in pixels
-    dists = np.arange(counts.shape[0])
+        # Get number of pixels in each distance bin for normalizing
+        counts = np.bincount(ids)
+        # Remove zeros to prevent division by zero errors
+        counts[counts == 0] = 1
 
-    # Get the radial average, normalizing by number of pixels in each bin
-    radial_avg = (np.bincount(ids, w)/counts)
+        # Get array of bin centers in pixels
+        # dists = np.arange(counts.shape[0])
 
-    return dists, radial_avg
+        # Get the radial average, normalizing by number of pixels in each bin
+        radial_avg = (np.bincount(ids, w)/counts)
+
+        return radial_avg
+
+    radial_avg = [
+        ravg(frame, ids) for frame in data.reshape((-1, *data.shape[-2:]))
+    ]
+
+    minlen = np.min([r.shape[0] for r in radial_avg])
+
+    if max_dist is None:
+        max_dist = minlen
+
+    else:
+        max_dist = np.min([max_dist, minlen]).astype(int)
+
+    radial_avg = np.array([
+        ra[:max_dist] for ra in radial_avg
+    ]).reshape((*data.shape[:-2], -1)).squeeze()
+
+    return radial_avg
 
 
 def bandpass(image, highpass=1, lowpass=0):
     """
     High and/or low pass filter an image using Gaussian filters.
-    ***Remember: for a bandpass the HIGHpass value should be LOW & the LOWpass
-    value should be HIGH!
 
     Parameters
     ----------
@@ -710,7 +949,7 @@ def get_mask_circle(shape, center, r):
     return mask
 
 
-def pick_mask_circle(image, pick='diameter', points=None, show_mask=True):
+def pick_mask_circle(image, pick='diameter', points=None, plot=True):
     """
     Make a circluar mask.
 
@@ -730,7 +969,7 @@ def pick_mask_circle(image, pick='diameter', points=None, show_mask=True):
         notebook environment, however it works in Spyder.
         Default: None.
 
-    show_mask : bool
+    plot : bool
         Whether to plot the resuting mask for verification.
         Default: True.
 
@@ -740,22 +979,20 @@ def pick_mask_circle(image, pick='diameter', points=None, show_mask=True):
         The mask. 1 inside the circle, 0 outside.
     """
 
-    fig, ax = plt.subplots(figsize=(8, 10))
-    ax.imshow(image, cmap='gist_gray')
-    ax.set_xticks([])
-    ax.set_yticks([])
-
-    ax.set_title(
-        'Left click to add points.\n' +
-        'Right click or backspace key to remove last.\n' +
-        'Center click or enter key to complete.\n' +
-        'Must select only 2 points.'
-    )
-
     if points is None:
 
         if is_running_in_jupyter():
             raise Warning(jupyter_warning)
+
+        fig, ax = plt.subplots(figsize=(8, 10))
+        quickplot(image, cmap='gist_gray', figax=ax)
+
+        ax.set_title(
+            'Left click to add points.\n' +
+            'Right click or backspace key to remove last.\n' +
+            'Center click or enter key to complete.\n' +
+            'Must select only 2 points.'
+        )
 
         points = plt.ginput(
             n=-1,
@@ -780,9 +1017,8 @@ def pick_mask_circle(image, pick='diameter', points=None, show_mask=True):
     dists = getAllPixelDists(image.shape, center)
     mask = np.where(dists <= r, 1, 0)
 
-    if show_mask:
-        fig, ax = plt.subplots()
-        ax.imshow(image, cmap='gist_gray')
+    if plot:
+        fig, ax = quickplot(image, cmap='gist_gray', figax=True)
 
         ax.imshow(
             mask,
@@ -798,7 +1034,7 @@ def get_mask_polygon(
         vertices=None,
         buffer=0,
         invert=False,
-        show_mask=True,
+        plot=True,
         return_vertices=False
 ):
     """
@@ -825,7 +1061,7 @@ def get_mask_polygon(
         are selected as the mask region (if True).
         Default: False.
 
-    show_mask : bool
+    plot : bool
         Whether to plot the resuting mask for verification.
         Default: True.
 
@@ -853,10 +1089,7 @@ def get_mask_polygon(
         if is_running_in_jupyter():
             raise Warning(jupyter_warning)
 
-        fig, ax = plt.subplots(figsize=(8, 10))
-        ax.imshow(data, cmap='gist_gray')
-        ax.set_xticks([])
-        ax.set_yticks([])
+        fig, ax = quickplot(data, cmap='gist_gray', figax=True)
 
         ax.set_title(
             'Left click to add vertices.\n' +
@@ -888,9 +1121,8 @@ def get_mask_polygon(
     if invert:
         mask = np.where(mask == 1, 0, 1)
 
-    if show_mask:
-        fig, ax = plt.subplots()
-        ax.imshow(data, cmap='gist_gray')
+    if plot:
+        fig, ax = quickplot(data, cmap='gist_gray', figax=True)
 
         ax.imshow(
             mask,
@@ -913,6 +1145,7 @@ def line_profile(
         signaldims=None,
         start=None,
         end=None,
+        plot=True,
 ):
     """
     Integrate data along a line with a given integration width. Line is
@@ -1001,25 +1234,30 @@ def line_profile(
     else:
         raise Exception('This dimensionality is not supported.')
 
-    if is_running_in_jupyter():
-        raise Warning(jupyter_warning)
+    if plot or start is None:
+        fig, ax = plt.subplots(figsize=(10, 10))
 
-    fig, ax = plt.subplots(figsize=(10, 10))
+        quickplot(image, cmap='inferno', figax=ax)
 
-    ax.imshow(image, cmap='inferno')
+        xends = [start[0], end[0]]
+        yends = [start[1], end[1]]
+        plt.plot(xends, yends)
 
-    ax.set_xticks([])
-    ax.set_yticks([])
+        ax.set_xticks([])
+        ax.set_yticks([])
 
     if ((start is None) or (end is None)):
+        if is_running_in_jupyter():
+            raise Warning(jupyter_warning)
+
         picks_xy = np.array(plt.ginput(n_picks, timeout=60))
 
         start = picks_xy[0]
         end = picks_xy[1]
 
-    xends = [start[0], end[0]]
-    yends = [start[1], end[1]]
-    plt.plot(xends, yends)
+        xends = [start[0], end[0]]
+        yends = [start[1], end[1]]
+        plt.plot(xends, yends)
 
     vector = np.array(end) - np.array(start)
 
@@ -1144,10 +1382,7 @@ def linearKDE_2D(
         The bin width.
 
     r : int
-        The bandwidth of the KDE.
-
-    w : int
-        The width of the kernal in integer number of bins.
+        The bandwidth of the KDE in bins.
 
     weights : array of scalars (n,) or None
         The values by which to weight each coordinates for the KDE. (e.g.
@@ -1191,32 +1426,41 @@ def linearKDE_2D(
         weights = np.ones(coords.shape[0])
 
     # Get relative pixel shift values for binning
-    xs = [i for i in range(-r, r, 1)]
-    ys = [i for i in range(-r, r, 1)]
+    if r == 1:
+        xys = np.array([-1, 0], dtype=int)
+        # Get reference pixel for each data point
+        xyC = np.ceil(coords / d) * d
 
-    # Get reference pixel for each data point
-    xyC = np.ceil(coords / d) * d
+    elif r > 1:
+        r_ = r//1
+
+        yxs = np.arange(-r_, r_ + 1, 1, dtype=int)
+        xyC = np.around(coords)
 
     # Calculate eash pixel shifted histogram and sum together
-    for j in ys:
-        for i in xs:
-            # Find bin indices for the current shift
-            xyB = xyC + np.array([[i*d, j*d]])
+    for j in xys:
+        for i in xys:
 
             # Find distance weighting for high sampling rate:
             # Method results in total density per data point deviating slightly
-            # from 1, but close with sufficient sampling (i.e. r >= 2)
+            # from 1, but close with sufficient bandwidth (i.e. r >= 2)
             # This method is a KDE using a linear kernel with euclidian
             # distance metric.
             if r > 1:
+                shift = np.array([xys[i], xys[j]]) * d
+                xyB = xyC + shift
+                if norm(shift) > r:
+                    continue
                 dW = 3/np.pi * (1 - norm(xyB - coords, axis=1) / (d*r)) / r**2
-
+                dW = np.where(dW < 0, 0, dW)
             # Find distance weighting if low sampling (i.e. r == 1):
             # Method is effectively a reverse bilineaer interpolation.
             # That is, it distributes the density from each datapoint over four
             # nearest neighbor pixels using bilinear weighting. This ensures
             # the density contribution from each data point is exactly 1.
             elif r == 1:
+                shift = np.array([xys[i], xys[j]]) * d
+                xyB = xyC + shift
                 dW = np.prod(1 - np.abs(xyB - coords) / (d*r), axis=1) / r**2
 
             else:
@@ -1463,12 +1707,11 @@ def rotate_xy(coords, angle, origin):
 def rotate_image_kde(
         image,
         angle,
-        bandwidth=0.5,
+        bandwidth=1,
         reshape_method='original',
         fill_value=np.nan
 ):
-    """
-    Rotate an image to arbitrary angle & interpolate using KDE.
+    """Rotate an image to arbitrary angle & interpolate using KDE.
 
     Apply an aribtrary image rotation and interpolate new pixel values using
     a linear kernel density estimate (KDE). Check result carefully. May
@@ -1506,7 +1749,6 @@ def rotate_image_kde(
     -------
     image_rot : 2D array
         The rotated image
-
     """
 
     h, w = image.shape
@@ -1827,6 +2069,36 @@ def binary_find_smallest_rectangle(array):
     return xlim, ylim, sl
 
 
+def nlargest_objects(array, n_obj=1):
+    """
+    Find the n largest objects in a binary array and return a binary mask.
+
+
+    Parameters
+    ----------
+    array : ndarray of shape (h,w)
+        The binary image.
+
+    n_obj : int
+        The number of objects desired in the mask.
+
+    Returns
+    -------
+    mask : ndarray
+        The binary mask covering the n largest objects with 1 where the
+        objects are located and 0 elsewhere.
+
+    """
+    binaryarray = np.where(array > 0, 1, 0)
+    labels = label(binaryarray)[0]
+    _, counts = np.unique(labels, return_counts=True)
+    counts[0] = 0
+    select = np.argsort(counts)[-n_obj:]
+    mask = np.where(np.isin(labels, select), 1, 0)
+
+    return mask
+
+
 def fft_amplitude_mask(
         image,
         xy_fft,
@@ -1916,6 +2188,7 @@ def measure_distance(
         # return_points=False,
         figax=True,
 ):
+    # TODO : update docstring
     """
     Make a circluar mask.
 
@@ -1955,7 +2228,6 @@ def measure_distance(
     for points in endPoints:
         if lock_hor_vert:
             vect = points[1] - points[0]
-            # xy_dot = np.identity(2) @ vect.T
             orientation = np.argmin(np.abs(vect))  # 1=horizontal 0=vertical
             points[:, orientation] = np.mean(points[:, orientation])
 
@@ -2003,14 +2275,7 @@ def measure_distance(
             if shift[1] < 0:
                 shift[1] *= -1
 
-            print(shift * np.flip(unitvect))
             text.set_position(midpoint + shift)
 
-        # print(unitvect)
-
-        # ax.scatter(midpoint[0], midpoint[1],)
-
-    # if return_points:
-    #     return endPoints
     if figax:
         return fig, ax

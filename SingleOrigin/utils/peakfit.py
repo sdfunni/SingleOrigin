@@ -21,11 +21,15 @@ from scipy.interpolate import make_interp_spline
 from skimage.morphology import dilation
 
 import skimage
-from skimage.segmentation import watershed
+from skimage.segmentation import watershed, relabel_sequential
 from skimage.feature import hessian_matrix_det
 from skimage.morphology import binary_erosion
 
-from SingleOrigin.utils.image import image_norm, get_circular_kernel
+from SingleOrigin.utils.image import (
+    image_norm,
+    get_circular_kernel,
+)
+
 from SingleOrigin.utils.mathfn import (
     line,
     plane_2d,
@@ -280,7 +284,7 @@ def watershed_segment(
         filter_type='log',
         buffer=0,
         bkgd_thresh_factor=0.95,
-        peak_bkgd_thresh_factor=0,
+        peak_bkgd_thresh_factor=None,
         watershed_line=True,
         min_dist=10,
         min_pixels=9,
@@ -384,7 +388,8 @@ def watershed_segment(
 
     local_max, n_peaks = label(peak_map)
 
-    masks = watershed(-img_der, local_max, watershed_line=watershed_line)
+    masks = watershed(-img_der, local_max, watershed_line=watershed_line
+                      ).astype(int)
 
     if buffer > 0:
         buffer_mask = np.zeros(image.shape)
@@ -394,18 +399,14 @@ def watershed_segment(
     if roi is not None:
         local_max = local_max * roi
 
-    # Remove masks outside the roi & relabel
-    masks_in_roi = np.unique(local_max)[1:]
+        masks_in_roi = np.unique(local_max)[1:]
 
-    masks_ = np.zeros(masks.shape)
+        masks = np.where(np.isin(masks, masks_in_roi), masks, 0)
 
-    for i, lab in enumerate(masks_in_roi):
-        masks_[masks == lab] = i+1
+        masks = relabel_sequential(masks)[0]
 
-    masks = masks_.astype(int)
-
-    # Remove peaks outside the roi
-    peaks = peaks[np.isin(peaks.label.to_numpy(), masks_in_roi)]
+        # Remove peaks outside the roi
+        peaks = peaks[np.isin(peaks.label.to_numpy(), masks_in_roi)]
 
     # Get the new labels for peaks
     labels = map_coordinates(
@@ -433,7 +434,7 @@ def watershed_segment(
             # Check for and remove residual areas outside thresholded peak
             mask_labeled, n_areas = label(mask_sl, structure=np.ones((3, 3)))
             if n_areas > 1:
-                peak_max = np.max(img_der_sl)
+                peak_max = np.max(img_der_sl * mask_sl)
                 peak_label = mask_labeled[img_der_sl == peak_max]
                 mask_sl = np.where(mask_labeled == peak_label, 1, 0)
 
@@ -444,7 +445,7 @@ def watershed_segment(
 
         masks = masks_ref
 
-    elif peak_bkgd_thresh_factor > 0:
+    elif peak_bkgd_thresh_factor is not None:
         masks_ref = np.zeros(image.shape)
 
         for i in range(0, num_masks):

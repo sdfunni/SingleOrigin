@@ -45,3 +45,5 @@ from SingleOrigin.measure_lattice import ReciprocalLattice
 
 from SingleOrigin.eels.utils import *
 from SingleOrigin.eels.eels import *
+
+from SingleOrigin.eds import *

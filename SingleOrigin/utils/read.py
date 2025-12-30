@@ -15,7 +15,7 @@ import imageio
 import hyperspy.api as hs
 from h5py import File
 
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 
 from ncempy.io.dm import dmReader
 from ncempy.io.ser import serReader
@@ -24,6 +24,7 @@ from ncempy.io.emd import emdReader
 
 from SingleOrigin.utils.system import select_file, check_package_installation
 from SingleOrigin.utils.image import image_norm, bin_data
+from SingleOrigin.utils.plot import quickplot
 
 if check_package_installation('empad2'):
     from empad2 import (
@@ -42,7 +43,7 @@ pkg_dir = Path(__file__).parents[1]
 
 def load_image(
         path=None,
-        display_image=True,
+        plot=True,
         images_from_stack='all',
         dsets_to_load='all',
         return_path=False,
@@ -59,7 +60,7 @@ def load_image(
         the desired image. If only a directory is given, the "Open file"
         dialog box will still open allowing you to select an image file.
 
-    display_image : bool
+    plot : bool
         If True, plots image (or first image if a series is imported).
         Default: True
 
@@ -111,9 +112,10 @@ def load_image(
         path = Path(path)
 
     if path is None:
+        print('select the file')
         path = select_file(
             message='Select an image to load...',
-            ftypes=['.png', '.jpg', '.tif', '.dm4', '.dm3', '.emd', '.ser'],
+            # ftypes=['.png', '.jpg', '.tif', '.dm4', '.dm3', '.emd', '.ser'],
         )
 
         print(f'path to imported image: {path}')
@@ -295,11 +297,8 @@ def load_image(
             # images[key] = images[key][:, :int((h//2)*2), :int((w//2)*2)]
             image_ = images[key][0, :, :]
 
-        if display_image is True:
-            fig, axs = plt.subplots()
-            axs.imshow(image_, cmap='gray')
-            axs.set_xticks([])
-            axs.set_yticks([])
+        if plot is True:
+            quickplot(image_, cmap='gray')
 
         if (type(bin_dims) in [tuple, list]):
             if (len(bin_dims) != len(images[key].shape)):
@@ -439,46 +438,66 @@ def emdVelox(
             ).tobytes().decode().split('\x00')[0]
 
             metadata = json.loads(metadata)
+            try:
+                metadata['pixelSize'] = \
+                    float(metadata['BinaryResult']['PixelSize']['width'])
+                metadata['pixelUnit'] = metadata['BinaryResult']['PixelUnitX']
 
-    if 'SpectrumImage' in list(f['Data'].keys()):
-        # Get information for handling energy axis
-        for k, v in metadata['Detectors'].items():
-            if v['DetectorType'] == 'AnalyticalDetector':
-                datastart = float(v['BeginEnergy'])  # Cut off cata below this
-                binstart = float(v['OffsetEnergy'])
-                binsize = float(v['Dispersion'])
-                datastartind = int((datastart - binstart) // binsize)
+                if metadata['pixelUnit'] == 'm':
+                    if (metadata['pixelSize']
+                            * int(metadata['Scan']['ScanSize']['width'])) > 5e-6:
 
-                break
-
-    if 'Spectrum' in list(f['Data'].keys()):
-        code = 'Data/Spectrum/' + list(f['Data/Spectrum'].keys())[0]
-
-        counts = np.array(f[code]['Data']).squeeze()
-
-        binedges = np.arange(
-            binstart,
-            binstart + binsize * (counts.shape[0] + 1),
-            binsize
-        )
-        bincenters = np.arange(
-            binstart + binsize/2,
-            binstart + binsize/2 + binsize * counts.shape[0],
-            binsize
-        )
-
-        counts[:datastartind] = 0
-
-        dsets['Spectrum'] = {
-            'Counts': counts,
-            'eV_cent': bincenters,
-            'eV_bins': binedges,
-            'BeginEnergy': datastart,
-            'OffsetEnergy': binstart,
-            'Binsize': binsize,
-        }
+                        metadata['pixelSize'] *= 1e6
+                        metadata['pixelUnit'] = 'um'
+                    else:
+                        metadata['pixelSize'] *= 1e9
+                        metadata['pixelUnit'] = 'nm'
+            except KeyError:
+                metadata['pixelSize'] = None
+                metadata['pixelUnit'] = None
 
     if load_SI and 'SpectrumImage' in list(f['Data'].keys()):
+        print('SI found.')
+
+        if 'SpectrumImage' in list(f['Data'].keys()):
+            # Get information for handling energy axis
+            for k, v in metadata['Detectors'].items():
+                if v['DetectorType'] == 'AnalyticalDetector':
+                    # Cut off cata below this
+                    datastart = float(v['BeginEnergy'])
+                    binstart = float(v['OffsetEnergy'])
+                    binsize = float(v['Dispersion'])
+                    datastartind = int((datastart - binstart) // binsize)
+
+                    break
+
+        if 'Spectrum' in list(f['Data'].keys()):
+            code = 'Data/Spectrum/' + list(f['Data/Spectrum'].keys())[0]
+
+            counts = np.array(f[code]['Data']).squeeze()
+
+            binedges = np.arange(
+                binstart,
+                binstart + binsize * (counts.shape[0] + 1),
+                binsize
+            )
+            bincenters = np.arange(
+                binstart + binsize/2,
+                binstart + binsize/2 + binsize * counts.shape[0],
+                binsize
+            )
+
+            counts[:datastartind] = 0
+
+            dsets['Spectrum'] = {
+                'Counts': counts,
+                'eV_cent': bincenters,
+                'eV_bins': binedges,
+                'BeginEnergy': datastart,
+                'OffsetEnergy': binstart,
+                'Binsize': binsize,
+            }
+
         si = np.array(hs.load(
             path, select_type='spectrum_image', sum_frames=True,
             first_frame=SIframe_range[0],

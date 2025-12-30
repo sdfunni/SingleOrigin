@@ -195,7 +195,7 @@ def get_phase_from_CoM(
     phase_init=None
 ):
     """
-    Function taken from old version of py4DSTEM (0.12.9)
+    Function copied from old version of py4DSTEM (0.12.9)
 
     Calculate the phase of the sample transmittance from the diffraction
     centers of mass. A bare bones description of the approach taken here is
@@ -522,7 +522,7 @@ def vAnnularDetImage(
         return vImage
 
 
-def kmeans_segment(data, n_clusters, window=None, pwr=1, show=True,
+def kmeans_segment(data, n_clusters, window=None, pwr=1, plot=True,
                    scanaxes=None, pattaxes=None, roi=None):
     """
     Segment scan using kmeans over the DP/EWPC patterns.
@@ -549,8 +549,8 @@ def kmeans_segment(data, n_clusters, window=None, pwr=1, show=True,
         de-emphasize high intensity information by using pwr < 1.
         Default: 1
 
-    show : bool
-        Whether to show the segmentation map.
+    plot : bool
+        Whether to plot the segmentation map.
         Default: True.
 
     scanaxes, pattaxes : tuples of ints or None
@@ -615,7 +615,7 @@ def kmeans_segment(data, n_clusters, window=None, pwr=1, show=True,
         labels = np.zeros(scandims)
         labels[roi_inds[:, 0], roi_inds[:, 1]] = clustering.labels_ + 1
 
-    if show:
+    if plot:
         quickplot(labels, cmap='viridis')
 
     return labels

@@ -173,6 +173,14 @@ def get_vpcf(
 
     vects = vects.reshape((-1, 2))
 
+    # Flip y direction
+    vects *= np.array([[1, -1]])
+
+    # Remove coordinates falling outside the box
+    vects = vects[
+        ((vects[:, 0] > xlim[0]) & (vects[:, 0] < xlim[-1]) &
+         (vects[:, 1] > ylim[0]) & (vects[:, 1] < ylim[-1]))]
+
     n_sq = coords1.shape[0] * coords2.shape[0]
     denominator = n_sq / area
 
@@ -223,7 +231,8 @@ def get_vpcf_peak_params(
     buffer=10,
     method='moments',
     sigma_group=None,
-    thresh_factor=1,
+    detection_thresh_factor=1,
+    bkgd_thresh_factor=0.1,
 ):
     """
     Calculate shape of peaks in a pair-pair vPCF.
@@ -260,13 +269,20 @@ def get_vpcf_peak_params(
         overlap when determining peak shapes. If None, not used.
         Default: None.
 
-    thresh_factor : scalar
+    detection_thresh_factor : scalar
         Adjusts the minimum amplitude for considering an identified local
         maximum to be a peak for the purposes of finding its shape. By
         default peaks with less than 10% of the amplitude of the largest
         peak are not considered for fitting. A thresh_factor of 2 would
         raise this cutoff to 20% while 0.5 would lower it to 5%.
         Default: 1.
+
+    bkgd_thresh_factor : scalar
+        Thresholding factor passed to SingleOrigin.watershed_segment() to
+        remove background from vPCF peak measurement regions. Must be
+        between 0 and 1. Thesholds at this proportion of the intensity
+        between the maximum edge pixel value and the peak maximum.
+        Default: 0.1
 
     Returns
     -------
@@ -306,7 +322,7 @@ def get_vpcf_peak_params(
         peaks.loc[:, 'x'].to_numpy(dtype=int)
     ]
 
-    thresh = np.max(peaks.loc[:, 'peak_max']) * 0.1 * thresh_factor
+    thresh = np.max(peaks.loc[:, 'peak_max']) * 0.1 * detection_thresh_factor
 
     peaks = peaks[(peaks.loc[:, 'peak_max'] > thresh)
                   ].reset_index(drop=True)
@@ -328,7 +344,7 @@ def get_vpcf_peak_params(
         group_masks, _, _, _ = watershed_segment(
             pcf_sm,
             min_dist=sigma_group,
-            bkgd_thresh_factor=0,
+            peak_bkgd_thresh_factor=bkgd_thresh_factor,
             sigma=None,
             buffer=0,
             watershed_line=True
@@ -362,7 +378,7 @@ def get_vpcf_peak_params(
                 y_fit,
                 sig_maj,
                 sig_min,
-                -theta,
+                theta,
                 peak_max,
                 ecc,
             ]
@@ -429,7 +445,7 @@ def get_vpcf_peak_params(
 
             # params = params[:, :-1]
             params[:, 3] = params[:, 2] / params[:, 3]
-            params[:, 4] = np.degrees(params[:, 4])
+            params[:, 4] = np.degrees(params[:, 4]) * -1
             params[:, -1] = np.sqrt(1 - params[:, 3]**2
                                     / params[:, 2]**2)
 

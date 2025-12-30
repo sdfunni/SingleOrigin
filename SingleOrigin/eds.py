@@ -204,7 +204,8 @@ def plot_eds_spectrum(
 
     # Plot emission lines
     for elem, lines in peak_dict.items():
-        lines_offset = len(lines) * text_offset
+        print(lines)
+        lines_offset = text_offset
         for line, energy in lines.items():
             line_ind = np.argmin(np.abs(eV - energy))
             peak_int = counts[line_ind]
