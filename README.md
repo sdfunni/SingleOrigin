@@ -21,7 +21,11 @@ EELS module. Manipulation and quantification of EELS, especially EELS spectrum i
 Installation:
 It is recommended to install by pip in a clean Python environment (https://docs.python.org/3/library/venv.html). SingleOrigin may be used in Spyder or Jupyter notebooks/lab. To install, activate your environment and run the following in a command line prompt if you downloaded the tarball:
 
-pip install "pathtofile/SingleOrigin-2.7.0.tar.gz"
+pip install "pathtofile/SingleOrigin-3.0.b2.tar.gz"
+
+OR build from Github:
+
+pip install git+https://github.com/sdfunni/SingleOrigin.git
 
 OR from PyPI:
 
