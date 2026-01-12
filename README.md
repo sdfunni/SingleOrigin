@@ -1,19 +1,19 @@
 # SingleOrigin
 
-A Python module for analysis of multiple S/TEM modalities: atomic resolution image analysis, 4D STEM and EELS.
+A Python module for analysis of multiple S/TEM modalities: atomic resolution images, 4D STEM and EELS.
 
 ## **<ins>Features incorporated into all modules</ins>**:
 
-### - Numpy / Pandas-based data strctures. Easy results extraction for:
+### - <ins>Numpy / Pandas-based data strctures</ins>. Easy results extraction for:
 - Subsequent custom analysis
 - Custom plotting/figure building
 
-### - Streamlined. Class for each processing pipline / data type: 
+### - <ins>Streamlined</ins>. Class for each processing pipline / data type: 
 - Stores data and results (as class attributes)
 - Built-in processing methods (as class methods)
 - Reduced user inputs/programming because methods already know where to find most required information
 
-### - Fast:
+### - <ins>Fast</ins>:
 - Efficient coding
 - Parallel CPU processing for major iterative tasks (e.g. fitting 1000s of atom columns)
 
