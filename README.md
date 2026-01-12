@@ -2,7 +2,7 @@
 
 A Python module for analysis of multiple S/TEM modalities: atomic resolution image analysis, 4D STEM and EELS.
 
-**Features incorporated into all modules:** 
+<u>**Features incorporated into all modules:**</u>
 
 **- Numpy / Pandas-based data strctures.** Easy results extraction for:
 - Subsequent custom analysis
