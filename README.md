@@ -4,10 +4,10 @@ A Python module for analysis of multiple S/TEM modalities: atomic resolution ima
 
 **Features incorporated into all modules:**
 **- Numpy / Pandas-based data strctures.** Easy results extraction for:
-	- Subsequent custom analysis
-	- Custom plotting/figure building
+- Subsequent custom analysis
+- Custom plotting/figure building
 
-**- Streamlined.** Class for each processing pipline / data type:
+**- Streamlined.** Class for each processing pipline / data type: 
 - Stores data and results (as class attributes)
 - Built-in processing methods (as class methods)
 - Reduced user inputs/programming because methods already know where to find most required information
