@@ -34,11 +34,9 @@ dependencies = [
     "ncempy",
     "hyperspy >= 1.7.5",
     "exspy",
-    "pillow",
     "h5py",
     "cmocean",
     "sphinx_rtd_theme",
-    "numba",
 ]
 
 [tool.setuptools]
@@ -47,8 +45,9 @@ dependencies = [
 # NOT have to specify this line.
 include-package-data = true
 
-# [tool.setuptools.packages.find]
-# include = ["SingleOrigin"]
+[tool.setuptools.packages.find]
+exclude = ["Examples"]
+include = ["SingleOrigin"]
 
 [tool.setuptools.package-data]
 SingleOrigin = ["*.txt", "*.py"]

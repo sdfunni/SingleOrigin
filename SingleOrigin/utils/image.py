@@ -27,8 +27,6 @@ from skimage.morphology import erosion
 
 from tifffile import imwrite
 
-# from PIL import Image, ImageFont, ImageDraw
-
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.backend_bases import MouseButton

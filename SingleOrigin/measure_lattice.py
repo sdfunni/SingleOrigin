@@ -21,9 +21,10 @@
     subpicometer precision. Ultramicroscopy 214, (2020).
     """
 
-import psutil
 import copy
 import time
+
+import psutil
 
 from joblib import Parallel, delayed
 
@@ -891,10 +892,10 @@ class ReciprocalLattice:
         im_meas = self.mean_bragg_image
         xy = self.mean_bragg_peaks
 
-        if len(xy) == 2:
-            fix_origin = True
-        elif len(xy) == 3:
-            fix_origin = False
+        # if len(xy) == 2:
+        #     fix_origin = True
+        # elif len(xy) == 3:
+        #     fix_origin = False
         # self.origin = self.basis_picks[2]
         # self.basis_picks = self.basis_picks[:2]
         self.basis_picks = np.array(self.basis_picks)
@@ -2360,7 +2361,7 @@ class ReciprocalLattice:
         vImage_kwargs : dict
             Dictionary of keyword arguments to pass to SingleOrigin.quickplot()
             This will modify the behavior of the plotting function. By default
-            'cmap' is set to 'inferno'. Do not include 'image' or 'figax' in 
+            'cmap' is set to 'inferno'. Do not include 'image' or 'figax' in
             this dictionary. All other quickplot() arguments are acceptable.
 
         pattern_kwargs : dict

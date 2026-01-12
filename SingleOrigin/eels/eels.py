@@ -23,7 +23,6 @@ import hyperspy.api as hs
 
 from SingleOrigin.utils.environ import is_running_in_jupyter
 from SingleOrigin.eels.utils import (
-    # power_law,
     get_zlp_fwhm,
     get_energy_inds,
     fit_zlp,
@@ -39,7 +38,6 @@ from SingleOrigin.eels.utils import (
 from SingleOrigin.utils.read import emdVelox
 from SingleOrigin.utils.image import bin_data
 from SingleOrigin.utils.plot import quickplot, quickcbar
-# from SingleOrigin.mathfn import gaussian_1d
 
 if is_running_in_jupyter():
     from tqdm.notebook import tqdm
@@ -1425,11 +1423,13 @@ class EELSgroup():
                     continue
                 wlinds = np.argwhere(
                     edge == np.array(wledges)).squeeze().reshape((-1,))
-                self.quant_results[si][edge]['whitelines'] = pmaps[...,
-                                                                   wl_ind_offset + 3*wlinds[0]:
-                                                                   wl_ind_offset + 3 *
-                                                                       (wlinds[-1] + 1)
-                                                                   ].reshape(size[:2] + (len(wlinds), 3))
+
+                self.quant_results[si][edge]['whitelines'] = \
+                    pmaps[
+                        ...,
+                        wl_ind_offset + 3*wlinds[0]:
+                            wl_ind_offset + 3 * (wlinds[-1] + 1)
+                ].reshape(size[:2] + (len(wlinds), 3))
 
                 self.quant_results[si][edge]['whiteline_eV'] = whitelines
 

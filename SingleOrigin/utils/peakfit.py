@@ -18,9 +18,9 @@ from scipy.ndimage import (
 )
 from scipy.optimize import minimize
 from scipy.interpolate import make_interp_spline
-from skimage.morphology import dilation
 
-import skimage
+from skimage.measure import moments, moments_central
+from skimage.morphology import dilation
 from skimage.segmentation import watershed, relabel_sequential
 from skimage.feature import hessian_matrix_det
 from skimage.morphology import binary_erosion
@@ -494,10 +494,7 @@ def watershed_segment(
         for i in range(0, num_masks):
             mask_sl = np.where(masks[slices[i][0], slices[i][1]] == i+1, 1, 0)
             img_der_sl = img_der[slices[i][0], slices[i][1]]
-            # edge = mask_sl - binary_erosion(mask_sl)
-            # edge_min = np.min(edge * img_der_sl)
             vals = img_der_sl[mask_sl == 1]
-            # print(vals)
             std = np.std(vals)
             avg = np.mean(vals)
 
@@ -562,8 +559,8 @@ def img_equ_ellip(image):
 
     """
 
-    M = skimage.measure.moments(image, order=1)
-    mu = skimage.measure.moments_central(image, order=2)
+    M = moments(image, order=1)
+    mu = moments_central(image, order=2)
 
     try:
         [x0, y0] = [M[0, 1]/M[0, 0], M[1, 0]/M[0, 0]]
@@ -649,71 +646,72 @@ def img_ellip_param(image):
     return params
 
 
-def moments(x, y, z, order=1):
-    """
-    Calculate image moments from indices and weighting (intensity).
+# def moments(x, y, z, order=1):
+#     """
+#     Calculate image moments from indices and weighting (intensity).
 
-    Parameters
-    ----------
-    x, y : list-like of scalars
-         Coordinates of pixels.
+#     Parameters
+#     ----------
+#     x, y : list-like of scalars
+#          Coordinates of pixels.
 
-    z : list-like of scalars
-        Intensity values of each pixel.
+#     z : list-like of scalars
+#         Intensity values of each pixel.
 
-    order : int
-        The max moment order to be calculated.
-        Default: 1.
+#     order : int
+#         The max moment order to be calculated.
+#         Default: 1.
 
-    Returns
-    -------
-    M : array
-        Moments as an array. To select a specific moment from the array, index
-        by the [x, y] moment order desired (e.g. M[1, 0] is the x mean).
+#     Returns
+#     -------
+#     M : array
+#         Moments as an array. To select a specific moment from the array,
+#         index by the [x, y] moment order desired (e.g. M[1, 0] is the x
+#         mean).
 
-    """
+#     """
 
-    M = np.array([[np.sum(x**i * y**j * z)
-                   for j in range(order + 1)]
-                  for i in range(order + 1)])
+#     M = np.array([[np.sum(x**i * y**j * z)
+#                    for j in range(order + 1)]
+#                   for i in range(order + 1)])
 
-    return M
+#     return M
 
 
-def moments_central(x, y, z, order=2):
-    """
-    Calculate image central moments from indices (x, y) and intensity (z).
+# def moments_central(x, y, z, order=2):
+#     """
+#     Calculate image central moments from indices (x, y) and intensity (z).
 
-    Parameters
-    ----------
-    x, y : list-like of scalars
-         Coordinates of pixels.
+#     Parameters
+#     ----------
+#     x, y : list-like of scalars
+#          Coordinates of pixels.
 
-    z : list-like of scalars
-        Intensity values of each pixel.
+#     z : list-like of scalars
+#         Intensity values of each pixel.
 
-    order : int
-        The max moment order to be calculated.
-        Default: 1.
+#     order : int
+#         The max moment order to be calculated.
+#         Default: 1.
 
-    Returns
-    -------
-    M : array
-        Central moments as an array. To select a specific moment from the
-        array, index by the [x, y] moment order desired (e.g. M[1, 0] is the
-        x mean).
+#     Returns
+#     -------
+#     M : array
+#         Central moments as an array. To select a specific moment from the
+#         array, index by the [x, y] moment order desired (e.g. M[1, 0] is the
+#         x mean).
 
-    """
+#     """
 
-    M = moments(x, y, z, order=1)
+#     M = moments(x, y, z, order=1)
 
-    x_, y_ = [M[1, 0]/M[0, 0], M[0, 1]/M[0, 0]]
+#     x_, y_ = [M[1, 0]/M[0, 0], M[0, 1]/M[0, 0]]
 
-    mu = np.array([[np.sum((x - x_)**i * (y - y_)**j * z)
-                   for j in range(order + 1)]
-                  for i in range(order + 1)])
+#     mu = np.array([[np.sum((x - x_)**i * (y - y_)**j * z)
+#                    for j in range(order + 1)]
+#                   for i in range(order + 1)])
 
-    return mu
+#     return mu
 
 
 def equ_ellip_fromxyz(x, y, z):

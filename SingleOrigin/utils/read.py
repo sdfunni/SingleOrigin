@@ -15,8 +15,6 @@ import imageio
 import hyperspy.api as hs
 from h5py import File
 
-# import matplotlib.pyplot as plt
-
 from ncempy.io.dm import dmReader
 from ncempy.io.ser import serReader
 from ncempy.io.emdVelox import fileEMDVelox
@@ -33,7 +31,6 @@ if check_package_installation('empad2'):
         load_dataset,
     )
 
-# pkg_dir = os.path.split(__file__)[0]
 pkg_dir = Path(__file__).parents[1]
 
 # %%

@@ -5,7 +5,6 @@ from subprocess import check_output
 from sys import executable, argv
 
 from IPython import get_ipython
-# import sys
 import importlib
 
 from pathlib import Path
