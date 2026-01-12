@@ -17,6 +17,8 @@ A Python module for analysis of multiple S/TEM modalities: atomic resolution ima
 - Efficient coding
 - Parallel CPU processing for major iterative tasks (e.g. fitting 1000s of atom columns)
 
+## **<ins>Module descriptions</ins>**:
+
 **<ins>Atomic resolution image analysis module</ins>** intended for structural analysis of high resolution scanning transmission electron microscope images of crystalline lattices. The module uses 2D Gaussian fitting and automatically accounts for intensity overlap between closely spaced columns based on image morphology. Atom columns are initially found by registering a projected reference lattice to the image based on a CIF of the imaged structure (or a similar one).
 
 Incorporates a number of different methods to visualize the atom column positions:
