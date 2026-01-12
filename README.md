@@ -28,7 +28,7 @@ Incorporates a number of different methods to visualize the atom column position
 **<ins>Diffraction / 4D STEM analysis module</ins>.** Currently operational methods are:
 - Basic virtual detectors and other utility functions.
 - Strain mapping is implemented in the ReciprocalLattice class (direct or cepstrum).
-- Imaginary exit-wave power cepstrum for polarization measurement from diffraction data.
+- Imaginary exit-wave cepstrum for polarization measurement from diffraction data.
 - Reciprocal lattice measurements from single diffraction patterns, 4D STEM datasets or HRSTEM FFTs can be made using the ReciprocalLattice class. Superlattice may also be measured.
 
 **<ins>EELS module</ins>.** Manipulation and quantification of EELS, especially EELS spectrum images. *Quantitative elemental analysis* using model fitting.
