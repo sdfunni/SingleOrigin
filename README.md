@@ -4,7 +4,7 @@ A Python module for analysis of multiple S/TEM modalities: atomic resolution ima
 
 ## **<ins>Features incorporated into all modules</ins>**:
 
-### **- Numpy / Pandas-based data strctures.** Easy results extraction for:
+### __- Numpy / Pandas-based data strctures.__ Easy results extraction for:
 - Subsequent custom analysis
 - Custom plotting/figure building
 
