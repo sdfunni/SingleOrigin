@@ -5,17 +5,17 @@ A Python module for analysis of multiple S/TEM modalities: atomic resolution ima
 ## **<ins>Features incorporated into all modules</ins>**:
 
 ### **- Numpy / Pandas-based data strctures.** Easy results extraction for:
-#### - Subsequent custom analysis
-#### - Custom plotting/figure building
+- Subsequent custom analysis
+- Custom plotting/figure building
 
 ### **- Streamlined.** Class for each processing pipline / data type: 
-#### - Stores data and results (as class attributes)
-#### - Built-in processing methods (as class methods)
-#### - Reduced user inputs/programming because methods already know where to find most required information
+- Stores data and results (as class attributes)
+- Built-in processing methods (as class methods)
+- Reduced user inputs/programming because methods already know where to find most required information
 
 ### **- Fast:**
-#### - Efficient coding
-#### - Parallel CPU processing for major iterative tasks (e.g. fitting 1000s of atom columns)
+- Efficient coding
+- Parallel CPU processing for major iterative tasks (e.g. fitting 1000s of atom columns)
 
 **Atomic resolution image analysis module** intended for structural analysis of high resolution scanning transmission electron microscope images of crystalline lattices. The module uses 2D Gaussian fitting and automatically accounts for intensity overlap between closely spaced columns based on image morphology. Atom columns are initially found by registering a projected reference lattice to the image based on a CIF of the imaged structure (or a similar one).
 
@@ -31,7 +31,7 @@ Incorporates a number of different methods to visualize the atom column position
 - Imaginary exit-wave power cepstrum for polarization measurement from diffraction data.
 - Reciprocal lattice measurements from single diffraction patterns, 4D STEM datasets or HRSTEM FFTs can be made using the ReciprocalLattice class. Superlattice may also be measured.
 
-**EELS module.** Manipulation and quantification of EELS, especially EELS spectrum images. Quantitative elemental analysis using model fitting. Fast and easy to extract results for follow-on analysis.
+**EELS module.** Manipulation and quantification of EELS, especially EELS spectrum images. *Quantitative elemental analysis* using model fitting.
 
 ## **Installation:**
 
