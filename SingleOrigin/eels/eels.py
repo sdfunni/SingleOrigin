@@ -809,7 +809,7 @@ class EELSgroup():
 
     def crop_SI(self, xlim, ylim):
         """
-        Crop an SI dataset. The crop will be applied to all datasets in the SI 
+        Crop an SI dataset. The crop will be applied to all datasets in the SI
         object excluding the survey image (if present).
 
         Parameters
@@ -1062,7 +1062,7 @@ class EELSgroup():
             data_array = si.array
 
         if bkgd_window is not None:
-            si_sub_bkgd = subtract_background_SI(
+            si_sub_bkgd, params = subtract_background_SI(
                 data_array,
                 eV,
                 bkgd_window,
@@ -1182,13 +1182,13 @@ class EELSgroup():
         eV = si.axes['eV']
 
         if self.aligned:
-            si.array_aligned = subtract_background_SI(
+            si.array_aligned, params = subtract_background_SI(
                 si.array_aligned,
                 eV,
                 window
             )
         else:
-            si.array = subtract_background_SI(
+            si.array, params = subtract_background_SI(
                 si.array,
                 eV,
                 window
@@ -1365,7 +1365,7 @@ class EELSgroup():
         )
 
         # Rehsape results into parameter maps
-        pkeys = results[0][0]
+        pkeys = results[0][2]
         nanmask = np.where(results[0][3], 1, np.nan)
         pmaps = np.array([result[0] for result in results]
                          ).reshape(size[:2] + (len(pkeys),))
@@ -1375,12 +1375,7 @@ class EELSgroup():
         # n = np.nansum(nanmask)
         # fitstd = (sumsqrs / n)**0.5
 
-        if bkgd_window is not None:
-            bkdg_ind_offset = 2
-        else:
-            bkdg_ind_offset = 0
-
-        wl_ind_offset = bkdg_ind_offset + len(edges)
+        wl_ind_offset = 2 + len(edges)
 
         # Check for previous results and clean up
 
@@ -1404,6 +1399,7 @@ class EELSgroup():
         # Store the background fit information
         if bkgd_window is None:
             bkgd_fit = np.zeros(self.scanSize + (2,))
+            bkgd_window = [0, None]
         else:
             bkgd_fit = pmaps[..., :2]
 
@@ -1416,7 +1412,7 @@ class EELSgroup():
             self.quant_results[si][edge] = {
                 'fit_window': fit_window,
                 'model': models[i] * nanmask,
-                'weights': pmaps[..., i + bkdg_ind_offset],
+                'weights': pmaps[..., i + 2],
 
             }
 
@@ -1429,11 +1425,11 @@ class EELSgroup():
                     continue
                 wlinds = np.argwhere(
                     edge == np.array(wledges)).squeeze().reshape((-1,))
-                self.quant_results[si][edge]['whitelines'] = \
-                    pmaps[...,
-                          wl_ind_offset + 3*wlinds[0]:
-                          wl_ind_offset + 3*(wlinds[-1] + 1)
-                          ].reshape(size[:2] + (len(wlinds), 3))
+                self.quant_results[si][edge]['whitelines'] = pmaps[...,
+                                                                   wl_ind_offset + 3*wlinds[0]:
+                                                                   wl_ind_offset + 3 *
+                                                                       (wlinds[-1] + 1)
+                                                                   ].reshape(size[:2] + (len(wlinds), 3))
 
                 self.quant_results[si][edge]['whiteline_eV'] = whitelines
 
@@ -1803,6 +1799,9 @@ class EELSgroup():
                 v['bkgd_window']
                 for v in self.quant_results[si]['backgrounds'].values()
             ])
+            # for bkgd in bkgd_windows:
+            #     if bkgd is None:
+            #         bkgd =
 
             fit_windows = np.array([
                 self.quant_results[si][k.split('_')[0]]['fit_window']

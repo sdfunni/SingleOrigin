@@ -1331,14 +1331,14 @@ def modelfit(
 
     bounds = [*[(0, np.inf)]*(len(models))]
     p0 = [1]*len(models)
-    pkeys = [f'edge{i}' for i in range(len(models))]
+    pkeys = ['r', 'A'] + [f'edge{i}' for i in range(len(models))]
 
     if bkgd_window is not None:
         spectrum_, b0 = subtract_background(
             spectrum, eV, window=bkgd_window, return_params=True,
         )
 
-        pkeys = ['r', 'A'] + pkeys
+        # pkeys = ['r', 'A'] + pkeys
 
     else:
         spectrum_ = copy.deepcopy(spectrum)
@@ -1367,7 +1367,7 @@ def modelfit(
 
             pkeys += [f'x0_{i}', f'sig_{i}', f'A_{i}']
 
-            bounds += [(x0-5, x0+5), (0.5, np.inf), (0, np.inf)]
+            bounds += [(x0-5, x0+5), (0.5, 10), (0, np.inf)]
 
     bounds = ([bound[0] for bound in bounds],
               [bound[1] for bound in bounds])
